@@ -1,0 +1,35 @@
+bankroll:
+  initial: 10000.0
+  min_balance: 1000.0  # Stop betting if below
+  max_daily_exposure: 0.05  # 5% of bankroll
+
+betting:
+  min_ev: 0.05  # Minimum expected value
+  max_confidence: 0.85  # Reject overconfident picks
+  kelly_fraction: 0.25  # Fractional Kelly
+
+scraping:
+  games_source: "espn"
+  lines_sources: ["draftkings", "fanduel"]
+  update_interval: 3600  # seconds
+
+agents:
+  researcher:
+    enabled: true
+  modeler:
+    model_type: "simple_linear"
+  picker:
+    max_picks_per_day: 10
+  banker:
+    strategy: "fractional_kelly"  # or "flat"
+  compliance:
+    enabled: true
+  auditor:
+    enabled: true
+  president:
+    enabled: true
+
+scheduler:
+  run_time: "09:00"  # Daily run time
+  timezone: "America/New_York"
+
