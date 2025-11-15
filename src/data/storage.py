@@ -122,6 +122,7 @@ class PickModel(Base):
     confidence = Column(Float, nullable=False)
     expected_value = Column(Float, nullable=False)
     book = Column(String, nullable=False)
+    parlay_legs = Column(JSON, nullable=True)  # List of pick IDs for parlays
     created_at = Column(DateTime, default=datetime.now)
     
     # Relationships
@@ -231,6 +232,8 @@ class DailyReportModel(Base):
     profit_loss = Column(Float, default=0.0)
     roi = Column(Float, default=0.0)
     accuracy_metrics = Column(JSON, nullable=True)
+    insights = Column(JSON, nullable=True)  # What went well and what needs improvement
+    recommendations = Column(JSON, nullable=True)  # List of recommendations
     created_at = Column(DateTime, default=datetime.now)
 
 

@@ -118,9 +118,10 @@ class Coordinator:
                 picks_with_stakes = self.banker.process(picks)
                 self.banker.interaction_logger.log_agent_complete("Banker", f"Allocated stakes to {len(picks_with_stakes)} picks")
                 
-                # Save picks
+                # Update saved picks with stakes (Picker already saved them)
                 for pick in picks_with_stakes:
-                    self._save_pick(pick)
+                    if pick.id:
+                        self._update_pick_stakes(pick)
                 
                 # Step 7: Compliance validates
                 self.compliance.interaction_logger.log_agent_start("Compliance", f"Validating {len(picks_with_stakes)} picks")
@@ -167,6 +168,19 @@ class Coordinator:
                 self.banker.update_bankroll(approved_picks)
             else:
                 logger.warning("❌ Card not approved - no bets placed")
+            
+            # Step 10: Generate daily report (review previous day's results)
+            logger.info("📊 Generating daily performance report")
+            self.auditor.interaction_logger.log_agent_start("Auditor", "Reviewing previous day's results")
+            daily_report = self.auditor.process(target_date)
+            
+            # Save report to file
+            if daily_report.total_picks > 0:
+                from src.utils.reporting import ReportGenerator
+                report_gen = ReportGenerator(self.db)
+                report_text = report_gen.generate_daily_report(target_date)
+                report_gen.save_report_to_file(report_text, f"daily_report_{target_date.isoformat()}.txt")
+                logger.info(f"📄 Daily report saved to data/reports/daily_report_{target_date.isoformat()}.txt")
             
             logger.info("=" * 80)
             logger.info(f"✅ DAILY WORKFLOW COMPLETED - Card {'APPROVED' if review.approved else 'REJECTED'}")
@@ -268,9 +282,27 @@ class Coordinator:
         finally:
             session.close()
     
+    def _update_pick_stakes(self, pick: Pick) -> None:
+        """Update pick stakes in database"""
+        if not self.db or not pick.id:
+            return
+        
+        session = self.db.get_session()
+        try:
+            pick_model = session.query(PickModel).filter_by(id=pick.id).first()
+            if pick_model:
+                pick_model.stake_units = pick.stake_units
+                pick_model.stake_amount = pick.stake_amount
+                session.commit()
+        except Exception as e:
+            logger.error(f"Error updating pick stakes: {e}")
+            session.rollback()
+        finally:
+            session.close()
+    
     def _save_pick(self, pick: Pick) -> None:
-        """Save pick to database"""
-        if not self.db or pick.game_id == 0:
+        """Save pick to database (used for new picks)"""
+        if not self.db:
             return
         
         session = self.db.get_session()
@@ -285,7 +317,8 @@ class Coordinator:
                 rationale=pick.rationale,
                 confidence=pick.confidence,
                 expected_value=pick.expected_value,
-                book=pick.book
+                book=pick.book,
+                parlay_legs=pick.parlay_legs
             )
             session.add(pick_model)
             session.commit()

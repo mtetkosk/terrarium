@@ -213,10 +213,24 @@ Example log output:
 
 ## Reports
 
-### Daily Reports
+### Daily Performance Reports
 
-Daily reports are automatically generated and saved to the database. Access them via:
+The Auditor agent automatically reviews previous day's results and generates comprehensive daily reports. These reports include:
 
+- **Performance Summary**: Wins, losses, win rate, P&L, ROI
+- **What Went Well**: Successful strategies and winning patterns
+- **What Needs Improvement**: Areas where performance was weak
+- **Key Findings**: Best/worst bet types, confidence accuracy, parlay performance
+- **Actionable Recommendations**: Specific steps to improve performance
+
+Reports are automatically:
+- Generated each day after the workflow completes
+- Saved to `data/reports/daily_report_YYYY-MM-DD.txt`
+- Stored in the database for historical analysis
+
+### Accessing Reports
+
+**View latest report:**
 ```python
 from src.utils.reporting import ReportGenerator
 from src.data.storage import Database
@@ -225,16 +239,51 @@ from datetime import date
 db = Database()
 generator = ReportGenerator(db)
 
-# Get today's report
-report = generator.generate_daily_report()
-print(report)
+# Get today's report (reviews yesterday's results)
+report_text = generator.generate_daily_report()
+print(report_text)
 
 # Get report for specific date
-report = generator.generate_daily_report(date(2025, 1, 15))
-print(report)
+report_text = generator.generate_daily_report(date(2025, 1, 15))
+print(report_text)
+```
 
-# Save to file
-generator.save_report_to_file(report, "daily_report_2025-01-15.txt")
+**View saved report file:**
+```bash
+cat data/reports/daily_report_2025-01-15.txt
+```
+
+**Example report structure:**
+```
+================================================================================
+DAILY PERFORMANCE REPORT - 2025-01-15
+================================================================================
+
+📊 PERFORMANCE SUMMARY
+--------------------------------------------------------------------------------
+Total Picks: 8
+Wins: 5  |  Losses: 3  |  Pushes: 0
+Win Rate: 62.5%
+
+Total Wagered: $5.00
+Total Payout: $6.25
+Profit/Loss: +$1.25
+ROI: +25.00%
+
+✅ WHAT WENT WELL
+--------------------------------------------------------------------------------
+  • Profitable day: +$1.25 (25.0% ROI)
+  • Strong win rate: 62.5%
+  • SPREAD bets performing well: 66.7% win rate
+
+⚠️  WHAT NEEDS IMPROVEMENT
+--------------------------------------------------------------------------------
+  • TOTAL bets struggling: 33.3% win rate - consider avoiding
+
+💡 RECOMMENDATIONS
+--------------------------------------------------------------------------------
+  1. Excellent win rate! Current strategy is working well.
+  2. Consider reducing TOTAL bets - only 33.3% win rate
 ```
 
 ### Summary Reports

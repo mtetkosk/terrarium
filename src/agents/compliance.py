@@ -4,7 +4,7 @@ from typing import List, Optional
 import re
 
 from src.agents.base import BaseAgent
-from src.data.models import Pick, GameInsight, ComplianceResult, Bankroll
+from src.data.models import Pick, GameInsight, ComplianceResult, Bankroll, BetType
 from src.data.storage import Database, ComplianceResultModel
 from src.utils.config import config
 from src.utils.logging import get_logger
@@ -92,13 +92,25 @@ class Compliance(BaseAgent):
             reasons.append("High risk level")
             approved = False
         
-        # Check for missing insight data
-        if not insight:
-            reasons.append("Missing game insight data")
-            approved = False
-        elif insight.confidence_factors.get('data_quality', 1.0) < 0.5:
-            reasons.append("Low data quality")
-            approved = False
+        # Check for missing insight data (skip for parlays)
+        if pick.bet_type != BetType.PARLAY:
+            if not insight:
+                reasons.append("Missing game insight data")
+                approved = False
+            elif insight.confidence_factors.get('data_quality', 1.0) < 0.5:
+                reasons.append("Low data quality")
+                approved = False
+        
+        # Special handling for parlays - more lenient since they're for fun
+        if pick.bet_type == BetType.PARLAY:
+            if not pick.parlay_legs or len(pick.parlay_legs) < 2:
+                reasons.append("Parlay must have at least 2 legs")
+                approved = False
+            else:
+                reasons.append("Parlay approved - for fun!")
+                # Parlays are inherently higher risk, so we're more lenient
+                if risk_level == "high":
+                    risk_level = "medium"  # Downgrade risk for parlays
         
         if approved and not reasons:
             reasons.append("All checks passed")
