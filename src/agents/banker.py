@@ -4,7 +4,7 @@ from typing import List, Optional
 from datetime import date
 
 from src.agents.base import BaseAgent
-from src.data.models import Pick, Bankroll
+from src.data.models import Pick, Bankroll, BetType
 from src.data.storage import Database, BankrollModel, PickModel
 from src.models.kelly import calculate_kelly_stake
 from src.utils.config import config
@@ -23,7 +23,6 @@ class Banker(BaseAgent):
         self.betting_config = config.get_betting_config()
         self.strategy = self.config.get('strategy', 'fractional_kelly')
         self.kelly_fraction = self.betting_config.get('kelly_fraction', 0.25)
-        self.max_daily_exposure = self.bankroll_config.get('max_daily_exposure', 0.05)
         self.min_balance = self.bankroll_config.get('min_balance', 1000.0)
     
     def process(self, picks: List[Pick]) -> List[Pick]:
@@ -85,6 +84,11 @@ class Banker(BaseAgent):
                 self.kelly_fraction
             )
             
+            # Parlays get smaller stakes (50% of calculated) since they're higher risk
+            if pick.bet_type == BetType.PARLAY:
+                stake *= 0.5
+                self.log_info(f"Reduced parlay stake to 50% (${stake:.2f}) for risk management")
+            
             # Convert to units
             pick.stake_units = stake / unit_size
             pick.stake_amount = stake
@@ -95,16 +99,68 @@ class Banker(BaseAgent):
         """Allocate using flat betting strategy"""
         unit_size = bankroll.balance * 0.01  # 1% of bankroll per unit
         
-        # Allocate 1 unit per pick
+        # Allocate 1 unit per pick (0.5 units for parlays)
         for pick in picks:
-            pick.stake_units = 1.0
-            pick.stake_amount = unit_size
+            if pick.bet_type == BetType.PARLAY:
+                pick.stake_units = 0.5
+                pick.stake_amount = unit_size * 0.5
+                self.log_info(f"Reduced parlay stake to 0.5 units (${pick.stake_amount:.2f}) for risk management")
+            else:
+                pick.stake_units = 1.0
+                pick.stake_amount = unit_size
         
         return picks
     
+    def calculate_max_daily_exposure(self, bankroll: Bankroll) -> float:
+        """Calculate maximum daily exposure based on bankroll state and risk management"""
+        # Base exposure percentage based on bankroll size
+        # Smaller bankrolls = more conservative
+        balance = bankroll.balance
+        initial = self.bankroll_config.get('initial', 100.0)
+        
+        # Calculate bankroll health (current balance vs initial)
+        bankroll_health = balance / initial if initial > 0 else 1.0
+        
+        # Base exposure: 5% for healthy bankroll, scales down if losing
+        if bankroll_health >= 1.0:
+            # Bankroll is at or above initial - can be more aggressive
+            base_exposure = 0.08  # 8% for growing bankroll
+        elif bankroll_health >= 0.75:
+            # Bankroll is 75-100% of initial - standard exposure
+            base_exposure = 0.05  # 5% standard
+        elif bankroll_health >= 0.50:
+            # Bankroll is 50-75% of initial - reduce exposure
+            base_exposure = 0.03  # 3% conservative
+        else:
+            # Bankroll is below 50% of initial - very conservative
+            base_exposure = 0.02  # 2% very conservative
+        
+        # Adjust based on recent performance
+        # If we're losing money, reduce exposure further
+        if bankroll.total_profit < 0:
+            loss_factor = abs(bankroll.total_profit) / initial if initial > 0 else 0
+            # Reduce exposure by up to 50% if losing significantly
+            reduction = min(0.5, loss_factor * 2)
+            base_exposure *= (1 - reduction)
+        
+        # Ensure minimum exposure (at least 1% for very small bankrolls)
+        min_exposure = 0.01
+        max_exposure = max(min_exposure, base_exposure)
+        
+        # Cap at 10% maximum regardless
+        max_exposure = min(max_exposure, 0.10)
+        
+        self.log_info(
+            f"Calculated max daily exposure: {max_exposure:.1%} "
+            f"(bankroll health: {bankroll_health:.1%}, profit: ${bankroll.total_profit:.2f})"
+        )
+        
+        return max_exposure
+    
     def enforce_limits(self, picks: List[Pick], bankroll: Bankroll) -> List[Pick]:
         """Enforce bankroll limits"""
-        max_daily_stake = bankroll.balance * self.max_daily_exposure
+        max_daily_exposure_pct = self.calculate_max_daily_exposure(bankroll)
+        max_daily_stake = bankroll.balance * max_daily_exposure_pct
         
         # Calculate total stake
         total_stake = sum(pick.stake_amount for pick in picks)

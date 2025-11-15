@@ -1,7 +1,8 @@
 bankroll:
-  initial: 10000.0
-  min_balance: 1000.0  # Stop betting if below
-  max_daily_exposure: 0.05  # 5% of bankroll
+  initial: 100.0
+  min_balance: 10.0  # Stop betting if below (10% of initial)
+  # max_daily_exposure is now calculated dynamically by Banker agent
+  # based on bankroll health and performance
 
 betting:
   min_ev: 0.05  # Minimum expected value
@@ -20,6 +21,11 @@ agents:
     model_type: "simple_linear"
   picker:
     max_picks_per_day: 10
+    parlay_enabled: true
+    parlay_probability: 0.15  # 15% chance to create a parlay when conditions are met
+    parlay_min_legs: 2
+    parlay_max_legs: 4
+    parlay_min_confidence: 0.65  # Only use high-confidence picks for parlays
   banker:
     strategy: "fractional_kelly"  # or "flat"
   compliance:

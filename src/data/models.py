@@ -11,6 +11,7 @@ class BetType(str, Enum):
     SPREAD = "spread"
     TOTAL = "total"
     MONEYLINE = "moneyline"
+    PARLAY = "parlay"
 
 
 class GameStatus(str, Enum):
@@ -126,9 +127,9 @@ class Prediction(BaseModel):
 class Pick(BaseModel):
     """Pick model from Picker"""
     id: Optional[int] = None
-    game_id: int = Field(..., description="Associated game ID")
+    game_id: int = Field(0, description="Associated game ID (0 for parlays)")
     bet_type: BetType = Field(..., description="Type of bet")
-    line: float = Field(..., description="Line value")
+    line: float = Field(0.0, description="Line value (0 for parlays)")
     odds: int = Field(..., description="American odds")
     stake_units: float = Field(0.0, description="Stake in units (assigned by Banker)")
     stake_amount: float = Field(0.0, description="Stake in dollars")
@@ -136,6 +137,7 @@ class Pick(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence level")
     expected_value: float = Field(..., description="Expected value")
     book: str = Field(..., description="Sportsbook")
+    parlay_legs: Optional[List[int]] = Field(None, description="List of pick IDs that make up this parlay (if bet_type is PARLAY)")
     created_at: datetime = Field(default_factory=datetime.now)
     
     class Config:
@@ -214,6 +216,8 @@ class DailyReport(BaseModel):
     profit_loss: float = Field(0.0, description="Daily P&L")
     roi: float = Field(0.0, description="Return on investment")
     accuracy_metrics: Dict[str, float] = Field(default_factory=dict, description="Additional metrics")
+    insights: Dict[str, Any] = Field(default_factory=dict, description="What went well and what needs improvement")
+    recommendations: List[str] = Field(default_factory=list, description="Actionable recommendations")
     created_at: datetime = Field(default_factory=datetime.now)
 
 

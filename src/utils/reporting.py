@@ -1,7 +1,7 @@
 """Reporting and visualization utilities"""
 
 from typing import List, Optional
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from pathlib import Path
 
 from src.data.models import DailyReport, Pick, Bet, Bankroll
@@ -21,7 +21,7 @@ class ReportGenerator:
         self.auditor = Auditor(db) if db else None
     
     def generate_daily_report(self, target_date: Optional[date] = None) -> str:
-        """Generate daily report as text"""
+        """Generate comprehensive daily report with insights"""
         if target_date is None:
             target_date = date.today()
         
@@ -30,32 +30,83 @@ class ReportGenerator:
         
         report = self.auditor.process(target_date)
         
-        # Format report
+        # Format comprehensive report
         lines = [
-            "=" * 60,
-            f"DAILY REPORT - {target_date}",
-            "=" * 60,
+            "=" * 80,
+            f"DAILY PERFORMANCE REPORT - {target_date}",
+            "=" * 80,
             "",
+            "📊 PERFORMANCE SUMMARY",
+            "-" * 80,
             f"Total Picks: {report.total_picks}",
-            f"Wins: {report.wins}",
-            f"Losses: {report.losses}",
-            f"Pushes: {report.pushes}",
+            f"Wins: {report.wins}  |  Losses: {report.losses}  |  Pushes: {report.pushes}",
             f"Win Rate: {report.win_rate:.1%}",
             "",
             f"Total Wagered: ${report.total_wagered:.2f}",
             f"Total Payout: ${report.total_payout:.2f}",
-            f"Profit/Loss: ${report.profit_loss:.2f}",
-            f"ROI: {report.roi:.2f}%",
+            f"Profit/Loss: ${report.profit_loss:+.2f}",
+            f"ROI: {report.roi:+.2f}%",
             "",
         ]
         
         if report.accuracy_metrics:
-            lines.append("Additional Metrics:")
+            lines.append("📈 ACCURACY METRICS")
+            lines.append("-" * 80)
             for key, value in report.accuracy_metrics.items():
-                lines.append(f"  {key}: {value:.3f}")
+                lines.append(f"  {key.replace('_', ' ').title()}: {value:.3f}")
+            lines.append("")
         
-        lines.append("")
-        lines.append("=" * 60)
+        # Insights section
+        if report.insights:
+            insights = report.insights
+            lines.append("✅ WHAT WENT WELL")
+            lines.append("-" * 80)
+            if insights.get('what_went_well'):
+                for item in insights['what_went_well']:
+                    lines.append(f"  • {item}")
+            else:
+                lines.append("  • No significant wins to report")
+            lines.append("")
+            
+            lines.append("⚠️  WHAT NEEDS IMPROVEMENT")
+            lines.append("-" * 80)
+            if insights.get('what_needs_improvement'):
+                for item in insights['what_needs_improvement']:
+                    lines.append(f"  • {item}")
+            else:
+                lines.append("  • No major issues identified")
+            lines.append("")
+            
+            # Key findings
+            if insights.get('key_findings'):
+                lines.append("🔍 KEY FINDINGS")
+                lines.append("-" * 80)
+                key_findings = insights['key_findings']
+                if key_findings.get('best_bet_type'):
+                    lines.append(f"  Best Performing Bet Type: {key_findings['best_bet_type'].upper()}")
+                if key_findings.get('worst_bet_type'):
+                    lines.append(f"  Worst Performing Bet Type: {key_findings['worst_bet_type'].upper()}")
+                if key_findings.get('parlay_performance') and key_findings['parlay_performance'] != "N/A":
+                    lines.append(f"  Parlay Performance: {key_findings['parlay_performance']}")
+                if key_findings.get('confidence_accuracy'):
+                    conf_acc = key_findings['confidence_accuracy']
+                    lines.append("  Confidence Accuracy:")
+                    for level, rate in conf_acc.items():
+                        if rate > 0:
+                            lines.append(f"    {level.title()}: {rate:.1%}")
+                lines.append("")
+        
+        # Recommendations section
+        if report.recommendations:
+            lines.append("💡 RECOMMENDATIONS")
+            lines.append("-" * 80)
+            for i, rec in enumerate(report.recommendations, 1):
+                lines.append(f"  {i}. {rec}")
+            lines.append("")
+        
+        lines.append("=" * 80)
+        lines.append(f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("=" * 80)
         
         return "\n".join(lines)
     

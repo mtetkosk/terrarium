@@ -1,6 +1,8 @@
 """Picker agent for bet selection"""
 
 from typing import List, Optional
+import random
+import math
 from src.agents.base import BaseAgent
 from src.data.models import Prediction, GameInsight, Pick, BettingLine, BetType
 from src.data.storage import Database, PickModel
@@ -18,6 +20,11 @@ class Picker(BaseAgent):
         super().__init__("Picker", db)
         self.max_picks = self.config.get('max_picks_per_day', 10)
         self.min_ev = config.get_betting_config().get('min_ev', 0.05)
+        self.parlay_enabled = self.config.get('parlay_enabled', True)
+        self.parlay_probability = self.config.get('parlay_probability', 0.15)
+        self.parlay_min_legs = self.config.get('parlay_min_legs', 2)
+        self.parlay_max_legs = self.config.get('parlay_max_legs', 4)
+        self.parlay_min_confidence = self.config.get('parlay_min_confidence', 0.65)
     
     def process(
         self,
@@ -55,7 +62,19 @@ class Picker(BaseAgent):
         if len(picks) > self.max_picks:
             picks = sorted(picks, key=lambda p: p.expected_value, reverse=True)[:self.max_picks]
         
-        self.log_info(f"Selected {len(picks)} picks")
+        # Save picks first so we have IDs for parlay legs
+        for pick in picks:
+            self._save_pick(pick)
+        
+        # Occasionally create a parlay for fun
+        if self.parlay_enabled and len(picks) >= self.parlay_min_legs:
+            parlay = self._maybe_create_parlay(picks)
+            if parlay:
+                picks.append(parlay)
+                self._save_pick(parlay)  # Save parlay
+                self.log_info(f"🎲 Created parlay with {len(parlay.parlay_legs or [])} legs for fun!")
+        
+        self.log_info(f"Selected {len(picks)} picks (including {sum(1 for p in picks if p.bet_type == BetType.PARLAY)} parlay(s))")
         return picks
     
     def select_picks(
@@ -241,13 +260,136 @@ class Picker(BaseAgent):
         
         return filtered_picks
     
+    def _maybe_create_parlay(self, picks: List[Pick]) -> Optional[Pick]:
+        """Occasionally create a parlay from high-confidence picks"""
+        # Check probability
+        if random.random() > self.parlay_probability:
+            return None
+        
+        # Filter picks that meet parlay criteria
+        eligible_picks = [
+            p for p in picks
+            if p.bet_type != BetType.PARLAY  # Don't parlay parlays
+            and p.confidence >= self.parlay_min_confidence
+            and p.expected_value > 0
+        ]
+        
+        if len(eligible_picks) < self.parlay_min_legs:
+            return None
+        
+        # Select random number of legs within range
+        num_legs = random.randint(
+            self.parlay_min_legs,
+            min(self.parlay_max_legs, len(eligible_picks))
+        )
+        
+        # Select random picks for parlay (prioritize higher confidence)
+        eligible_picks_sorted = sorted(
+            eligible_picks,
+            key=lambda p: (p.confidence, p.expected_value),
+            reverse=True
+        )
+        parlay_legs = eligible_picks_sorted[:num_legs]
+        
+        # Calculate parlay odds and EV
+        parlay_odds, parlay_ev, parlay_confidence = self._calculate_parlay_metrics(parlay_legs)
+        
+        # Only create parlay if it has positive EV (even if lower than individual picks)
+        if parlay_ev <= 0:
+            return None
+        
+        # Build rationale
+        leg_descriptions = [
+            f"Leg {i+1}: {self._get_pick_description(leg)}"
+            for i, leg in enumerate(parlay_legs)
+        ]
+        rationale = f"Parlay ({num_legs} legs) for fun! " + " | ".join(leg_descriptions)
+        rationale += f" Combined EV: {parlay_ev:.3f}"
+        
+        # Create parlay pick (use pick IDs that should already be saved)
+        parlay_leg_ids = [leg.id if leg.id else 0 for leg in parlay_legs]
+        
+        parlay = Pick(
+            game_id=0,  # Parlays don't have a single game
+            bet_type=BetType.PARLAY,
+            line=0.0,
+            odds=parlay_odds,
+            stake_units=0.0,  # Will be set by Banker
+            stake_amount=0.0,  # Will be set by Banker
+            rationale=rationale,
+            confidence=parlay_confidence,
+            expected_value=parlay_ev,
+            book=parlay_legs[0].book if parlay_legs else "draftkings",
+            parlay_legs=parlay_leg_ids if any(parlay_leg_ids) else None
+        )
+        
+        return parlay
+    
+    def _calculate_parlay_metrics(self, legs: List[Pick]) -> tuple[int, float, float]:
+        """Calculate parlay odds, EV, and combined confidence"""
+        if not legs:
+            return 0, 0.0, 0.0
+        
+        # Convert each leg's odds to decimal, multiply together, convert back to American
+        decimal_multiplier = 1.0
+        win_probability = 1.0
+        confidence_sum = 0.0
+        
+        for leg in legs:
+            # Convert American odds to decimal
+            if leg.odds > 0:
+                decimal_odds = (leg.odds / 100) + 1
+            else:
+                decimal_odds = (100 / abs(leg.odds)) + 1
+            
+            decimal_multiplier *= decimal_odds
+            
+            # Estimate win probability from confidence (simplified)
+            # Higher confidence = higher win probability
+            leg_win_prob = 0.5 + (leg.confidence - 0.5) * 0.4  # Scale confidence to 0.3-0.7 range
+            win_probability *= leg_win_prob
+            
+            confidence_sum += leg.confidence
+        
+        # Convert back to American odds
+        if decimal_multiplier >= 2.0:
+            parlay_odds = int((decimal_multiplier - 1) * 100)
+        else:
+            parlay_odds = int(-100 / (decimal_multiplier - 1))
+        
+        # Calculate EV (simplified - assumes $1 stake)
+        payout = decimal_multiplier
+        ev = (win_probability * payout) - (1 - win_probability)
+        
+        # Combined confidence (geometric mean for independent events)
+        combined_confidence = math.pow(
+            math.prod([leg.confidence for leg in legs]),
+            1.0 / len(legs)
+        )
+        
+        return parlay_odds, ev, combined_confidence
+    
+    def _get_pick_description(self, pick: Pick) -> str:
+        """Get a short description of a pick for parlay rationale"""
+        bet_type_str = pick.bet_type.value.upper()
+        if pick.bet_type == BetType.SPREAD:
+            return f"{bet_type_str} {pick.line:+.1f}"
+        elif pick.bet_type == BetType.TOTAL:
+            return f"{bet_type_str} {pick.line:.1f}"
+        elif pick.bet_type == BetType.MONEYLINE:
+            return f"{bet_type_str} {pick.odds:+d}"
+        return bet_type_str
+    
     def _save_pick(self, pick: Pick) -> None:
         """Save pick to database"""
-        if not self.db or pick.game_id == 0:
+        if not self.db:
             return
         
         session = self.db.get_session()
         try:
+            # Convert parlay_legs to JSON if present
+            parlay_legs_json = pick.parlay_legs if pick.parlay_legs else None
+            
             pick_model = PickModel(
                 game_id=pick.game_id,
                 bet_type=pick.bet_type,
@@ -258,7 +400,8 @@ class Picker(BaseAgent):
                 rationale=pick.rationale,
                 confidence=pick.confidence,
                 expected_value=pick.expected_value,
-                book=pick.book
+                book=pick.book,
+                parlay_legs=parlay_legs_json
             )
             session.add(pick_model)
             session.commit()

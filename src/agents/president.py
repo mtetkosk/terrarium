@@ -128,14 +128,19 @@ class President(BaseAgent):
                 review_notes.append(f"Pick {pick.id}: Invalid stake")
                 continue
             
-            # Check total exposure
+            # Check total exposure (Banker already enforces this, but double-check)
             total_exposure += pick.stake_amount
-            max_exposure = bankroll_balance * self.bankroll_config.get('max_daily_exposure', 0.05)
+            # Get max exposure from Banker's calculation
+            from src.agents.banker import Banker
+            temp_banker = Banker(self.db)
+            temp_bankroll = temp_banker.get_current_bankroll()
+            max_exposure_pct = temp_banker.calculate_max_daily_exposure(temp_bankroll)
+            max_exposure = bankroll_balance * max_exposure_pct
             
             if total_exposure > max_exposure:
                 rejected_picks.append(pick.id or 0)
                 review_notes.append(
-                    f"Pick {pick.id}: Would exceed max daily exposure"
+                    f"Pick {pick.id}: Would exceed max daily exposure ({max_exposure_pct:.1%})"
                 )
                 continue
             
