@@ -5,9 +5,12 @@ import yaml
 from pathlib import Path
 from typing import Dict, Any
 from dotenv import load_dotenv
+from src.utils.logging import get_logger
 
 # Load environment variables
 load_dotenv()
+
+logger = get_logger("utils.config")
 
 
 class Config:
@@ -77,7 +80,11 @@ class Config:
         llm_config = self.get_llm_config()
         agent_models = llm_config.get('agent_models', {})
         # Use agent-specific model if available, otherwise default
-        return agent_models.get(agent_name.lower(), llm_config.get('model', 'gpt-4o-mini'))
+        model_name = agent_models.get(agent_name.lower(), llm_config.get('model', 'gpt-4o-mini'))
+        
+        logger.info(f"📋 Model config for '{agent_name}': '{model_name}'")
+        
+        return model_name
 
 
 # Global config instance

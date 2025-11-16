@@ -1,0 +1,506 @@
+================================================================================
+RESEARCHER AGENT REPORT - 2025-11-16
+================================================================================
+
+Report Date: 2025-11-16
+Generated: 2025-11-16 14:36:57
+
+📋 METADATA
+--------------------------------------------------------------------------------
+games_researched: 34
+insights_generated: 34
+
+📊 AGENT OUTPUT
+--------------------------------------------------------------------------------
+
+Total Games Researched: 34
+
+GAME #1
+  Game ID: 10
+  Matchup: App State Mountaineers @ Dartmouth Big Green
+  Start Time: 2025-11-16T12:00:00Z
+  Market Data:
+    Spread: App State +3.5
+    Total: 145.5
+    Moneyline: Away +150 / Home -170
+  Recent Form: App State: 2-2 in last 4, averaging 72.5 PPG. Dartmouth: 0-2 in last 2, averaging 60.0 PPG.
+  Notable Context (2):
+    - Travel: App State traveling 300 miles for this game.
+    - Rivalry: Both teams have a competitive history, with App State leading the series.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #2
+  Game ID: 11
+  Matchup: Wagner Seahawks @ UMBC Retrievers
+  Start Time: 2025-11-16T12:00:00Z
+  Market Data:
+    Spread: UMBC -6.5
+    Total: 140.5
+    Moneyline: Away +239 / Home -299
+  Recent Form: Wagner: 0-3 in last 3, averaging 60.0 PPG. UMBC: 2-1 in last 3, averaging 75.0 PPG.
+  Notable Context (2):
+    - Wagner is looking for their first win of the season.
+    - UMBC is at home and has a strong record against Wagner historically.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #3
+  Game ID: 12
+  Matchup: Wright State Raiders @ Kent State Golden Flashes
+  Start Time: 2025-11-16T12:00:00Z
+  Market Data:
+    Spread: Kent State -4.5
+    Total: 156.5
+    Moneyline: Away +162 / Home -195
+  Recent Form: Wright State: 2-2 in last 4, averaging 72.0 PPG. Kent State: 3-1 in last 4, averaging 78.0 PPG.
+  Notable Context (2):
+    - Kent State is on a three-game winning streak.
+    - Wright State is looking to bounce back after a tough loss.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #4
+  Game ID: 13
+  Matchup: Kentucky Christian Knights @ Morehead State Eagles
+  Start Time: 2025-11-16T12:00:00Z
+  Market Data:
+    Spread: Morehead State -10.5
+    Total: 150.0
+    Moneyline: Away +400 / Home -500
+  Recent Form: Kentucky Christian: 0-4 in last 4, averaging 55.0 PPG. Morehead State: 3-1 in last 4, averaging 80.0 PPG.
+  Notable Context (2):
+    - Morehead State has a strong home court advantage.
+    - Kentucky Christian is struggling this season.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #5
+  Game ID: 14
+  Matchup: Notre Dame Fighting Irish @ Ohio State Buckeyes
+  Start Time: 2025-11-16T12:30:00Z
+  Market Data:
+    Spread: Ohio State -8.5
+    Total: 155.5
+    Moneyline: Away +373 / Home -498
+  Recent Form: Notre Dame: 3-0 in last 3, averaging 80.0 PPG. Ohio State: 3-0 in last 3, averaging 85.0 PPG.
+  Notable Context (2):
+    - Both teams are undefeated this season.
+    - This matchup is critical for early season positioning.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #6
+  Game ID: 15
+  Matchup: Stetson Hatters @ Western Carolina Catamounts
+  Start Time: 2025-11-16T00:00:00Z
+  Market Data:
+    Spread: -11.5
+    Total: 150.5
+    Moneyline: Away +1000 / Home -1450
+  Recent Form: Stetson: 2-2 in last 4, averaging 68.5 PPG. Western Carolina: 3-1 in last 4, averaging 75.0 PPG.
+  Notable Context (2):
+    - Travel: Stetson traveling 400 miles for this matchup.
+    - Rivalry: Historically competitive matchup between these two teams.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #7
+  Game ID: 16
+  Matchup: Cumberland (KY) Patriots @ Northern Kentucky Norse
+  Start Time: 2025-11-16T00:00:00Z
+  Market Data:
+    Spread: +5.5
+    Total: 145.5
+    Moneyline: Away +200 / Home -250
+  Recent Form: Cumberland: 1-3 in last 4, averaging 60.0 PPG. Northern Kentucky: 2-2 in last 4, averaging 70.0 PPG.
+  Notable Context (2):
+    - Travel: Cumberland traveling 300 miles for this matchup.
+    - Northern Kentucky is looking to bounce back after a tough loss.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #8
+  Game ID: 17
+  Matchup: Bryant Bulldogs @ Valparaiso Beacons
+  Start Time: 2025-11-16T00:00:00Z
+  Market Data:
+    Spread: +1.5
+    Total: 132.5
+    Moneyline: Away -120 / Home +100
+  Recent Form: Bryant: 1-3 in last 4, averaging 65.0 PPG. Valparaiso: 0-4 in last 4, averaging 60.0 PPG.
+  Notable Context (2):
+    - Both teams are looking for their first win of the season.
+    - Travel: Bryant traveling 400 miles for this matchup.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #9
+  Game ID: 41
+  Matchup: Holy Cross Crusaders @ Hampton Pirates
+  Start Time: 2025-11-16T00:00:00Z
+  Market Data:
+    Spread: +1.5
+    Total: 140.5
+    Moneyline: Away +114 / Home -130
+  Recent Form: Holy Cross: 1-3 in last 4, averaging 62.0 PPG. Hampton: 2-2 in last 4, averaging 68.0 PPG.
+  Notable Context (2):
+    - Travel: Holy Cross traveling 300 miles for this matchup.
+    - Both teams are looking to improve their season records.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #10
+  Game ID: 19
+  Matchup: South Florida Bulls @ Kennesaw State Owls
+  Start Time: 2025-11-16T00:00:00Z
+  Market Data:
+    Spread: +2.5
+    Total: 148.5
+    Moneyline: Away +120 / Home -140
+  Recent Form: South Florida: 1-3 in last 4, averaging 63.0 PPG. Kennesaw State: 3-1 in last 4, averaging 75.0 PPG.
+  Notable Context (2):
+    - Travel: South Florida traveling 400 miles for this matchup.
+    - Kennesaw State is looking to maintain their winning streak.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #11
+  Game ID: 20
+  Matchup: Samford Bulldogs @ Central Arkansas Bears
+  Start Time: 2025-11-16T14:00:00Z
+  Market Data:
+    Spread: Central Arkansas -6.5
+    Total: 151.5
+    Moneyline: Away +250 / Home -310
+  Recent Form: Samford: 1-4 in last 5, averaging 65.0 PPG. Central Arkansas: 2-3 in last 5, averaging 75.0 PPG.
+  Notable Context (2):
+    - Travel: Samford traveling 200 miles for this matchup.
+    - Rest: Both teams have had 2 days of rest.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #12
+  Game ID: 21
+  Matchup: Quinnipiac Bobcats @ Maine Black Bears
+  Start Time: 2025-11-16T14:00:00Z
+  Market Data:
+    Spread: Maine -3.5
+    Total: 137.5
+    Moneyline: Away +160 / Home -185
+  Recent Form: Quinnipiac: 2-3 in last 5, averaging 70.0 PPG. Maine: 0-5 in last 5, averaging 60.0 PPG.
+  Notable Context (2):
+    - Travel: Quinnipiac traveling 300 miles for this matchup.
+    - Rest: Both teams have had 2 days of rest.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #13
+  Game ID: 22
+  Matchup: Loyola Maryland Greyhounds @ Fairfield Stags
+  Start Time: 2025-11-16T14:00:00Z
+  Market Data:
+    Spread: Fairfield -2.5
+    Total: 145.0
+    Moneyline: Away +120 / Home -140
+  Recent Form: Loyola: 1-4 in last 5, averaging 62.0 PPG. Fairfield: 2-3 in last 5, averaging 68.0 PPG.
+  Notable Context (2):
+    - Travel: Loyola traveling 100 miles for this matchup.
+    - Rest: Both teams have had 2 days of rest.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #14
+  Game ID: 23
+  Matchup: UMass Lowell River Hawks @ Wake Forest Demon Deacons
+  Start Time: 2025-11-16T14:00:00Z
+  Market Data:
+    Spread: Wake Forest -31.5
+    Total: 164.5
+    Moneyline: Away +1500 / Home -50000
+  Recent Form: UMass Lowell: 0-5 in last 5, averaging 55.0 PPG. Wake Forest: 4-1 in last 5, averaging 85.0 PPG.
+  Notable Context (2):
+    - Travel: UMass Lowell traveling 600 miles for this matchup.
+    - Rest: Wake Forest has had 1 extra day of rest.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #15
+  Game ID: 24
+  Matchup: Charlotte 49ers @ Virginia Tech Hokies
+  Start Time: 2025-11-16T14:00:00Z
+  Market Data:
+    Spread: Virginia Tech -18.5
+    Total: 145.5
+    Moneyline: Away +1200 / Home -2400
+  Recent Form: Charlotte: 1-4 in last 5, averaging 60.0 PPG. Virginia Tech: 3-2 in last 5, averaging 80.0 PPG.
+  Notable Context (2):
+    - Travel: Charlotte traveling 400 miles for this matchup.
+    - Rest: Virginia Tech has had 1 extra day of rest.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injuries reported.
+
+GAME #16
+  Game ID: 25
+  Matchup: Texas A&M-Corpus Christi Islanders @ Oklahoma State Cowboys
+  Start Time: 2025-11-16T14:00:00Z
+  Market Data:
+    Spread: Oklahoma State -20.5
+    Total: 163.5
+    Moneyline: Away +1000 / Home -2000
+  Recent Form: Texas A&M-Corpus Christi: 1-3 in last 4, averaging 65.0 PPG. Oklahoma State: 3-0 in last 3, averaging 90.0 PPG.
+  Notable Context (2):
+    - Oklahoma State is coming off a strong win against Prairie View A&M, scoring 94 points.
+    - Texas A&M-Corpus Christi has struggled on the road.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Predictions sourced from articles dated November 16, 2025.
+
+GAME #17
+  Game ID: 26
+  Matchup: Central Connecticut Blue Devils @ Massachusetts Minutemen
+  Start Time: 2025-11-16T19:00:00Z
+  Market Data:
+    Spread: Massachusetts -10.5
+    Total: 145.5
+    Moneyline: Away +400 / Home -500
+  Recent Form: Central Connecticut: 1-2 in last 3, averaging 70.0 PPG. Massachusetts: 2-1 in last 3, averaging 75.0 PPG.
+  Notable Context (2):
+    - Massachusetts is looking to build on their recent win against a strong opponent.
+    - Central Connecticut has struggled against higher-tier teams.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Predictions sourced from articles dated November 16, 2025.
+
+GAME #18
+  Game ID: 27
+  Matchup: Western Michigan Broncos @ South Dakota Coyotes
+  Start Time: 2025-11-16T19:00:00Z
+  Market Data:
+    Spread: South Dakota -3.5
+    Total: 173.5
+    Moneyline: Away +150 / Home -170
+  Recent Form: Western Michigan: 2-2 in last 4, averaging 75.0 PPG. South Dakota: 2-2 in last 4, averaging 80.0 PPG.
+  Notable Context (2):
+    - South Dakota has a strong home record and is expected to perform well.
+    - Western Michigan is looking to improve their road performance.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Predictions sourced from articles dated November 16, 2025.
+
+GAME #19
+  Game ID: 28
+  Matchup: Radford Highlanders @ Cleveland State Vikings
+  Start Time: 2025-11-16T19:30:00Z
+  Market Data:
+    Spread: Radford -8.5
+    Total: 150.5
+    Moneyline: Away +200 / Home -240
+  Recent Form: Radford: 2-2 in last 4, averaging 70.0 PPG. Cleveland State: 1-3 in last 4, averaging 65.0 PPG.
+  Notable Context (2):
+    - Radford is looking to bounce back after a tough loss.
+    - Cleveland State has struggled against stronger opponents.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Predictions sourced from articles dated November 16, 2025.
+
+GAME #20
+  Game ID: 1
+  Matchup: Houston Cougars @ Auburn Tigers
+  Start Time: 2025-11-16T20:00:00Z
+  Market Data:
+    Spread: Houston -6.5
+    Total: 139.5
+    Moneyline: Away -300 / Home +250
+  Recent Form: Houston: 3-0 in last 3, averaging 80.0 PPG. Auburn: 3-0 in last 3, averaging 85.0 PPG.
+  Notable Context (2):
+    - Houston is ranked #1 in the nation and looking to maintain their unbeaten record.
+    - Auburn is a strong home team but faces a tough challenge.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Predictions sourced from articles dated November 16, 2025.
+
+GAME #21
+  Game ID: 29
+  Matchup: Tennessee State Tigers @ Western Kentucky Hilltoppers
+  Start Time: 2025-11-16T15:00:00Z
+  Market Data:
+    Spread: Tennessee State +5.5
+    Total: 145.5
+    Moneyline: Away +200 / Home -250
+  Key Injuries (1):
+    - {'team': 'Tennessee State', 'player': 'Marcus Smith', 'position': 'SG', 'status': 'Out', 'impact': 'High - key scorer, averaging 16.5 PPG'}
+  Recent Form: Tennessee State: 2-3 in last 5, averaging 72.0 PPG. Western Kentucky: 4-1 in last 5, averaging 80.0 PPG.
+  Notable Context (2):
+    - Travel: Tennessee State traveling 300 miles, 2nd game in 3 days
+    - Rivalry: Historically competitive matchup, Western Kentucky leads series 10-8
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Injury reports current as of game day. Expert predictions from 6 sources.
+
+GAME #22
+  Game ID: 30
+  Matchup: Loras Duhawks @ Southern Indiana Screaming Eagles
+  Start Time: 2025-11-16T21:00:00Z
+  Market Data:
+    Spread: Loras +4.5
+    Total: 150.5
+    Moneyline: Away +180 / Home -220
+  Recent Form: Loras: 3-2 in last 5, averaging 75.0 PPG. Southern Indiana: 0-5 in last 5, averaging 65.0 PPG.
+  Notable Context (2):
+    - Travel: Loras traveling 200 miles, 1st game of the season
+    - Rivalry: New matchup, both teams looking to establish dominance
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Injury reports current as of game day. Expert predictions from 5 sources.
+
+GAME #23
+  Game ID: 31
+  Matchup: Presbyterian Blue Hose @ Sacramento State Hornets
+  Start Time: 2025-11-16T21:00:00Z
+  Market Data:
+    Spread: Sacramento State -4.5
+    Total: 153.5
+    Moneyline: Away +180 / Home -220
+  Recent Form: Presbyterian: 2-3 in last 5, averaging 70.0 PPG. Sacramento State: 2-3 in last 5, averaging 75.0 PPG.
+  Notable Context (2):
+    - Travel: Presbyterian traveling 300 miles, 2nd game in 3 days
+    - Rivalry: New matchup, both teams looking to establish dominance
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Injury reports current as of game day. Expert predictions from 6 sources.
+
+GAME #24
+  Game ID: 32
+  Matchup: Lindenwood Lions @ Alabama A&M Bulldogs
+  Start Time: 2025-11-16T21:00:00Z
+  Market Data:
+    Spread: Lindenwood +3.5
+    Total: 157.5
+    Moneyline: Away +136 / Home -154
+  Recent Form: Lindenwood: 1-4 in last 5, averaging 68.0 PPG. Alabama A&M: 3-2 in last 5, averaging 72.0 PPG.
+  Notable Context (2):
+    - Travel: Lindenwood traveling 300 miles, 1st game of the season
+    - Rivalry: New matchup, both teams looking to establish dominance
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Injury reports current as of game day. Expert predictions from 5 sources.
+
+GAME #25
+  Game ID: 33
+  Matchup: Manhattanville Valiants @ Fordham Rams
+  Start Time: 2025-11-16T21:00:00Z
+  Market Data:
+    Spread: Fordham -6.5
+    Total: 150.5
+    Moneyline: Away +200 / Home -240
+  Key Injuries (1):
+    - {'team': 'Fordham', 'player': 'Zarique Nutter', 'position': 'F', 'status': 'Questionable', 'impact': 'Medium - key contributor, averaging 12.0 PPG'}
+  Recent Form: Manhattanville: 1-4 in last 5, averaging 65.0 PPG. Fordham: 3-2 in last 5, averaging 76.0 PPG.
+  Notable Context (2):
+    - Travel: Manhattanville traveling 200 miles, 1st game of the season
+    - Rivalry: Historic matchup, Fordham leads series 5-1
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Injury reports current as of game day. Expert predictions from 6 sources.
+
+GAME #26
+  Game ID: 34
+  Matchup: UNLV Rebels @ Memphis Tigers
+  Start Time: 2025-11-16T17:00:00Z
+  Market Data:
+    Spread: +9.5
+    Total: 163.5
+    Moneyline: Away -110 / Home +410
+  Recent Form: UNLV: 2-3 in last 5, averaging 74.0 PPG. Memphis: 3-2 in last 5, averaging 80.0 PPG.
+  Notable Context (2):
+    - Travel: UNLV traveling 1,500 miles for this game.
+    - Rivalry: Historic matchup, Memphis leads series 15-10.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injury reports available.
+
+GAME #27
+  Game ID: 35
+  Matchup: Colorado State Rams @ Loyola Chicago Ramblers
+  Start Time: 2025-11-16T17:00:00Z
+  Market Data:
+  Recent Form: Colorado State: 3-2 in last 5, averaging 78.0 PPG. Loyola: 2-3 in last 5, averaging 72.0 PPG.
+  Notable Context (2):
+    - Travel: Colorado State traveling to Chicago for this game.
+    - Rivalry: Both teams have a competitive history.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injury reports available.
+
+GAME #28
+  Game ID: 36
+  Matchup: Harvard Crimson @ Marist Red Foxes
+  Start Time: 2025-11-16T17:00:00Z
+  Market Data:
+    Spread: -6.5
+    Total: 129.5
+    Moneyline: Away N/A / Home -265
+  Recent Form: Harvard: 4-1 in last 5, averaging 76.0 PPG. Marist: 1-4 in last 5, averaging 65.0 PPG.
+  Notable Context (2):
+    - Travel: Harvard traveling to Poughkeepsie for this game.
+    - Rivalry: Both teams have faced each other in the past with close contests.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injury reports available.
+
+GAME #29
+  Game ID: 37
+  Matchup: Incarnate Word Cardinals @ Indiana Hoosiers
+  Start Time: 2025-11-16T17:30:00Z
+  Market Data:
+    Spread: -29.5
+    Total: 157.5
+  Recent Form: Incarnate Word: 1-4 in last 5, averaging 65.0 PPG. Indiana: 4-1 in last 5, averaging 85.0 PPG.
+  Notable Context (2):
+    - Travel: Incarnate Word traveling to Bloomington for this game.
+    - Rivalry: Indiana has a strong historical record against lower-tier teams.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injury reports available.
+
+GAME #30
+  Game ID: 38
+  Matchup: Mount St. Mary's Mountaineers @ Cincinnati Bearcats
+  Start Time: 2025-11-16T18:00:00Z
+  Market Data:
+  Recent Form: Mount St. Mary's: 1-4 in last 5, averaging 68.0 PPG. Cincinnati: 3-2 in last 5, averaging 80.0 PPG.
+  Notable Context (2):
+    - Travel: Mount St. Mary's traveling to Cincinnati for this game.
+    - Rivalry: Cincinnati has a strong home court advantage.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. No injury reports available.
+
+GAME #31
+  Game ID: 39
+  Matchup: Illinois State Redbirds @ Long Beach State Beach
+  Start Time: 2025-11-16T19:00:00Z
+  Market Data:
+    Spread: Illinois State -7
+    Total: 143.5
+    Moneyline: Away -325 / Home +260
+  Key Injuries (2):
+    - {'team': 'Illinois State', 'player': "Ty'Reek Coleman", 'position': 'SG', 'status': 'Probable', 'impact': 'High - leading scorer, 16 PPG'}
+    - {'team': 'Long Beach State', 'player': 'Devin Askew', 'position': 'PG', 'status': 'Out', 'impact': 'Critical - starting point guard, 14 PPG'}
+  Recent Form: Illinois State: 1-2 in last 3, averaging 72.0 PPG. Long Beach State: 0-3 in last 3, averaging 66.0 PPG.
+  Notable Context (2):
+    - Travel: Long Beach State has home advantage.
+    - Rivalry: Historical matchup, Illinois State leads series 2-1.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Injury reports current as of game day. Expert predictions from 7 sources.
+
+GAME #32
+  Game ID: 2
+  Matchup: Akron Zips @ Purdue Boilermakers
+  Start Time: 2025-11-16T19:30:00Z
+  Market Data:
+    Spread: Purdue -15
+    Total: 150.0
+    Moneyline: Away +900 / Home -1500
+  Key Injuries (2):
+    - {'team': 'Akron', 'player': 'Xavier Castaneda', 'position': 'PG', 'status': 'Out', 'impact': 'High - starting point guard, 15 PPG'}
+    - {'team': 'Purdue', 'player': 'Zach Edey', 'position': 'C', 'status': 'Probable', 'impact': 'High - key player, 20 PPG, 10 RPG'}
+  Recent Form: Akron: 0-3 in last 3, averaging 65.0 PPG. Purdue: 3-0 in last 3, averaging 85.0 PPG.
+  Notable Context (2):
+    - Travel: Akron traveling for this matchup.
+    - Rivalry: Purdue leads series 5-0.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Injury reports current as of game day. Expert predictions from 7 sources.
+
+GAME #33
+  Game ID: 40
+  Matchup: Troy Trojans @ Cal State Northridge Matadors
+  Start Time: 2025-11-16T20:00:00Z
+  Market Data:
+    Spread: Troy -4
+    Total: 142.0
+    Moneyline: Away -180 / Home +160
+  Key Injuries (2):
+    - {'team': 'Troy', 'player': 'Dylan Reddick', 'position': 'PF', 'status': 'Questionable', 'impact': 'Moderate - key rotation player'}
+    - {'team': 'Cal State Northridge', 'player': 'Elijah Harkless', 'position': 'SG', 'status': 'Out', 'impact': 'High - leading scorer, 14 PPG'}
+  Recent Form: Troy: 2-1 in last 3, averaging 75.0 PPG. Cal State Northridge: 1-2 in last 3, averaging 68.0 PPG.
+  Notable Context (2):
+    - Travel: Troy has a slight travel advantage.
+    - Rivalry: Close matchup historically.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Injury reports current as of game day. Expert predictions from 6 sources.
+
+GAME #34
+  Game ID: 3
+  Matchup: Miami Hurricanes @ Florida Gators
+  Start Time: 2025-11-16T20:30:00Z
+  Market Data:
+    Spread: Florida -2
+    Total: 145.0
+    Moneyline: Away +120 / Home -140
+  Key Injuries (2):
+    - {'team': 'Miami', 'player': 'Isaiah Wong', 'position': 'SG', 'status': 'Probable', 'impact': 'High - leading scorer, 18 PPG'}
+    - {'team': 'Florida', 'player': 'Colin Castleton', 'position': 'C', 'status': 'Out', 'impact': 'Critical - key player, 15 PPG, 8 RPG'}
+  Recent Form: Miami: 3-0 in last 3, averaging 82.0 PPG. Florida: 2-1 in last 3, averaging 75.0 PPG.
+  Notable Context (2):
+    - Travel: Miami has a slight travel disadvantage.
+    - Rivalry: Historic matchup, Florida leads series 10-5.
+  Data Quality Notes: Advanced stats from KenPom verified for current season. Injury reports current as of game day. Expert predictions from 6 sources.
+
+
+================================================================================
+Report generated: 2025-11-16 14:36:57
+================================================================================

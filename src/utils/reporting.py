@@ -223,9 +223,14 @@ class ReportGenerator:
             "",
         ]
         
-        total_units = sum(p.stake_units for p in approved_picks)
-        total_amount = sum(p.stake_amount for p in approved_picks)
+        # Separate favorites from other picks
+        favorite_picks = [p for p in approved_picks if p.favorite]
+        other_picks = [p for p in approved_picks if not p.favorite]
         
+        total_units = sum(p.stake_units for p in favorite_picks)
+        total_amount = sum(p.stake_amount for p in favorite_picks)
+        
+        lines.append(f"Total Picks: {len(approved_picks)} ({len(favorite_picks)} favorites, {len(other_picks)} others)")
         lines.append(f"Total Units: {total_units:.2f}")
         lines.append(f"Total Amount: ${total_amount:.2f}")
         lines.append("")
@@ -262,91 +267,30 @@ class ReportGenerator:
             finally:
                 session.close()
         
-        for i, pick in enumerate(approved_picks, 1):
-            lines.append(f"PICK #{i}")
+        # Show favorites first
+        if favorite_picks:
+            lines.append("⭐ FAVORITE PICKS (Place These)")
+            lines.append("=" * 80)
+            lines.append("")
             
-            # Get game info
-            game_info = game_info_map.get(pick.game_id, {})
-            team1 = game_info.get('team1', 'Team 1')
-            team2 = game_info.get('team2', 'Team 2')
-            venue = game_info.get('venue', '')
+            for i, pick in enumerate(favorite_picks, 1):
+                lines.append(f"FAVORITE #{i}")
+                self._format_pick_details(lines, pick, game_info_map, betting_lines_map, i)
             
-            # Format matchup
-            if team1 and team2:
-                matchup = f"{team2} @ {team1}"
-                if venue:
-                    matchup += f" ({venue})"
-                lines.append(f"  Matchup: {matchup}")
-            else:
-                lines.append(f"  Game ID: {pick.game_id}")
+            lines.append("")
+            lines.append("-" * 80)
+            lines.append("")
+        
+        # Then show other picks
+        if other_picks:
+            lines.append("📋 ALL OTHER PICKS (For Reference)")
+            lines.append("=" * 80)
+            lines.append("")
             
-            lines.append(f"  Bet Type: {pick.bet_type.value.upper()}")
+            for i, pick in enumerate(other_picks, 1):
+                lines.append(f"PICK #{i}")
+                self._format_pick_details(lines, pick, game_info_map, betting_lines_map, len(favorite_picks) + i)
             
-            # Determine which team is being bet on
-            # First, try to use the original selection text from Picker if available
-            if pick.selection_text:
-                # Use the original selection text which should include team name
-                lines.append(f"  Selection: {pick.selection_text}")
-            else:
-                # Fallback: determine from line and bet type
-                selection_text = ""
-                if pick.bet_type.value == "spread":
-                    if pick.line > 0:
-                        # Positive line = betting on away team (team2) to cover
-                        selection_text = f"{team2} +{pick.line:.1f}"
-                    elif pick.line < 0:
-                        # Negative line = betting on home team (team1) to cover
-                        selection_text = f"{team1} {pick.line:.1f}"
-                    else:
-                        selection_text = "Pick'em"
-                    lines.append(f"  Selection: {selection_text}")
-                elif pick.bet_type.value == "total":
-                    # For totals, try to extract Over/Under from rationale if available
-                    over_under = ""
-                    if pick.rationale:
-                        rationale_lower = pick.rationale.lower()
-                        if "over" in rationale_lower:
-                            over_under = "Over"
-                        elif "under" in rationale_lower:
-                            over_under = "Under"
-                    
-                    if over_under:
-                        lines.append(f"  Selection: {over_under} {pick.line:.1f}")
-                    else:
-                        lines.append(f"  Total: {pick.line:.1f}")
-                        lines.append(f"  Note: Check Over/Under on {pick.book} for this total")
-                elif pick.bet_type.value == "moneyline":
-                    # For moneyline, try to extract team name from rationale
-                    team_from_rationale = None
-                    if pick.rationale:
-                        # Look for team names in rationale
-                        for team in [team1, team2]:
-                            if team and team.lower() in pick.rationale.lower():
-                                team_from_rationale = team
-                                break
-                    
-                    if team_from_rationale:
-                        selection_text = f"{team_from_rationale} (ML {pick.odds:+d})"
-                    else:
-                        # Infer from odds
-                        if pick.odds < 0:
-                            # Favorite - more likely home team
-                            selection_text = f"{team1} (ML {pick.odds:+d}) - Favorite"
-                        else:
-                            # Underdog - more likely away team
-                            selection_text = f"{team2} (ML {pick.odds:+d}) - Underdog"
-                    lines.append(f"  Selection: {selection_text}")
-            
-            if pick.line and pick.bet_type.value not in ["total", "moneyline"]:
-                lines.append(f"  Line: {pick.line:+.1f}")
-            lines.append(f"  Odds: {pick.odds:+d}")
-            lines.append(f"  Units: {pick.stake_units:.2f}")
-            lines.append(f"  Amount: ${pick.stake_amount:.2f}")
-            lines.append(f"  Book: {pick.book}")
-            lines.append(f"  Confidence: {pick.confidence:.1%}")
-            lines.append(f"  Expected Value: {pick.expected_value:.3f}")
-            if pick.rationale:
-                lines.append(f"  Rationale: {pick.rationale}")
             lines.append("")
         
         lines.append("=" * 80)
@@ -354,6 +298,104 @@ class ReportGenerator:
         lines.append("=" * 80)
         
         return "\n".join(lines)
+    
+    def _format_pick_details(
+        self,
+        lines: List[str],
+        pick: 'Pick',
+        game_info_map: Dict[int, Dict[str, str]],
+        betting_lines_map: Dict[int, Any],
+        pick_number: int
+    ) -> None:
+        """Helper method to format pick details for betting card"""
+        # Get game info
+        game_info = game_info_map.get(pick.game_id, {})
+        team1 = game_info.get('team1', 'Team 1')
+        team2 = game_info.get('team2', 'Team 2')
+        venue = game_info.get('venue', '')
+        
+        # Format matchup
+        if team1 and team2:
+            matchup = f"{team2} @ {team1}"
+            if venue:
+                matchup += f" ({venue})"
+            lines.append(f"  Matchup: {matchup}")
+        else:
+            lines.append(f"  Game ID: {pick.game_id}")
+        
+        lines.append(f"  Bet Type: {pick.bet_type.value.upper()}")
+        
+        # Determine which team is being bet on
+        # First, try to use the original selection text from Picker if available
+        if pick.selection_text:
+            # Use the original selection text which should include team name
+            lines.append(f"  Selection: {pick.selection_text}")
+        else:
+            # Fallback: determine from line and bet type
+            selection_text = ""
+            if pick.bet_type.value == "spread":
+                if pick.line > 0:
+                    # Positive line = betting on away team (team2) to cover
+                    selection_text = f"{team2} +{pick.line:.1f}"
+                elif pick.line < 0:
+                    # Negative line = betting on home team (team1) to cover
+                    selection_text = f"{team1} {pick.line:.1f}"
+                else:
+                    selection_text = "Pick'em"
+                lines.append(f"  Selection: {selection_text}")
+            elif pick.bet_type.value == "total":
+                # For totals, try to extract Over/Under from rationale if available
+                over_under = ""
+                if pick.rationale:
+                    rationale_lower = pick.rationale.lower()
+                    if "over" in rationale_lower:
+                        over_under = "Over"
+                    elif "under" in rationale_lower:
+                        over_under = "Under"
+                
+                if over_under:
+                    lines.append(f"  Selection: {over_under} {pick.line:.1f}")
+                else:
+                    lines.append(f"  Total: {pick.line:.1f}")
+                    lines.append(f"  Note: Check Over/Under on {pick.book} for this total")
+            elif pick.bet_type.value == "moneyline":
+                # For moneyline, try to extract team name from rationale
+                team_from_rationale = None
+                if pick.rationale:
+                    # Look for team names in rationale
+                    for team in [team1, team2]:
+                        if team and team.lower() in pick.rationale.lower():
+                            team_from_rationale = team
+                            break
+                
+                if team_from_rationale:
+                    selection_text = f"{team_from_rationale} (ML {pick.odds:+d})"
+                else:
+                    # Infer from odds
+                    if pick.odds < 0:
+                        # Favorite - more likely home team
+                        selection_text = f"{team1} (ML {pick.odds:+d}) - Favorite"
+                    else:
+                        # Underdog - more likely away team
+                        selection_text = f"{team2} (ML {pick.odds:+d}) - Underdog"
+                lines.append(f"  Selection: {selection_text}")
+        
+        if pick.line and pick.bet_type.value not in ["total", "moneyline"]:
+            lines.append(f"  Line: {pick.line:+.1f}")
+        lines.append(f"  Odds: {pick.odds:+d}")
+        
+        # Show stake info only for favorites (they're the ones being bet)
+        if pick.favorite:
+            lines.append(f"  Units: {pick.stake_units:.2f}")
+            lines.append(f"  Amount: ${pick.stake_amount:.2f}")
+        
+        lines.append(f"  Book: {pick.book}")
+        lines.append(f"  Confidence Score: {pick.confidence_score}/10")
+        lines.append(f"  Confidence: {pick.confidence:.1%}")
+        lines.append(f"  Expected Value: {pick.expected_value:.3f}")
+        if pick.rationale:
+            lines.append(f"  Rationale: {pick.rationale}")
+        lines.append("")
     
     def generate_presidents_report(
         self, 

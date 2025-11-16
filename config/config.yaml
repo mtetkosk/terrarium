@@ -37,38 +37,35 @@ agents:
 
 llm:
   # Default model (used if agent-specific model not specified)
-  model: "gpt-4o-mini"  # Options: gpt-4o-mini (cheapest), gpt-4o, gpt-4-turbo
+  model: "gpt-5-mini"  # Options: gpt-4o-mini (cheapest), gpt-4o, gpt-4-turbo
   temperature_default: 0.7
   
   # Per-agent model optimization
   # Model mapping: gpt-5-mini → gpt-4o-mini, gpt-5.1 → gpt-4o, gpt-5-nano → gpt-4o-mini
   agent_models:
     # Planning/Coordinator (Medium importance, 1x per run)
-    coordinator: "gpt-4o-mini"  # gpt-5-mini equivalent
+    coordinator: "gpt-5-mini"  # gpt-5-mini equivalent
     
     # President (Very High importance, final gatekeeper, 1x per run)
-    president: "gpt-4o"  # gpt-5.1 equivalent - best reasoning where it counts most
+    president: "gpt-5.1"  # gpt-5.1 equivalent - best reasoning where it counts most
     
     # Researcher (High importance, many calls per run)
-    researcher: "gpt-4o-mini"  # gpt-5-mini equivalent - tool use + web, good reasoning, cheaper
+    researcher: "gpt-5-mini"  # gpt-5-mini equivalent - tool use + web, good reasoning, cheaper
     
     # Modeler (High importance, per game)
-    modeler: "gpt-4o-mini"  # gpt-5-mini equivalent - numbers + probabilities, heavy math in code
+    modeler: "gpt-5-mini"  # gpt-5-mini equivalent - numbers + probabilities, heavy math in code
     
     # Picker (High importance, 1-2x per run)
-    picker: "gpt-4o-mini"  # gpt-5-mini equivalent - filters edges into picks
+    picker: "gpt-5-mini"  # gpt-5-mini equivalent - filters edges into picks
     
     # Banker (High importance, risk management, 1x per run)
-    banker: "gpt-4o-mini"  # gpt-5-mini equivalent - sizing + risk buckets, math aided by code
+    banker: "gpt-5-mini"  # gpt-5-mini equivalent - sizing + risk buckets, math aided by code
     
     # Compliance (Medium importance, 1x per run)
-    compliance: "gpt-4o-mini"  # gpt-5-nano equivalent - mostly rule-checking + commentary
+    compliance: "gpt-5-nano"  # gpt-5-nano equivalent - mostly rule-checking + commentary
     
     # Auditor (Medium importance, 1x per day/week)
-    auditor: "gpt-4o-mini"  # gpt-5-nano equivalent - summarization + pattern spotting
-    
-    # Gambler (Low importance, flavor only, 1x per run)
-    gambler: "gpt-4o-mini"  # gpt-5-nano equivalent - cheap fun, no decision power
+    auditor: "gpt-5-nano"  # gpt-5-nano equivalent - summarization + pattern spotting
 
 scheduler:
   run_time: "09:00"  # Daily run time

@@ -1,0 +1,91 @@
+================================================================================
+BANKER AGENT REPORT - 2025-11-16
+================================================================================
+
+Report Date: 2025-11-16
+Generated: 2025-11-16 14:04:10
+
+📋 METADATA
+--------------------------------------------------------------------------------
+sized_picks: 5
+
+📊 AGENT OUTPUT
+--------------------------------------------------------------------------------
+
+Bankroll Status:
+  Current Bankroll: $100.00
+  Base Unit Size: 1.00
+  Risk Mode: normal
+  Notes: Current bankroll is stable with a total of $5 wagered. No recent drawdowns.
+
+Total Sized Picks: 5
+
+Daily Exposure Summary:
+  Number of Bets: 5
+  Total Units Risked: 11.00
+  Concentration: All bets are from NCAA Basketball, maintaining focus on a single sport.
+
+SIZED PICK #1
+  Game ID: 11
+  Bet Type: SPREAD
+  Selection: UMBC -6.5
+  Odds: -125
+  Units: 2.00
+  Edge: 0.140
+  Confidence: 80.0%
+  Stake Rationale:
+    - Edge estimate of 0.14 and high confidence (0.8) justify a moderate stake.
+    - Strong offensive advantage and expert consensus support this pick.
+
+SIZED PICK #2
+  Game ID: 12
+  Bet Type: SPREAD
+  Selection: Kent State -4.5
+  Odds: -110
+  Units: 1.00
+  Edge: 0.050
+  Confidence: 80.0%
+  Stake Rationale:
+    - Lower edge estimate (0.05) suggests a conservative stake.
+    - High confidence but lower expected value leads to a smaller unit size.
+
+SIZED PICK #3
+  Game ID: 13
+  Bet Type: SPREAD
+  Selection: Morehead State -10.5
+  Odds: -110
+  Units: 3.00
+  Edge: 0.220
+  Confidence: 85.0%
+  Stake Rationale:
+    - High edge estimate (0.22) and confidence (0.85) support a larger stake.
+    - Significant offensive edge and expert backing enhance the rationale.
+
+SIZED PICK #4
+  Game ID: 15
+  Bet Type: SPREAD
+  Selection: Western Carolina -11.5
+  Odds: -110
+  Units: 3.00
+  Edge: 0.230
+  Confidence: 85.0%
+  Stake Rationale:
+    - Similar to Morehead State, high edge and confidence warrant a larger stake.
+    - Strong offensive efficiency and expert consensus further justify this.
+
+SIZED PICK #5
+  Game ID: 14
+  Bet Type: SPREAD
+  Selection: Ohio State -8.5
+  Odds: -110
+  Units: 2.00
+  Edge: 0.100
+  Confidence: 80.0%
+  Stake Rationale:
+    - Moderate edge (0.1) and high confidence (0.8) suggest a moderate stake.
+    - Strong historical performance at home supports this selection.
+
+
+================================================================================
+Report generated: 2025-11-16 14:04:10
+================================================================================
