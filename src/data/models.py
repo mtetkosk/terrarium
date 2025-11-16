@@ -1,9 +1,11 @@
-"""Pydantic data models for the terrarium system"""
+"""Data models for the terrarium system"""
+
+from __future__ import annotations
 
 from datetime import datetime, date
 from enum import Enum
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from typing import List, Optional, Any, Dict
+from dataclasses import dataclass, field
 
 
 class BetType(str, Enum):
@@ -40,214 +42,216 @@ class RevisionRequestType(str, Enum):
     VALIDATION = "validation"
 
 
-class Game(BaseModel):
+@dataclass
+class Game:
     """Game model"""
+    team1: str
+    team2: str
+    date: date
     id: Optional[int] = None
-    team1: str = Field(..., description="Home team name")
-    team2: str = Field(..., description="Away team name")
-    date: date = Field(..., description="Game date")
-    venue: Optional[str] = Field(None, description="Venue name")
-    status: GameStatus = Field(GameStatus.SCHEDULED, description="Game status")
-    result: Optional[Dict[str, Any]] = Field(None, description="Game result with scores")
-    
-    class Config:
-        use_enum_values = True
+    venue: Optional[str] = None
+    status: GameStatus = GameStatus.SCHEDULED
+    result: Optional[Dict[str, Any]] = None
 
 
-class BettingLine(BaseModel):
+@dataclass
+class BettingLine:
     """Betting line model"""
+    game_id: int
+    book: str
+    bet_type: BetType
+    line: float
+    odds: int
     id: Optional[int] = None
-    game_id: int = Field(..., description="Associated game ID")
-    book: str = Field(..., description="Sportsbook name")
-    bet_type: BetType = Field(..., description="Type of bet")
-    line: float = Field(..., description="Line value (spread/total) or 0 for moneyline")
-    odds: int = Field(..., description="American odds (e.g., -110, +150)")
-    timestamp: datetime = Field(default_factory=datetime.now, description="When line was captured")
-    
-    class Config:
-        use_enum_values = True
+    timestamp: datetime = field(default_factory=datetime.now)
 
 
-class Injury(BaseModel):
+@dataclass
+class Injury:
     """Injury report model"""
-    player: str = Field(..., description="Player name")
-    team: str = Field(..., description="Team name")
-    injury: str = Field(..., description="Injury description")
-    status: str = Field(..., description="Status (out, questionable, probable)")
-    position: Optional[str] = Field(None, description="Player position")
+    player: str
+    team: str
+    injury: str
+    status: str
+    position: Optional[str] = None
 
 
-class TeamStats(BaseModel):
+@dataclass
+class TeamStats:
     """Team statistics model"""
-    team: str = Field(..., description="Team name")
-    wins: int = Field(..., description="Number of wins")
-    losses: int = Field(..., description="Number of losses")
-    points_per_game: float = Field(..., description="Points per game")
-    points_allowed_per_game: float = Field(..., description="Points allowed per game")
-    offensive_rating: Optional[float] = Field(None, description="Offensive rating")
-    defensive_rating: Optional[float] = Field(None, description="Defensive rating")
-    pace: Optional[float] = Field(None, description="Pace of play")
-    additional_stats: Optional[Dict[str, Any]] = Field(None, description="Additional statistics")
+    team: str
+    wins: int
+    losses: int
+    points_per_game: float
+    points_allowed_per_game: float
+    offensive_rating: Optional[float] = None
+    defensive_rating: Optional[float] = None
+    pace: Optional[float] = None
+    additional_stats: Optional[Dict[str, Any]] = None
 
 
-class GameInsight(BaseModel):
+@dataclass
+class GameInsight:
     """Game insight bundle from Researcher"""
+    game_id: int
     id: Optional[int] = None
-    game_id: int = Field(..., description="Associated game ID")
-    injuries: List[Injury] = Field(default_factory=list, description="Injury reports")
-    team1_stats: Optional[TeamStats] = Field(None, description="Team 1 statistics")
-    team2_stats: Optional[TeamStats] = Field(None, description="Team 2 statistics")
-    matchup_notes: str = Field(default="", description="Matchup context and notes")
-    confidence_factors: Dict[str, float] = Field(
-        default_factory=dict,
-        description="Confidence factors (e.g., data_quality, injury_impact)"
-    )
-    rest_days_team1: Optional[int] = Field(None, description="Days of rest for team 1")
-    rest_days_team2: Optional[int] = Field(None, description="Days of rest for team 2")
-    travel_impact: Optional[str] = Field(None, description="Travel impact notes")
-    rivalry: bool = Field(False, description="Is this a rivalry game?")
-    created_at: datetime = Field(default_factory=datetime.now)
+    injuries: List[Injury] = field(default_factory=list)
+    team1_stats: Optional[TeamStats] = None
+    team2_stats: Optional[TeamStats] = None
+    matchup_notes: str = ""
+    confidence_factors: Dict[str, float] = field(default_factory=dict)
+    rest_days_team1: Optional[int] = None
+    rest_days_team2: Optional[int] = None
+    travel_impact: Optional[str] = None
+    rivalry: bool = False
+    created_at: datetime = field(default_factory=datetime.now)
 
 
-class Prediction(BaseModel):
+@dataclass
+class Prediction:
     """Prediction model from Modeler"""
+    game_id: int
+    model_type: str
+    predicted_spread: float
+    win_probability_team1: float
+    win_probability_team2: float
+    ev_estimate: float
+    confidence_score: float
     id: Optional[int] = None
-    game_id: int = Field(..., description="Associated game ID")
-    model_type: str = Field(..., description="Model type used")
-    predicted_spread: float = Field(..., description="Predicted point spread (team1 - team2)")
-    predicted_total: Optional[float] = Field(None, description="Predicted total points")
-    win_probability_team1: float = Field(..., description="Win probability for team 1")
-    win_probability_team2: float = Field(..., ge=0.0, le=1.0, description="Win probability for team 2")
-    ev_estimate: float = Field(..., description="Expected value estimate")
-    confidence_score: float = Field(..., ge=0.0, le=1.0, description="Model confidence")
-    mispricing_detected: bool = Field(False, description="Whether mispricing was detected")
-    created_at: datetime = Field(default_factory=datetime.now)
+    predicted_total: Optional[float] = None
+    mispricing_detected: bool = False
+    created_at: datetime = field(default_factory=datetime.now)
 
 
-class Pick(BaseModel):
+@dataclass
+class Pick:
     """Pick model from Picker"""
+    bet_type: BetType
+    odds: int
+    rationale: str
+    confidence: float
+    expected_value: float
+    book: str
     id: Optional[int] = None
-    game_id: int = Field(0, description="Associated game ID (0 for parlays)")
-    bet_type: BetType = Field(..., description="Type of bet")
-    line: float = Field(0.0, description="Line value (0 for parlays)")
-    odds: int = Field(..., description="American odds")
-    stake_units: float = Field(0.0, description="Stake in units (assigned by Banker)")
-    stake_amount: float = Field(0.0, description="Stake in dollars")
-    rationale: str = Field(..., description="Reasoning for the pick")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence level")
-    expected_value: float = Field(..., description="Expected value")
-    book: str = Field(..., description="Sportsbook")
-    parlay_legs: Optional[List[int]] = Field(None, description="List of pick IDs that make up this parlay (if bet_type is PARLAY)")
-    created_at: datetime = Field(default_factory=datetime.now)
-    
-    class Config:
-        use_enum_values = True
+    game_id: int = 0
+    line: float = 0.0
+    stake_units: float = 0.0
+    stake_amount: float = 0.0
+    parlay_legs: Optional[List[int]] = None
+    selection_text: Optional[str] = None  # Original selection text from Picker (e.g., "Team A +3.5", "Over 160.5")
+    created_at: datetime = field(default_factory=datetime.now)
 
 
-class Bet(BaseModel):
+@dataclass
+class Bet:
     """Bet model (placed bet)"""
+    pick_id: int
     id: Optional[int] = None
-    pick_id: int = Field(..., description="Associated pick ID")
-    placed_at: datetime = Field(default_factory=datetime.now, description="When bet was placed")
-    result: BetResult = Field(BetResult.PENDING, description="Bet result")
-    payout: float = Field(0.0, description="Payout amount")
-    profit_loss: float = Field(0.0, description="Profit or loss")
-    settled_at: Optional[datetime] = Field(None, description="When bet was settled")
-    
-    class Config:
-        use_enum_values = True
+    placed_at: datetime = field(default_factory=datetime.now)
+    result: BetResult = BetResult.PENDING
+    payout: float = 0.0
+    profit_loss: float = 0.0
+    settled_at: Optional[datetime] = None
 
 
-class Bankroll(BaseModel):
+@dataclass
+class Bankroll:
     """Bankroll model"""
+    balance: float
     id: Optional[int] = None
-    date: date = Field(default_factory=date.today, description="Date")
-    balance: float = Field(..., description="Current balance")
-    total_wagered: float = Field(0.0, description="Total amount wagered")
-    total_profit: float = Field(0.0, description="Total profit/loss")
-    active_bets: int = Field(0, description="Number of active bets")
-    created_at: datetime = Field(default_factory=datetime.now)
+    date: date = field(default_factory=date.today)
+    total_wagered: float = 0.0
+    total_profit: float = 0.0
+    active_bets: int = 0
+    created_at: datetime = field(default_factory=datetime.now)
 
 
-class ComplianceResult(BaseModel):
+@dataclass
+class ComplianceResult:
     """Compliance validation result"""
-    pick_id: int = Field(..., description="Pick ID being validated")
-    approved: bool = Field(..., description="Whether pick is approved")
-    reasons: List[str] = Field(default_factory=list, description="Approval/rejection reasons")
-    risk_level: str = Field(..., description="Risk level (low, medium, high)")
-    created_at: datetime = Field(default_factory=datetime.now)
+    pick_id: int
+    approved: bool
+    risk_level: str
+    reasons: List[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.now)
 
 
-class RevisionRequest(BaseModel):
+@dataclass
+class RevisionRequest:
     """Request for revision from President"""
+    request_type: RevisionRequestType
+    target_agent: str
+    feedback: str
     id: Optional[int] = None
-    request_type: RevisionRequestType = Field(..., description="Type of revision needed")
-    target_agent: str = Field(..., description="Agent that needs to revise")
-    original_output_id: Optional[int] = Field(None, description="ID of original output")
-    feedback: str = Field(..., description="Feedback on what needs to be revised")
-    priority: str = Field("medium", description="Priority (low, medium, high)")
-    created_at: datetime = Field(default_factory=datetime.now)
-    resolved: bool = Field(False, description="Whether revision is complete")
-    resolved_at: Optional[datetime] = Field(None, description="When revision was resolved")
+    original_output_id: Optional[int] = None
+    priority: str = "medium"
+    created_at: datetime = field(default_factory=datetime.now)
+    resolved: bool = False
+    resolved_at: Optional[datetime] = None
 
 
-class CardReview(BaseModel):
+@dataclass
+class CardReview:
     """Card review from President"""
-    date: date = Field(default_factory=date.today)
-    approved: bool = Field(..., description="Whether card is approved")
-    picks_approved: List[int] = Field(default_factory=list, description="Approved pick IDs")
-    picks_rejected: List[int] = Field(default_factory=list, description="Rejected pick IDs")
-    review_notes: str = Field(default="", description="Review notes")
-    strategic_directives: Dict[str, Any] = Field(default_factory=dict, description="Strategic adjustments")
-    revision_requests: List[RevisionRequest] = Field(default_factory=list, description="Revision requests")
-    created_at: datetime = Field(default_factory=datetime.now)
+    approved: bool
+    date: date = field(default_factory=date.today)
+    picks_approved: List[int] = field(default_factory=list)
+    picks_rejected: List[int] = field(default_factory=list)
+    review_notes: str = ""
+    strategic_directives: Dict[str, Any] = field(default_factory=dict)
+    revision_requests: List[RevisionRequest] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.now)
 
 
-class DailyReport(BaseModel):
+@dataclass
+class DailyReport:
     """Daily performance report from Auditor"""
-    date: date = Field(default_factory=date.today)
-    total_picks: int = Field(..., description="Total picks made")
-    wins: int = Field(0, description="Number of wins")
-    losses: int = Field(0, description="Number of losses")
-    pushes: int = Field(0, description="Number of pushes")
-    win_rate: float = Field(0.0, description="Win rate")
-    total_wagered: float = Field(0.0, description="Total wagered")
-    total_payout: float = Field(0.0, description="Total payout")
-    profit_loss: float = Field(0.0, description="Daily P&L")
-    roi: float = Field(0.0, description="Return on investment")
-    accuracy_metrics: Dict[str, float] = Field(default_factory=dict, description="Additional metrics")
-    insights: Dict[str, Any] = Field(default_factory=dict, description="What went well and what needs improvement")
-    recommendations: List[str] = Field(default_factory=list, description="Actionable recommendations")
-    created_at: datetime = Field(default_factory=datetime.now)
+    total_picks: int
+    date: date = field(default_factory=date.today)
+    wins: int = 0
+    losses: int = 0
+    pushes: int = 0
+    win_rate: float = 0.0
+    total_wagered: float = 0.0
+    total_payout: float = 0.0
+    profit_loss: float = 0.0
+    roi: float = 0.0
+    accuracy_metrics: Dict[str, float] = field(default_factory=dict)
+    insights: Dict[str, Any] = field(default_factory=dict)
+    recommendations: List[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.now)
 
 
-class AccuracyMetrics(BaseModel):
+@dataclass
+class AccuracyMetrics:
     """Accuracy metrics from Auditor"""
-    total_picks: int = Field(..., description="Total picks")
-    wins: int = Field(..., description="Wins")
-    losses: int = Field(..., description="Losses")
-    pushes: int = Field(..., description="Pushes")
-    win_rate: float = Field(..., description="Win rate")
-    roi: float = Field(..., description="Return on investment")
-    average_confidence: float = Field(..., description="Average confidence of picks")
-    ev_realized: float = Field(..., description="Realized expected value")
-    period_start: date = Field(..., description="Period start date")
-    period_end: date = Field(..., description="Period end date")
+    total_picks: int
+    wins: int
+    losses: int
+    pushes: int
+    win_rate: float
+    roi: float
+    average_confidence: float
+    ev_realized: float
+    period_start: date
+    period_end: date
 
 
-class Conflict(BaseModel):
+@dataclass
+class Conflict:
     """Conflict between agents"""
-    conflict_type: str = Field(..., description="Type of conflict")
-    description: str = Field(..., description="Conflict description")
-    involved_agents: List[str] = Field(..., description="Agents involved")
-    severity: str = Field(..., description="Severity (low, medium, high)")
-    created_at: datetime = Field(default_factory=datetime.now)
+    conflict_type: str
+    description: str
+    involved_agents: List[str]
+    severity: str
+    created_at: datetime = field(default_factory=datetime.now)
 
 
-class Resolution(BaseModel):
+@dataclass
+class Resolution:
     """Conflict resolution"""
+    resolution: str
+    decision: str
+    resolved_by: str
     conflict_id: Optional[int] = None
-    resolution: str = Field(..., description="Resolution description")
-    decision: str = Field(..., description="Decision made")
-    resolved_by: str = Field(..., description="Agent that resolved")
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=datetime.now)

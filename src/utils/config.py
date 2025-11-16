@@ -67,6 +67,17 @@ class Config:
     def get_log_level(self) -> str:
         """Get log level"""
         return os.getenv('LOG_LEVEL', 'INFO')
+    
+    def get_llm_config(self) -> Dict[str, Any]:
+        """Get LLM configuration"""
+        return self._config.get('llm', {})
+    
+    def get_agent_model(self, agent_name: str) -> str:
+        """Get model for a specific agent"""
+        llm_config = self.get_llm_config()
+        agent_models = llm_config.get('agent_models', {})
+        # Use agent-specific model if available, otherwise default
+        return agent_models.get(agent_name.lower(), llm_config.get('model', 'gpt-4o-mini'))
 
 
 # Global config instance

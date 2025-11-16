@@ -5,9 +5,9 @@ from datetime import date, datetime, timedelta
 
 from src.agents.base import BaseAgent
 from src.data.models import (
-    Bet, Pick, DailyReport, AccuracyMetrics, BetResult, BetType, GameModel
+    Bet, Pick, DailyReport, AccuracyMetrics, BetResult, BetType
 )
-from src.data.storage import Database, BetModel, PickModel, DailyReportModel, GameModel as GameModelDB
+from src.data.storage import Database, BetModel, PickModel, DailyReportModel, GameModel
 from sqlalchemy import func
 from src.utils.logging import get_logger
 from collections import defaultdict
