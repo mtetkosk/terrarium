@@ -162,12 +162,13 @@ class Coordinator:
                 # Convert candidate picks to Pick objects
                 picks = self._convert_picks_from_json(candidate_picks, games)
                 
-                # Step 6: Banker allocates stakes
-                self.banker.interaction_logger.log_agent_start("Banker", f"Allocating stakes for {len(picks)} picks")
-                self.banker.interaction_logger.log_handoff("Picker", "Banker", "Picks", len(picks))
-                banker_response = self.banker.process(candidate_picks)
+                # Step 6: Banker allocates stakes (only to favorites)
+                favorite_picks_data = [p for p in candidate_picks if p.get("favorite", False)]
+                self.banker.interaction_logger.log_agent_start("Banker", f"Allocating stakes for {len(favorite_picks_data)} favorite picks (out of {len(candidate_picks)} total)")
+                self.banker.interaction_logger.log_handoff("Picker", "Banker", "Picks", len(favorite_picks_data))
+                banker_response = self.banker.process(favorite_picks_data)  # Only process favorites
                 sized_picks_data = banker_response.get("sized_picks", [])
-                self.banker.interaction_logger.log_agent_complete("Banker", f"Allocated stakes to {len(sized_picks_data)} picks")
+                self.banker.interaction_logger.log_agent_complete("Banker", f"Allocated stakes to {len(sized_picks_data)} favorite picks")
                 
                 # Save Banker report
                 from src.utils.reporting import ReportGenerator
@@ -179,10 +180,50 @@ class Coordinator:
                     metadata={"sized_picks": len(sized_picks_data)}
                 )
                 
-                # Convert sized picks to Pick objects and update stakes
-                picks_with_stakes = self._convert_sized_picks_from_json(sized_picks_data, picks)
+                # Convert sized picks to Pick objects and update stakes (only for favorites)
+                # Create a map of sized picks by game_id, bet_type, and line for matching
+                sized_picks_map = {}
+                for sized_pick_data in sized_picks_data:
+                    try:
+                        game_id_str = str(sized_pick_data.get("game_id", ""))
+                        bet_type_str = sized_pick_data.get("bet_type", "").lower()
+                        selection = sized_pick_data.get("selection", "")
+                        
+                        # Extract line from selection
+                        line = 0.0
+                        if selection:
+                            match = re.search(r'([+-]?\d+\.?\d*)', str(selection))
+                            if match:
+                                line = float(match.group(1))
+                        else:
+                            line = sized_pick_data.get("line", 0.0)
+                        
+                        game_id = int(game_id_str) if game_id_str and game_id_str.isdigit() else 0
+                        key = (game_id, bet_type_str, line)
+                        sized_picks_map[key] = sized_pick_data
+                    except Exception:
+                        pass
                 
-                # Save picks to database
+                # Update all picks with stakes (favorites get stakes, others get 0)
+                picks_with_stakes = []
+                for pick in picks:
+                    key = (pick.game_id, pick.bet_type.value, pick.line)
+                    sized_pick_data = sized_picks_map.get(key)
+                    
+                    if sized_pick_data and pick.favorite:
+                        # Update stake info for favorites
+                        pick.stake_units = float(sized_pick_data.get("units", 0.0))
+                        # Calculate stake_amount based on stake_units and initial bankroll
+                        initial_bankroll = self.banker.initial
+                        pick.stake_amount = pick.stake_units * (initial_bankroll * 0.01)  # 1 unit = 1% of initial bankroll
+                    else:
+                        # Non-favorites get 0 stakes
+                        pick.stake_units = 0.0
+                        pick.stake_amount = 0.0
+                    
+                    picks_with_stakes.append(pick)
+                
+                # Save all picks to database (both favorites and non-favorites)
                 for pick in picks_with_stakes:
                     self._save_pick(pick)
                 
@@ -191,12 +232,13 @@ class Coordinator:
                     if pick.id:
                         self._update_pick_stakes(pick)
                 
-                # Step 7: Compliance validates
-                self.compliance.interaction_logger.log_agent_start("Compliance", f"Validating {len(picks_with_stakes)} picks")
-                self.compliance.interaction_logger.log_handoff("Banker", "Compliance", "Picks", len(picks_with_stakes))
+                # Step 7: Compliance validates (only favorites need validation for betting)
+                favorite_picks_with_stakes = [p for p in picks_with_stakes if p.favorite]
+                self.compliance.interaction_logger.log_agent_start("Compliance", f"Validating {len(favorite_picks_with_stakes)} favorite picks (out of {len(picks_with_stakes)} total)")
+                self.compliance.interaction_logger.log_handoff("Banker", "Compliance", "Picks", len(favorite_picks_with_stakes))
                 bankroll = self.banker.get_current_bankroll()
                 
-                # Convert picks to dict format for Compliance agent
+                # Convert favorite picks to dict format for Compliance agent
                 sized_picks_dict = [
                     {
                         "game_id": str(pick.game_id),
@@ -206,9 +248,11 @@ class Coordinator:
                         "units": pick.stake_units,
                         "edge_estimate": pick.expected_value,
                         "confidence": pick.confidence,
+                        "confidence_score": pick.confidence_score,
+                        "favorite": pick.favorite,
                         "book": pick.book
                     }
-                    for pick in picks_with_stakes
+                    for pick in favorite_picks_with_stakes
                 ]
                 
                 compliance_response = self.compliance.process(
@@ -218,9 +262,10 @@ class Coordinator:
                 )
                 
                 # Convert compliance JSON response to ComplianceResult objects
+                # Only validate favorites, so map compliance results to favorite picks
                 compliance_results = self._convert_compliance_results_from_json(
                     compliance_response.get("bet_reviews", []),
-                    picks_with_stakes
+                    favorite_picks_with_stakes
                 )
                 
                 approved_count = sum(1 for r in compliance_results if r.approved)
@@ -242,8 +287,9 @@ class Coordinator:
                 # Step 8: President reviews and approves
                 self.president.interaction_logger.log_handoff("Compliance", "President", "ComplianceResults", len(compliance_results))
                 
-                # Convert picks and compliance results to dict format for President
-                sized_picks_dict = [
+                # Convert picks to dict format for President
+                # Include all picks but mark which are favorites
+                all_picks_dict = [
                     {
                         "game_id": str(pick.game_id),
                         "bet_type": pick.bet_type.value if hasattr(pick.bet_type, 'value') else str(pick.bet_type),
@@ -252,11 +298,16 @@ class Coordinator:
                         "units": pick.stake_units,
                         "edge_estimate": pick.expected_value,
                         "confidence": pick.confidence,
+                        "confidence_score": pick.confidence_score,
+                        "favorite": pick.favorite,
                         "book": pick.book,
                         "rationale": pick.rationale
                     }
                     for pick in picks_with_stakes
                 ]
+                
+                # For President review, focus on favorites but provide context of all picks
+                sized_picks_dict = [p for p in all_picks_dict if p.get("favorite", False)]
                 
                 compliance_results_dict = [
                     {
@@ -311,23 +362,28 @@ class Coordinator:
             
             # Step 9: Save betting card and place bets (if approved)
             if review.approved:
-                approved_picks = [
+                # Only approve favorites that passed compliance
+                approved_favorites = [
                     p for p in picks_with_stakes
-                    if (p.id or 0) in review.picks_approved
+                    if p.favorite and (p.id or 0) in review.picks_approved
                 ]
+                
+                # All picks (favorites + others) for the betting card
+                all_picks_for_card = picks_with_stakes
+                approved_picks = approved_favorites  # Only favorites are actually bet
                 
                 # Save betting card for manual review
                 from src.utils.reporting import ReportGenerator
                 report_gen = ReportGenerator(self.db)
                 
-                # Generate and save simple betting card
-                card_text = report_gen.generate_betting_card(approved_picks, target_date)
+                # Generate and save betting card (includes all picks, favorites at top)
+                card_text = report_gen.generate_betting_card(all_picks_for_card, target_date)
                 card_path = report_gen.save_report_to_file(
                     card_text, 
                     f"betting_card_{target_date.isoformat()}.txt",
                     output_dir="data/reports"
                 )
-                logger.info(f"📋 Betting card saved to {card_path}")
+                logger.info(f"📋 Betting card saved to {card_path} ({len(approved_picks)} favorites to bet, {len(all_picks_for_card) - len(approved_picks)} other picks for reference)")
                 
                 # Generate and save President's comprehensive report with rationale
                 # Store president_response for the report generator
@@ -549,6 +605,12 @@ class Coordinator:
                 else:
                     rationale = str(justification) or pick_data.get("notes", "")
                 
+                # Parse favorite flag and confidence score
+                favorite = pick_data.get("favorite", False)
+                confidence_score = pick_data.get("confidence_score", 5)
+                # Ensure confidence_score is between 1-10
+                confidence_score = max(1, min(10, int(confidence_score)))
+                
                 pick = Pick(
                     game_id=game_id or 0,
                     bet_type=bet_type,
@@ -559,6 +621,8 @@ class Coordinator:
                     expected_value=float(pick_data.get("edge_estimate", 0.0)),
                     book=pick_data.get("book", "draftkings"),
                     selection_text=selection_text,  # Store original selection text
+                    favorite=favorite,
+                    confidence_score=confidence_score,
                     parlay_legs=None  # Will be set later if parlay
                 )
                 picks.append(pick)

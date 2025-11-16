@@ -10,6 +10,9 @@ import json
 
 from src.data.models import BetType, GameStatus, BetResult
 from src.utils.config import config
+from src.utils.logging import get_logger
+
+logger = get_logger("data.storage")
 
 Base = declarative_base()
 
@@ -123,6 +126,8 @@ class PickModel(Base):
     expected_value = Column(Float, nullable=False)
     book = Column(String, nullable=False)
     parlay_legs = Column(JSON, nullable=True)  # List of pick IDs for parlays
+    favorite = Column(Boolean, default=False)  # True if this is a favorite pick
+    confidence_score = Column(Integer, default=5)  # 1-10 confidence score
     created_at = Column(DateTime, default=datetime.now)
     
     # Relationships
@@ -246,6 +251,8 @@ class Database:
         self.engine = create_engine(self.database_url, echo=False)
         self.SessionLocal = scoped_session(sessionmaker(bind=self.engine))
         Base.metadata.create_all(self.engine)
+        # Run migrations for schema updates
+        self._migrate_schema()
     
     def get_session(self) -> Session:
         """Get database session"""
@@ -262,6 +269,38 @@ class Database:
     def drop_tables(self):
         """Drop all tables (use with caution)"""
         Base.metadata.drop_all(self.engine)
+    
+    def _migrate_schema(self):
+        """Migrate database schema to add new columns"""
+        from sqlalchemy import inspect, text
+        
+        inspector = inspect(self.engine)
+        
+        # Check if picks table exists
+        if 'picks' in inspector.get_table_names():
+            # Get existing columns
+            existing_columns = [col['name'] for col in inspector.get_columns('picks')]
+            
+            # Add favorite column if missing
+            if 'favorite' not in existing_columns:
+                try:
+                    with self.engine.connect() as conn:
+                        # SQLite uses INTEGER for booleans (0/1)
+                        conn.execute(text("ALTER TABLE picks ADD COLUMN favorite INTEGER DEFAULT 0"))
+                        conn.commit()
+                    logger.info("✅ Added 'favorite' column to picks table")
+                except Exception as e:
+                    logger.warning(f"Could not add 'favorite' column: {e}")
+            
+            # Add confidence_score column if missing
+            if 'confidence_score' not in existing_columns:
+                try:
+                    with self.engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE picks ADD COLUMN confidence_score INTEGER DEFAULT 5"))
+                        conn.commit()
+                    logger.info("✅ Added 'confidence_score' column to picks table")
+                except Exception as e:
+                    logger.warning(f"Could not add 'confidence_score' column: {e}")
 
 
 # Global database instance

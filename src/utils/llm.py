@@ -69,8 +69,11 @@ class LLMClient:
         kwargs = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
         }
+        
+        # Only add temperature if model is not gpt-5 (gpt-5 models don't support temperature)
+        if not self.model.startswith("gpt-5"):
+            kwargs["temperature"] = temperature
         
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
@@ -138,21 +141,60 @@ class LLMClient:
                     # Try to parse as JSON
                     parsed = json.loads(content)
                     return parsed
-                except json.JSONDecodeError:
-                    # If JSON parsing fails, try to extract JSON from markdown code blocks
+                except json.JSONDecodeError as e:
+                    # Log the error with context
+                    self.logger.warning(f"JSON parsing error: {e}")
+                    self.logger.debug(f"Response content (first 500 chars): {content[:500]}")
+                    
+                    # Try to extract JSON from markdown code blocks
+                    json_str = None
                     if "```json" in content:
                         json_start = content.find("```json") + 7
                         json_end = content.find("```", json_start)
-                        json_str = content[json_start:json_end].strip()
-                        return json.loads(json_str)
+                        if json_end > json_start:
+                            json_str = content[json_start:json_end].strip()
                     elif "```" in content:
                         json_start = content.find("```") + 3
                         json_end = content.find("```", json_start)
-                        json_str = content[json_start:json_end].strip()
-                        return json.loads(json_str)
-                    else:
-                        self.logger.warning("Failed to parse JSON response, returning raw text")
-                        return {"raw_response": content}
+                        if json_end > json_start:
+                            json_str = content[json_start:json_end].strip()
+                    
+                    if json_str:
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError as e2:
+                            self.logger.warning(f"Failed to parse extracted JSON: {e2}")
+                    
+                    # Try to repair common JSON issues
+                    try:
+                        repaired = self._repair_json(content)
+                        if repaired:
+                            return json.loads(repaired)
+                    except Exception as repair_error:
+                        self.logger.debug(f"JSON repair failed: {repair_error}")
+                    
+                    # Last resort: try to find JSON object in the content
+                    try:
+                        # Look for first { and last }
+                        first_brace = content.find('{')
+                        last_brace = content.rfind('}')
+                        if first_brace >= 0 and last_brace > first_brace:
+                            json_candidate = content[first_brace:last_brace+1]
+                            return json.loads(json_candidate)
+                    except Exception:
+                        pass
+                    
+                    # If all else fails, return raw content with error info
+                    self.logger.error(
+                        f"Failed to parse JSON response after all attempts. "
+                        f"Error: {e}. Returning raw response."
+                    )
+                    self.logger.debug(f"Full response content:\n{content}")
+                    return {
+                        "raw_response": content,
+                        "parse_error": str(e),
+                        "error_type": "json_decode_error"
+                    }
             else:
                 return {"raw_response": content}
                 
@@ -223,6 +265,51 @@ Remember to follow your role and responsibilities as defined in your system prom
         self.total_tokens_used = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+    
+    def _repair_json(self, json_str: str) -> Optional[str]:
+        """
+        Attempt to repair common JSON issues
+        
+        Args:
+            json_str: Potentially malformed JSON string
+            
+        Returns:
+            Repaired JSON string or None if repair not possible
+        """
+        import re
+        
+        try:
+            repaired = json_str
+            
+            # Remove trailing commas before closing braces/brackets
+            repaired = re.sub(r',(\s*[}\]])', r'\1', repaired)
+            
+            # Remove comments (// and /* */)
+            repaired = re.sub(r'//.*?$', '', repaired, flags=re.MULTILINE)
+            repaired = re.sub(r'/\*.*?\*/', '', repaired, flags=re.DOTALL)
+            
+            # Try to fix single quotes to double quotes (only for keys, be conservative)
+            # Only replace single quotes that look like key-value pairs
+            repaired = re.sub(r"'([^']*)':\s*", r'"\1": ', repaired)
+            
+            # Fix unquoted keys (only if they're not already quoted)
+            # Match word characters followed by colon, but not if already quoted
+            # This is conservative - only fix obvious cases
+            lines = repaired.split('\n')
+            fixed_lines = []
+            for line in lines:
+                # Only fix lines that look like unquoted keys (word: value)
+                # But skip if it's already quoted or looks like a value
+                if re.match(r'^\s*[a-zA-Z_][a-zA-Z0-9_]*\s*:', line) and '"' not in line[:20]:
+                    # Add quotes around the key
+                    line = re.sub(r'^(\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)', r'\1"\2"\3', line)
+                fixed_lines.append(line)
+            repaired = '\n'.join(fixed_lines)
+            
+            return repaired.strip()
+        except Exception as e:
+            self.logger.debug(f"JSON repair exception: {e}")
+            return None
 
 
 def get_llm_client(agent_name: Optional[str] = None) -> LLMClient:
@@ -238,12 +325,14 @@ def get_llm_client(agent_name: Optional[str] = None) -> LLMClient:
     from src.utils.config import config
     
     if agent_name:
-        # Get agent-specific model
+        # Get agent-specific model (this will log the model name)
         model = config.get_agent_model(agent_name)
+        logger.info(f"🤖 LLM Client for '{agent_name}': using model '{model}'")
     else:
         # Get default model
         llm_config = config.get_llm_config()
         model = llm_config.get('model', 'gpt-4o-mini')
+        logger.info(f"🤖 LLM Client (default): using model '{model}'")
     
     return LLMClient(model=model)
 

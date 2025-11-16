@@ -50,8 +50,8 @@ class BaseAgent(ABC):
         # Get agent-specific LLM client if not provided
         self.llm_client = llm_client or get_llm_client(agent_name=name)
         self.system_prompt = self._get_system_prompt()
-        # Log which model is being used
-        self.logger.debug(f"Using model: {self.llm_client.model}")
+        # Log which model is being used (at INFO level so it's visible)
+        self.logger.info(f"🤖 Agent '{self.name}' initialized with model: {self.llm_client.model}")
     
     def log_action(self, action: str, data: Optional[Dict[str, Any]] = None) -> None:
         """Log agent action to database"""

@@ -1,0 +1,185 @@
+================================================================================
+PRESIDENT'S DAILY REPORT - 2025-11-16
+================================================================================
+
+Report Date: 2025-11-16
+Card Status: APPROVED
+Total Picks: 5
+
+📊 CARD SUMMARY
+--------------------------------------------------------------------------------
+Total Units: 11.00
+Total Amount: $11.00
+Average Confidence: 82.0%
+Average Expected Value: 0.148
+
+📝 STRATEGIC NOTES
+--------------------------------------------------------------------------------
+Focus on games with strong edges and high confidence. | Stake adjustments made to manage risk and maintain bankroll health. | Diversified across multiple games to avoid over-concentration.
+
+🎯 APPROVED PICKS WITH RATIONALE
+--------------------------------------------------------------------------------
+
+PICK #1
+  Game ID: 11
+  Bet Type: SPREAD
+  Line: -6.5
+  Odds: -125
+  Stake: 2.00 units ($2.00)
+  Book: draftkings
+  Confidence: 80.0%
+  Expected Value: 0.140
+
+  📋 PICKER'S RATIONALE:
+    • UMBC has a strong offensive advantage (AdjO 110.0 vs AdjD 95.0).
+    • Wagner's defense has struggled, allowing high efficiency.
+    • High confidence in UMBC's recent form and matchup dynamics.
+
+  ✅ PRESIDENT'S DECISION REASONING:
+    Strong offensive advantage for UMBC, high confidence in recent form.
+
+  🔍 RESEARCHER'S INSIGHTS:
+    Recent Form: Wagner: 0-3 in last 3, averaging 60.0 PPG. UMBC: 2-1 in last 3, averaging 75.0 PPG.
+    Context:
+      - Wagner is looking for their first win of the season.
+      - UMBC is at home and has a strong record against Wagner historically.
+
+  📊 MODELER'S PREDICTIONS:
+    Projected Margin: 7.0
+    Model Confidence: 80.0%
+    Edge: 0.140
+    Edge Confidence: 80.0%
+
+--------------------------------------------------------------------------------
+
+PICK #2
+  Game ID: 12
+  Bet Type: SPREAD
+  Line: -4.5
+  Odds: -110
+  Stake: 1.00 units ($1.00)
+  Book: draftkings
+  Confidence: 80.0%
+  Expected Value: 0.050
+
+  📋 PICKER'S RATIONALE:
+    • Kent State's offense is significantly better (AdjO 115.0 vs AdjD 100.0).
+    • Strong home advantage and recent form support this pick.
+    • Experts favor Kent State, indicating a strong consensus.
+
+  ✅ PRESIDENT'S DECISION REASONING:
+    Solid home advantage and offensive efficiency.
+
+  🔍 RESEARCHER'S INSIGHTS:
+    Recent Form: Wright State: 2-2 in last 4, averaging 72.0 PPG. Kent State: 3-1 in last 4, averaging 78.0 PPG.
+    Context:
+      - Kent State is on a three-game winning streak.
+      - Wright State is looking to bounce back after a tough loss.
+
+  📊 MODELER'S PREDICTIONS:
+    Projected Margin: 5.0
+    Model Confidence: 80.0%
+    Edge: 0.050
+    Edge Confidence: 80.0%
+
+--------------------------------------------------------------------------------
+
+PICK #3
+  Game ID: 13
+  Bet Type: SPREAD
+  Line: -10.5
+  Odds: -110
+  Stake: 3.00 units ($3.00)
+  Book: draftkings
+  Confidence: 85.0%
+  Expected Value: 0.220
+
+  📋 PICKER'S RATIONALE:
+    • Morehead State has a significant offensive edge (AdjO 110.0 vs AdjD 90.0).
+    • Kentucky Christian's defense has been weak, allowing high scoring.
+    • High confidence due to Morehead's recent performance.
+
+  ✅ PRESIDENT'S DECISION REASONING:
+    Significant offensive edge and opponent's defensive struggles. Stake reduced to manage risk.
+
+  🔍 RESEARCHER'S INSIGHTS:
+    Recent Form: Kentucky Christian: 0-4 in last 4, averaging 55.0 PPG. Morehead State: 3-1 in last 4, averaging 80.0 PPG.
+    Context:
+      - Morehead State has a strong home court advantage.
+      - Kentucky Christian is struggling this season.
+
+  📊 MODELER'S PREDICTIONS:
+    Projected Margin: 11.0
+    Model Confidence: 85.0%
+    Edge: 0.220
+    Edge Confidence: 85.0%
+
+--------------------------------------------------------------------------------
+
+PICK #4
+  Game ID: 15
+  Bet Type: SPREAD
+  Line: -11.5
+  Odds: -110
+  Stake: 3.00 units ($3.00)
+  Book: draftkings
+  Confidence: 85.0%
+  Expected Value: 0.230
+
+  📋 PICKER'S RATIONALE:
+    • Western Carolina's offensive efficiency is significantly better.
+    • Stetson's defense has struggled, allowing high scoring.
+    • High confidence in Western Carolina's home advantage.
+
+  ✅ PRESIDENT'S DECISION REASONING:
+    Offensive efficiency and home advantage. Stake reduced to manage risk.
+
+  🔍 RESEARCHER'S INSIGHTS:
+    Recent Form: Stetson: 2-2 in last 4, averaging 68.5 PPG. Western Carolina: 3-1 in last 4, averaging 75.0 PPG.
+    Context:
+      - Travel: Stetson traveling 400 miles for this matchup.
+      - Rivalry: Historically competitive matchup between these two teams.
+
+  📊 MODELER'S PREDICTIONS:
+    Projected Margin: 12.0
+    Model Confidence: 85.0%
+    Edge: 0.230
+    Edge Confidence: 85.0%
+
+--------------------------------------------------------------------------------
+
+PICK #5
+  Game ID: 14
+  Bet Type: SPREAD
+  Line: -8.5
+  Odds: -110
+  Stake: 2.00 units ($2.00)
+  Book: draftkings
+  Confidence: 80.0%
+  Expected Value: 0.100
+
+  📋 PICKER'S RATIONALE:
+    • Ohio State has a strong offensive advantage (AdjO 120.0 vs AdjD 85.0).
+    • Recent form shows Ohio State scoring well.
+    • Experts favor Ohio State, indicating strong support.
+
+  ✅ PRESIDENT'S DECISION REASONING:
+    Strong offensive metrics and expert consensus.
+
+  🔍 RESEARCHER'S INSIGHTS:
+    Recent Form: Notre Dame: 3-0 in last 3, averaging 80.0 PPG. Ohio State: 3-0 in last 3, averaging 85.0 PPG.
+    Context:
+      - Both teams are undefeated this season.
+      - This matchup is critical for early season positioning.
+
+  📊 MODELER'S PREDICTIONS:
+    Projected Margin: 9.0
+    Model Confidence: 80.0%
+    Edge: 0.100
+    Edge Confidence: 80.0%
+
+--------------------------------------------------------------------------------
+
+================================================================================
+Report generated: 2025-11-16 14:04:46
+================================================================================

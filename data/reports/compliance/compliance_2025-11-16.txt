@@ -1,0 +1,67 @@
+================================================================================
+COMPLIANCE AGENT REPORT - 2025-11-16
+================================================================================
+
+Report Date: 2025-11-16
+Generated: 2025-11-16 14:04:22
+
+📋 METADATA
+--------------------------------------------------------------------------------
+picks_reviewed: 5
+approved: 5
+
+📊 AGENT OUTPUT
+--------------------------------------------------------------------------------
+
+Total Bet Reviews: 5
+  Approved: 3
+  Approved with Warning: 2
+  Rejected: 0
+
+Global Risk Assessment:
+  - Overall, the bets are based on solid statistical analysis and expert consensus.
+  - There is a slight over-concentration of risk with two bets at 3.0 units, which could be adjusted for better bankroll management.
+  - All bets are within the confidence limits set by the constraints.
+
+REVIEW #1
+  Game ID: 11
+  Selection: -6.5
+  Units: 2.00
+  Status: APPROVED
+
+REVIEW #2
+  Game ID: 12
+  Selection: -4.5
+  Units: 1.00
+  Status: APPROVED
+
+REVIEW #3
+  Game ID: 13
+  Selection: -10.5
+  Units: 3.00
+  Status: APPROVED_WITH_WARNING
+  Issues:
+    ⚠️  Stake size is relatively high (3.0 units) compared to the bankroll of $100. This represents 3% of the bankroll, which is acceptable but should be monitored.
+  Recommendations:
+    ✓ Consider reducing stake size to maintain a more conservative approach.
+
+REVIEW #4
+  Game ID: 15
+  Selection: -11.5
+  Units: 3.00
+  Status: APPROVED_WITH_WARNING
+  Issues:
+    ⚠️  Similar to game_id 13, the stake size of 3.0 units is 3% of the bankroll, which is on the higher side.
+  Recommendations:
+    ✓ Consider reducing stake size to mitigate risk.
+
+REVIEW #5
+  Game ID: 14
+  Selection: -8.5
+  Units: 2.00
+  Status: APPROVED
+
+
+================================================================================
+Report generated: 2025-11-16 14:04:22
+================================================================================

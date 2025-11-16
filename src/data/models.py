@@ -129,7 +129,7 @@ class Pick:
     bet_type: BetType
     odds: int
     rationale: str
-    confidence: float
+    confidence: float  # 0.0-1.0 probability confidence
     expected_value: float
     book: str
     id: Optional[int] = None
@@ -139,6 +139,8 @@ class Pick:
     stake_amount: float = 0.0
     parlay_legs: Optional[List[int]] = None
     selection_text: Optional[str] = None  # Original selection text from Picker (e.g., "Team A +3.5", "Over 160.5")
+    favorite: bool = False  # True if this is a favorite pick (will be placed on betting card)
+    confidence_score: int = 5  # 1-10 confidence score (1 = low, 10 = high)
     created_at: datetime = field(default_factory=datetime.now)
 
 
