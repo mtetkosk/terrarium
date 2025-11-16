@@ -34,8 +34,8 @@ graph TD
     
     style Start fill:#e1f5ff
     style End fill:#e1f5ff
-    style President fill:#ffd700
-    style RevisionLoop fill:#ffcccc
+    style President fill:#4a90e2,color:#fff
+    style RevisionLoop fill:#f0f0f0
 ```
 
 ## Features
