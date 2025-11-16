@@ -4,28 +4,380 @@ A multi-agent system for daily sports gambling that uses specialized AI agents t
 
 ## Overview
 
-The system consists of 8 specialized agents working together:
-- **President**: Executive lead, final approval, can request revisions (uses `gpt-4o` for best reasoning)
+The system consists of 7 specialized agents working together in a coordinated workflow:
+
+- **President**: Executive lead, final approval, can request revisions (uses `gpt-5.1` for best reasoning)
 - **Researcher**: Data gathering and game insights with web browsing capabilities
 - **Modeler**: Predictive modeling and EV calculations
 - **Picker**: Bet selection (supports parlays)
 - **Banker**: Bankroll management (Kelly criterion, dynamic exposure)
 - **Compliance**: Validation and sanity checks
 - **Auditor**: Performance tracking and daily reports
-- **Gambler**: Fun commentary (flavor only)
+
+## Workflow Diagram
+
+```mermaid
+graph TD
+    Start([Daily Workflow Starts]) --> ScrapeGames[Scrape Games<br/>ESPN API]
+    ScrapeGames --> ScrapeLines[Scrape Betting Lines<br/>The Odds API]
+    ScrapeLines --> Researcher[Researcher Agent<br/>Web Research & Insights]
+    Researcher --> Modeler[Modeler Agent<br/>Predictions & EV]
+    Modeler --> Picker[Picker Agent<br/>Select Best Bets]
+    Picker --> Banker[Banker Agent<br/>Allocate Stakes]
+    Banker --> Compliance[Compliance Agent<br/>Validate Picks]
+    Compliance --> President{President<br/>Review & Approve}
+    President -->|Request Revision| RevisionLoop[Revision Loop]
+    RevisionLoop --> Researcher
+    President -->|Approve| PlaceBets[Place Bets<br/>Simulated]
+    PlaceBets --> Auditor[Auditor Agent<br/>Review Previous Day]
+    Auditor --> End([Workflow Complete])
+    
+    style Start fill:#e1f5ff
+    style End fill:#e1f5ff
+    style President fill:#ffd700
+    style RevisionLoop fill:#ffcccc
+```
 
 ## Features
 
 - **Real-time Game Scraping**: Uses ESPN API to fetch NCAA basketball games
 - **Betting Lines**: Real betting lines via The Odds API (with mock data fallback)
 - **Web Browsing**: Researcher agent can search the web for injury reports, stats, and news
-- **Multi-Agent System**: 8 specialized LLM-powered agents working together
+- **Multi-Agent System**: 7 specialized LLM-powered agents working together
 - **Revision Loop**: President can request revisions from other agents
 - **Comprehensive Logging**: Detailed logs of all agent interactions
 - **Bankroll Management**: Kelly criterion and dynamic risk management
 - **Performance Tracking**: Daily reports with insights and recommendations
 - **Model Optimization**: Different OpenAI models per agent for cost efficiency
 - **Parlay Support**: Occasional parlay betting for entertainment
+- **Batch Processing**: Efficient processing of games in batches with retry logic
+- **Caching**: Smart caching for betting lines (1 hour) and research (24 hours)
+
+## Agent Output Examples
+
+### Researcher Agent
+
+The Researcher gathers comprehensive game insights including advanced stats, injuries, and expert predictions.
+
+**Example Output:**
+```json
+{
+  "games": [
+    {
+      "game_id": "10",
+      "teams": {
+        "away": "App State Mountaineers",
+        "home": "Dartmouth Big Green"
+      },
+      "market": {
+        "spread": "App State +3.5",
+        "total": 145.5,
+        "moneyline": {
+          "away": "+150",
+          "home": "-170"
+        }
+      },
+      "advanced_stats": {
+        "away_team": {
+          "adjo": 115.2,
+          "adjd": 98.5,
+          "adjt": 68.3,
+          "kenpom_rank": 45
+        },
+        "home_team": {
+          "adjo": 108.5,
+          "adjd": 102.3,
+          "adjt": 65.1,
+          "kenpom_rank": 78
+        },
+        "matchup_analysis": [
+          "App State has significant offensive advantage (AdjO 115.2 vs AdjD 102.3 = +12.9 advantage)",
+          "Dartmouth has slight defensive advantage (AdjD 98.5 vs AdjO 108.5 = +10.0 advantage)"
+        ]
+      },
+      "key_injuries": [
+        {
+          "team": "App State",
+          "player": "John Smith",
+          "position": "PG",
+          "status": "Questionable",
+          "impact": "High - starting point guard, 15 PPG, 8 APG"
+        }
+      ],
+      "recent_form_summary": "App State: 2-2 in last 4, averaging 72.5 PPG. Dartmouth: 0-2 in last 2, averaging 60.0 PPG.",
+      "expert_predictions_summary": "Consensus: 4 of 6 experts favor App State +3.5. 3 of 5 favor Over 145.5.",
+      "common_opponents_analysis": [
+        "Both teams played Team X: App State won 85-72 (+13), Dartmouth lost 68-75 (-7). Net advantage: +20 points to App State."
+      ],
+      "notable_context": [
+        "Travel: App State traveling 300 miles, 2nd game in 3 days",
+        "Rivalry: Historic matchup, App State leads series 12-8"
+      ]
+    }
+  ]
+}
+```
+
+### Modeler Agent
+
+The Modeler generates predictions, probabilities, and edge estimates for each game.
+
+**Example Output:**
+```json
+{
+  "game_models": [
+    {
+      "game_id": "10",
+      "predictions": {
+        "spread": {
+          "projected_line": "App State -1.0",
+          "projected_margin": -1.0,
+          "model_confidence": 0.75
+        },
+        "total": {
+          "projected_total": 144.0,
+          "model_confidence": 0.70
+        },
+        "moneyline": {
+          "team_probabilities": {
+            "away": 0.45,
+            "home": 0.55
+          },
+          "model_confidence": 0.80
+        }
+      },
+      "market_edges": [
+        {
+          "market_type": "spread",
+          "market_line": "App State +3.5 -110",
+          "model_estimated_probability": 0.55,
+          "implied_probability": 0.29,
+          "edge": 0.26,
+          "edge_confidence": 0.75
+        },
+        {
+          "market_type": "total",
+          "market_line": "145.5 -110",
+          "model_estimated_probability": 0.60,
+          "implied_probability": 0.50,
+          "edge": 0.10,
+          "edge_confidence": 0.70
+        }
+      ],
+      "model_notes": "App State's offensive efficiency gives them a slight edge. Confidence is moderate due to matchup dynamics."
+    }
+  ]
+}
+```
+
+### Picker Agent
+
+The Picker selects the best betting opportunities based on edge and confidence.
+
+**Example Output:**
+```json
+{
+  "candidate_picks": [
+    {
+      "game_id": "10",
+      "bet_type": "spread",
+      "selection": "App State +3.5",
+      "odds": "-110",
+      "justification": [
+        "Strong edge: 26% positive EV (model prob 55% vs implied 29%)",
+        "Advanced stats favor App State (AdjO advantage +12.9)",
+        "Expert consensus: 4 of 6 favor App State +3.5"
+      ],
+      "edge_estimate": 0.26,
+      "confidence": 0.75,
+      "favorite": true,
+      "confidence_score": 8
+    },
+    {
+      "game_id": "10",
+      "bet_type": "total",
+      "selection": "Over 145.5",
+      "odds": "-110",
+      "justification": [
+        "Moderate edge: 10% positive EV",
+        "Both teams play at faster pace (AdjT 68.3 vs 65.1)"
+      ],
+      "edge_estimate": 0.10,
+      "confidence": 0.70,
+      "favorite": false,
+      "confidence_score": 6
+    }
+  ],
+  "overall_strategy_summary": [
+    "Focusing on spread bets with strong edge (26%+)",
+    "Avoiding low-confidence plays (<60% confidence)"
+  ]
+}
+```
+
+### Banker Agent
+
+The Banker allocates stakes using fractional Kelly criterion.
+
+**Example Output:**
+```json
+{
+  "bankroll_status": {
+    "current_bankroll": 100.0,
+    "base_unit_size": 1.0,
+    "risk_mode": "normal",
+    "notes": "Bankroll healthy, using standard sizing"
+  },
+  "sized_picks": [
+    {
+      "game_id": "10",
+      "bet_type": "spread",
+      "selection": "App State +3.5",
+      "odds": "-110",
+      "edge_estimate": 0.26,
+      "confidence": 0.75,
+      "units": 2.0,
+      "stake_rationale": [
+        "High edge (26%) with good confidence (75%)",
+        "Fractional Kelly suggests 2.0 units",
+        "Within daily exposure limits"
+      ],
+      "risk_flags": []
+    }
+  ],
+  "total_daily_exposure_summary": {
+    "num_bets": 5,
+    "total_units_risked": 11.0,
+    "concentration_notes": "Well-diversified across 5 games"
+  }
+}
+```
+
+### Compliance Agent
+
+The Compliance agent validates picks for quality and risk.
+
+**Example Output:**
+```json
+{
+  "bet_reviews": [
+    {
+      "game_id": "10",
+      "selection": "App State +3.5",
+      "odds": "-110",
+      "units": 2.0,
+      "compliance_status": "approved",
+      "issues": [],
+      "recommendations": []
+    },
+    {
+      "game_id": "15",
+      "selection": "Team X -15.5",
+      "odds": "-110",
+      "units": 5.0,
+      "compliance_status": "approved_with_warning",
+      "issues": [
+        "High stake size (5 units) relative to bankroll",
+        "Large spread may indicate overconfidence"
+      ],
+      "recommendations": [
+        "Consider reducing stake to 3 units",
+        "Verify model confidence is justified"
+      ]
+    }
+  ],
+  "global_risk_assessment": [
+    "Overall risk posture: Conservative",
+    "No correlated bets detected",
+    "Daily exposure within limits"
+  ]
+}
+```
+
+### President Agent
+
+The President reviews and approves the final betting card.
+
+**Example Output:**
+```json
+{
+  "approved_picks": [
+    {
+      "game_id": "10",
+      "bet_type": "spread",
+      "selection": "App State +3.5",
+      "odds": "-110",
+      "edge_estimate": 0.26,
+      "units": 2.0,
+      "final_decision_reasoning": "Strong edge with solid research backing. Model confidence is high and expert consensus supports this pick."
+    }
+  ],
+  "rejected_picks": [
+    {
+      "game_id": "15",
+      "reason_rejected": "Stake size too large relative to edge. Compliance warning indicates overconfidence. Recommend reducing stake before approval."
+    }
+  ],
+  "revision_requests": [],
+  "high_level_strategy_notes": [
+    "Focusing on quality over quantity - 5 high-confidence picks",
+    "Maintaining conservative bankroll management",
+    "Avoiding correlated exposures"
+  ]
+}
+```
+
+### Auditor Agent
+
+The Auditor reviews previous day's results and generates performance insights.
+
+**Example Output:**
+```json
+{
+  "period_summary": {
+    "start_date": "2025-11-15",
+    "end_date": "2025-11-15",
+    "num_bets": 5,
+    "units_won_or_lost": 2.5,
+    "roi": 0.25,
+    "hit_rate": 0.60,
+    "max_drawdown_units": 0.0,
+    "notes": "Profitable day with strong win rate"
+  },
+  "bet_level_analysis": [
+    {
+      "game_id": "10",
+      "selection": "App State +3.5",
+      "odds": "-110",
+      "units": 2.0,
+      "result": "win",
+      "units_result": 1.82,
+      "edge_estimate": 0.26,
+      "confidence": 0.75,
+      "was_result_consistent_with_model": true,
+      "post_hoc_notes": "Model correctly identified edge. Pick performed as expected."
+    }
+  ],
+  "diagnostics_and_recommendations": {
+    "modeler": [
+      "Model calibration is accurate - high confidence picks performing well",
+      "Continue using advanced stats for edge calculation"
+    ],
+    "picker": [
+      "Good selection of high-edge opportunities",
+      "Consider being more selective on lower-confidence plays"
+    ],
+    "banker": [
+      "Stake sizing is appropriate",
+      "No adjustments needed to Kelly fraction"
+    ],
+    "president": [
+      "Approval process working well",
+      "Continue rejecting low-quality picks"
+    ]
+  }
+}
+```
 
 ## Prerequisites
 
@@ -94,6 +446,16 @@ Run for a specific date:
 python -m src.main --once --date 2025-01-15
 ```
 
+Run in test mode (processes only first 5 games):
+```bash
+python -m src.main --once --test
+```
+
+Force refresh of cached data:
+```bash
+python -m src.main --once --force-refresh
+```
+
 ### Option 2: Scheduled Daily Runs
 
 Run as a scheduled daemon that executes daily at the configured time:
@@ -122,6 +484,9 @@ review = coordinator.run_daily_workflow()
 # Run workflow for specific date
 review = coordinator.run_daily_workflow(date(2025, 1, 15))
 
+# Run in test mode
+review = coordinator.run_daily_workflow(test_mode=True)
+
 # Check results
 print(f"Card approved: {review.approved}")
 print(f"Picks approved: {len(review.picks_approved)}")
@@ -138,7 +503,7 @@ The daily workflow follows these steps:
 1. **Scrape Games**: Fetches NCAA basketball games from ESPN API
 2. **Scrape Betting Lines**: Gets betting lines from configured sources (The Odds API or mock data)
 3. **Research**: Researcher gathers insights, stats, and injury reports (with web browsing)
-4. **Model**: Modeler generates predictions and EV estimates
+4. **Model**: Modeler generates predictions and EV estimates (batch processing)
 5. **Select**: Picker chooses highest-EV bets (may create parlays)
 6. **Allocate**: Banker assigns stakes using Kelly criterion (dynamic max exposure)
 7. **Validate**: Compliance checks picks for quality and risk
@@ -200,22 +565,21 @@ The system uses optimized models per agent for cost efficiency:
 ```yaml
 llm:
   # Default model (used if agent-specific model not specified)
-  model: "gpt-4o-mini"
+  model: "gpt-5-mini"
   temperature_default: 0.7
   
   # Per-agent model optimization
   agent_models:
-    president: "gpt-4o"        # Best reasoning for critical decisions
-    researcher: "gpt-4o-mini" # Many calls, needs efficiency
-    modeler: "gpt-4o-mini"     # Per game, math in code
-    picker: "gpt-4o-mini"      # Filters edges
-    banker: "gpt-4o-mini"      # Risk management
-    compliance: "gpt-4o-mini"  # Rule checking
-    auditor: "gpt-4o-mini"     # Summarization
-    gambler: "gpt-4o-mini"     # Fun only
+    president: "gpt-5.1"        # Best reasoning for critical decisions
+    researcher: "gpt-5-mini"    # Many calls, needs efficiency
+    modeler: "gpt-5-mini"       # Per game, math in code
+    picker: "gpt-5-mini"        # Filters edges
+    banker: "gpt-5-mini"        # Risk management
+    compliance: "gpt-5-nano"   # Rule checking
+    auditor: "gpt-5-nano"       # Summarization
 ```
 
-**Model Strategy**: Only the President (final gatekeeper) uses the expensive `gpt-4o` model. All other agents use the cost-efficient `gpt-4o-mini` model, resulting in ~90%+ cost savings while maintaining quality where it matters most.
+**Note**: GPT-5 models don't support the `temperature` parameter, so it's automatically omitted for those models.
 
 ### Scheduler Settings
 
@@ -232,16 +596,7 @@ The system uses OpenAI's API for all agent logic. Each agent has:
 - **LLM Client**: Handles API calls, JSON parsing, error handling
 - **Function Calling**: Researcher agent can use web browsing tools
 - **Structured Output**: Agents return JSON dictionaries
-
-### Agent Outputs
-
-- **Researcher**: `{"games": [...]}` with game insights
-- **Modeler**: `{"game_models": [...]}` with predictions
-- **Picker**: `{"candidate_picks": [...]}` with picks
-- **Banker**: `{"sized_picks": [...]}` with stake allocations
-- **Compliance**: `{"bet_reviews": [...]}` with compliance status
-- **President**: `{"approved_picks": [...], "rejected_picks": [...], "revision_requests": [...]}`
-- **Auditor**: Daily performance reports with insights and recommendations
+- **Batch Processing**: Efficient processing of games in batches (Researcher: 5 games, Modeler: 3 games)
 
 ### Web Browsing (Researcher Agent)
 
@@ -249,6 +604,7 @@ The Researcher agent has access to web browsing tools:
 - `search_web(query)`: General web search
 - `search_injury_reports(team_name)`: Search for injury reports
 - `search_team_stats(team_name)`: Search for team statistics
+- `search_game_predictions(team1, team2, game_date)`: Search for expert predictions
 - `fetch_url(url)`: Read content from URLs
 
 The agent automatically uses these tools to gather real-time information when researching games.
@@ -273,17 +629,30 @@ To get real betting lines instead of mock data:
    ```
 
 The system will:
-- Fetch real lines from DraftKings, FanDuel, and other sportsbooks
+- Fetch real lines from DraftKings (configurable)
 - Automatically fall back to mock data if API is unavailable
-- Cache results in the database
+- Cache results for 1 hour to reduce API calls
 
 **Rate Limiting**: Free tier allows 500 requests/month. The system makes ~1 request per sportsbook per day, so this is sufficient for daily runs.
+
+## Caching
+
+The system uses smart caching to reduce API calls and improve performance:
+
+- **Betting Lines Cache**: 1 hour TTL (stored in `data/cache/lines_cache.json`)
+- **Researcher Cache**: 24 hour TTL (stored in `data/cache/researcher_cache.json`)
+
+To bypass cache and force fresh data:
+```bash
+python -m src.main --once --force-refresh
+```
 
 ## Logging
 
 Logs are written to:
 - **Console**: Formatted output with agent interactions
 - **File**: `data/logs/terrarium.log` (rotating, max 10MB, 5 backups)
+- **Agent Reports**: Individual reports saved to `data/reports/{agent_name}/`
 
 ### Log Levels
 
@@ -302,7 +671,7 @@ The logs show:
 - **🔁 REVISION REQUEST**: President requests revision
 - **🎯 DECISION**: Agent makes a decision
 - **🌐 Web search**: Researcher searching the web
-- **💰**: Bets placed
+- **💰**: Token usage and costs
 - **❌**: Errors or rejections
 
 Example log output:
@@ -330,6 +699,33 @@ Reports are automatically:
 - Saved to `data/reports/daily_report_YYYY-MM-DD.txt`
 - Stored in the database for historical analysis
 
+### Agent Reports
+
+Each agent generates a detailed report saved to `data/reports/{agent_name}/{agent_name}_YYYY-MM-DD.txt`:
+
+- **Researcher**: Game insights, advanced stats, injuries
+- **Modeler**: Predictions, edge estimates, confidence scores
+- **Picker**: Selected picks with rationale
+- **Banker**: Stake allocations and risk assessment
+- **Compliance**: Validation results
+- **President**: Approval decisions and strategic notes
+- **Auditor**: Performance analysis and recommendations
+
+### Betting Card
+
+A simple betting card is generated for manual review:
+- Saved to `data/reports/betting_card_YYYY-MM-DD.txt`
+- Shows favorite picks (with stakes) and other picks (for reference)
+- Includes confidence scores and rationale
+
+### President's Report
+
+A comprehensive report from the President:
+- Saved to `data/reports/president/presidents_report_YYYY-MM-DD.txt`
+- Includes approved picks with full rationale
+- Shows rejected picks with rejection reasons
+- Provides strategic overview
+
 ### Accessing Reports
 
 **View latest report:**
@@ -353,62 +749,8 @@ print(report_text)
 **View saved report file:**
 ```bash
 cat data/reports/daily_report_2025-01-15.txt
-```
-
-**Example report structure:**
-```
-================================================================================
-DAILY PERFORMANCE REPORT - 2025-01-15
-================================================================================
-
-📊 PERFORMANCE SUMMARY
---------------------------------------------------------------------------------
-Total Picks: 8
-Wins: 5  |  Losses: 3  |  Pushes: 0
-Win Rate: 62.5%
-
-Total Wagered: $5.00
-Total Payout: $6.25
-Profit/Loss: +$1.25
-ROI: +25.00%
-
-✅ WHAT WENT WELL
---------------------------------------------------------------------------------
-  • Profitable day: +$1.25 (25.0% ROI)
-  • Strong win rate: 62.5%
-  • SPREAD bets performing well: 66.7% win rate
-
-⚠️  WHAT NEEDS IMPROVEMENT
---------------------------------------------------------------------------------
-  • TOTAL bets struggling: 33.3% win rate - consider avoiding
-
-💡 RECOMMENDATIONS
---------------------------------------------------------------------------------
-  1. Excellent win rate! Current strategy is working well.
-  2. Consider reducing TOTAL bets - only 33.3% win rate
-```
-
-### Summary Reports
-
-Generate reports for date ranges:
-
-```python
-from datetime import date, timedelta
-
-start_date = date(2025, 1, 1)
-end_date = date(2025, 1, 31)
-
-summary = generator.generate_summary_report(start_date, end_date)
-print(summary)
-```
-
-### Bankroll Report
-
-Check current bankroll status:
-
-```python
-bankroll_report = generator.generate_bankroll_report()
-print(bankroll_report)
+cat data/reports/betting_card_2025-01-15.txt
+cat data/reports/president/presidents_report_2025-01-15.txt
 ```
 
 ## Revision System
@@ -480,6 +822,10 @@ If you get import errors:
 - Too many requests - wait a moment and retry
 - Consider upgrading your OpenAI plan
 
+**Model not found errors**:
+- Verify the model name exists in your OpenAI account
+- Check that you have access to the model (some models require special access)
+
 ### Logging Issues
 
 If logs aren't appearing:
@@ -507,15 +853,39 @@ If logs aren't appearing:
 terrarium/
 ├── src/
 │   ├── agents/          # Agent implementations
+│   │   ├── researcher.py
+│   │   ├── modeler.py
+│   │   ├── picker.py
+│   │   ├── banker.py
+│   │   ├── compliance.py
+│   │   ├── president.py
+│   │   └── auditor.py
 │   ├── data/            # Data models and scrapers
-│   ├── models/          # Predictive models
+│   │   ├── models.py
+│   │   ├── storage.py
+│   │   └── scrapers/
 │   ├── orchestration/   # Workflow coordination
+│   │   └── coordinator.py
+│   ├── prompts.py       # Agent system prompts
 │   └── utils/           # Utilities (logging, config, LLM)
+│       ├── logging.py
+│       ├── config.py
+│       ├── llm.py
+│       └── web_browser.py
 ├── config/              # Configuration files
+│   └── config.yaml
 ├── data/                # Data storage
 │   ├── db/              # Database files
 │   ├── logs/            # Log files
+│   ├── cache/           # Cache files
 │   └── reports/         # Generated reports
+│       ├── researcher/
+│       ├── modeler/
+│       ├── picker/
+│       ├── banker/
+│       ├── compliance/
+│       ├── president/
+│       └── auditor/
 └── tests/               # Test files
 ```
 
@@ -543,6 +913,7 @@ For issues or questions:
 2. Review configuration in `config/config.yaml`
 3. Check database for data issues
 4. Review agent interaction logs for workflow problems
+5. Check agent reports in `data/reports/` for detailed output
 
 ## Next Steps
 
@@ -552,3 +923,4 @@ After running the pipeline:
 3. Monitor bankroll health
 4. Review revision requests to improve agent performance
 5. Analyze long-term trends using summary reports
+6. Check individual agent reports for detailed insights
