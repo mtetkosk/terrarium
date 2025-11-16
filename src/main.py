@@ -17,11 +17,11 @@ logger = setup_logging(
 )
 
 
-def run_daily(target_date: date = None):
+def run_daily(target_date: date = None, test_mode: bool = False, force_refresh: bool = False):
     """Run daily workflow"""
     coordinator = Coordinator()
     try:
-        review = coordinator.run_daily_workflow(target_date)
+        review = coordinator.run_daily_workflow(target_date, test_mode=test_mode, force_refresh=force_refresh)
         logger.info(f"Daily workflow completed. Card approved: {review.approved}")
         return review
     finally:
@@ -69,6 +69,16 @@ def main():
         action='store_true',
         help='Run once and exit'
     )
+    parser.add_argument(
+        '--test',
+        action='store_true',
+        help='Test mode: Only process first 5 games for testing'
+    )
+    parser.add_argument(
+        '--force-refresh',
+        action='store_true',
+        help='Force refresh: Bypass cache and fetch fresh data from APIs/web'
+    )
     
     args = parser.parse_args()
     
@@ -91,8 +101,14 @@ def main():
                 logger.error(f"Invalid date format: {args.date}. Use YYYY-MM-DD")
                 sys.exit(1)
         
+        if args.test:
+            logger.info("🧪 TEST MODE ENABLED: Processing only first 5 games")
+        
+        if args.force_refresh:
+            logger.info("🔄 FORCE REFRESH ENABLED: Bypassing cache")
+        
         logger.info("Running daily workflow once...")
-        review = run_daily(target_date)
+        review = run_daily(target_date, test_mode=args.test, force_refresh=args.force_refresh)
         
         if review.approved:
             logger.info(f"Card approved with {len(review.picks_approved)} picks")

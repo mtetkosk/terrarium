@@ -43,14 +43,17 @@ class GamesScraper:
             return self._get_mock_games(target_date)
     
     def _scrape_espn(self, target_date: date) -> List[Game]:
-        """Scrape games from ESPN using their API"""
+        """Scrape games from ESPN using their API - NCAA Men's Basketball only"""
         # ESPN uses an internal API endpoint for scoreboard data
+        # Using mens-college-basketball to ensure we only get men's games
+        # By default, ESPN only returns featured/top games. Use groups=50 to get all games
         date_str = target_date.strftime('%Y%m%d')
         api_url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
         
         params = {
             'dates': date_str,
-            'limit': 100
+            'limit': 100,
+            'groups': '50'  # Group 50 includes all NCAA Men's Basketball games (not just featured)
         }
         
         try:
