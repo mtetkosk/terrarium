@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlparse
 import time
 import re
 from src.utils.logging import get_logger
+from src.utils.config import config
 
 # Try to import ddgs library (renamed from duckduckgo_search), fallback to HTML scraping if not available
 try:
@@ -34,6 +35,21 @@ class WebBrowser:
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
         self.logger = logger
+        
+        # Initialize KenPom scraper if credentials are available
+        self.kenpom_scraper = None
+        if config.is_kenpom_enabled():
+            try:
+                from src.data.scrapers.kenpom_scraper import KenPomScraper
+                self.kenpom_scraper = KenPomScraper()
+                if self.kenpom_scraper.is_authenticated():
+                    self.logger.info("✓ KenPom scraper initialized and authenticated")
+                else:
+                    self.logger.warning("KenPom scraper initialized but authentication failed")
+                    self.kenpom_scraper = None
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize KenPom scraper: {e}")
+                self.kenpom_scraper = None
     
     def search_web(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """
@@ -46,6 +62,9 @@ class WebBrowser:
         Returns:
             List of search results with title, url, snippet
         """
+        # Detect if this is a basketball-related query
+        query_lower = query.lower()
+        is_basketball_query = any(term in query_lower for term in ['basketball', 'ncaab', 'hoops', 'cbb', 'college basketball'])
         # Try DuckDuckGo Search API first (more reliable)
         if DDGS_AVAILABLE:
             try:
@@ -64,6 +83,16 @@ class WebBrowser:
                             snippet = r.get('body') or r.get('Body', '') or r.get('snippet', '') or ''
                             
                             if title and url:
+                                # Filter out football results if this is a basketball query
+                                if is_basketball_query:
+                                    url_lower = url.lower()
+                                    title_lower = title.lower()
+                                    snippet_lower = snippet.lower()
+                                    football_keywords = ['football', 'nfl', 'ncaaf', 'college football', 'cfb']
+                                    if any(keyword in url_lower or keyword in title_lower or keyword in snippet_lower for keyword in football_keywords):
+                                        self.logger.debug(f"Filtered out football result: {url}")
+                                        continue
+                                
                                 results.append({
                                     'title': title,
                                     'url': url,
@@ -204,13 +233,26 @@ class WebBrowser:
                             'snippet': snippet
                         })
             
-            # Remove duplicates based on URL
+            # Remove duplicates based on URL and filter football results for basketball queries
             seen_urls = set()
             unique_results = []
             for result in results:
-                if result['url'] not in seen_urls:
-                    seen_urls.add(result['url'])
-                    unique_results.append(result)
+                url = result.get('url', '')
+                if not url or url in seen_urls:
+                    continue
+                
+                # Filter out football results if this is a basketball query
+                if is_basketball_query:
+                    url_lower = url.lower()
+                    title_lower = result.get('title', '').lower()
+                    snippet_lower = result.get('snippet', '').lower()
+                    football_keywords = ['football', 'nfl', 'ncaaf', 'college football', 'cfb']
+                    if any(keyword in url_lower or keyword in title_lower or keyword in snippet_lower for keyword in football_keywords):
+                        self.logger.debug(f"Filtered out football result: {url}")
+                        continue
+                
+                seen_urls.add(url)
+                unique_results.append(result)
             
             self.logger.info(f"Found {len(unique_results)} search results for: {query} (using HTML scraping)")
             
@@ -315,7 +357,7 @@ class WebBrowser:
     
     def search_team_stats(self, team_name: str, sport: str = "basketball") -> List[Dict[str, Any]]:
         """
-        Search for team statistics
+        Search for team statistics, including advanced stats from KenPom/Torvik
         
         Args:
             team_name: Name of the team
@@ -324,21 +366,231 @@ class WebBrowser:
         Returns:
             List of stats information
         """
-        query = f"{team_name} {sport} stats recent games"
-        results = self.search_web(query, max_results=3)
+        # Try multiple search strategies to find advanced stats
+        queries = [
+            f"{team_name} {sport} kenpom",
+            f"{team_name} {sport} torvik",
+            f"{team_name} {sport} advanced stats",
+            f"{team_name} {sport} adjusted offense defense",
+            f"{team_name} {sport} stats recent games"
+        ]
+        
+        all_results = []
+        seen_urls = set()
+        
+        # Search with different queries to find KenPom/Torvik pages
+        for query in queries[:3]:  # Use first 3 queries to prioritize KenPom/Torvik
+            results = self.search_web(query, max_results=5)
+            
+            for result in results:
+                url = result.get('url', '')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    all_results.append(result)
         
         stats_info = []
-        for result in results[:2]:
+        # Prioritize KenPom/Torvik URLs
+        kenpom_torvik_urls = []
+        other_urls = []
+        
+        for result in all_results:
+            url = result.get('url', '').lower()
+            if 'kenpom' in url or 'barttorvik' in url or 'torvik' in url:
+                kenpom_torvik_urls.append(result)
+            else:
+                other_urls.append(result)
+        
+        # Process KenPom/Torvik URLs first with more content
+        for result in kenpom_torvik_urls[:2]:
+            content = self.fetch_url(result['url'], max_length=5000)  # More content for KenPom/Torvik
+            if content:
+                stats_info.append({
+                    'source': result['title'],
+                    'url': result['url'],
+                    'snippet': result['snippet'],
+                    'content': content[:2000],  # Reduced from 3000 to 2000 chars (still more than regular content)
+                    'is_advanced_stats': True
+                })
+        
+        # Then process other URLs
+        for result in other_urls[:2]:
             content = self.fetch_url(result['url'], max_length=2000)
             if content:
                 stats_info.append({
                     'source': result['title'],
                     'url': result['url'],
                     'snippet': result['snippet'],
-                    'content': content[:500]
+                    'content': content[:500],
+                    'is_advanced_stats': False
                 })
         
         return stats_info
+    
+    def search_advanced_stats(self, team_name: str, sport: str = "basketball", target_date: Optional[date] = None) -> List[Dict[str, Any]]:
+        """
+        Search specifically for advanced statistics (KenPom, Bart Torvik) for a team
+        
+        This method is optimized to find KenPom and Bart Torvik pages which contain
+        advanced metrics like AdjO, AdjD, AdjT, efficiency ratings, and rankings.
+        
+        If KenPom credentials are configured, this will use direct authenticated access
+        for more reliable and complete data extraction.
+        
+        Args:
+            team_name: Name of the team (e.g., "Georgia Bulldogs", "Duke")
+            sport: Sport type (default: "basketball")
+            target_date: Date to get stats for (defaults to today). Used for cache date matching.
+            
+        Returns:
+            List of advanced stats information with full content from KenPom/Torvik pages
+        """
+        advanced_stats_info = []
+        
+        # FIRST: Try authenticated KenPom access if available
+        if self.kenpom_scraper and self.kenpom_scraper.is_authenticated():
+            try:
+                self.logger.info(f"Using authenticated KenPom access for {team_name}")
+                kenpom_stats = self.kenpom_scraper.get_team_stats(team_name, target_date=target_date)
+                
+                if kenpom_stats:
+                    # Format KenPom stats as content string for LLM processing
+                    # IMPORTANT: Conference must be prominently displayed and accurate
+                    content_parts = []
+                    # Put conference FIRST to ensure it's seen and used correctly
+                    if 'conference' in kenpom_stats:
+                        content_parts.append(f"Conference: {kenpom_stats['conference']} (VERIFIED FROM KENPOM)")
+                    if 'kenpom_rank' in kenpom_stats:
+                        content_parts.append(f"Rank: {kenpom_stats['kenpom_rank']}")
+                    if 'w_l' in kenpom_stats:
+                        content_parts.append(f"W-L: {kenpom_stats['w_l']}")
+                    if 'wins' in kenpom_stats and 'losses' in kenpom_stats:
+                        content_parts.append(f"Record: {kenpom_stats['wins']}-{kenpom_stats['losses']}")
+                    if 'net_rating' in kenpom_stats:
+                        content_parts.append(f"NetRtg: {kenpom_stats['net_rating']}")
+                    if 'adj_offense' in kenpom_stats:
+                        content_parts.append(f"ORtg (AdjO): {kenpom_stats['adj_offense']}")
+                    if 'adj_defense' in kenpom_stats:
+                        content_parts.append(f"DRtg (AdjD): {kenpom_stats['adj_defense']}")
+                    if 'adj_tempo' in kenpom_stats:
+                        content_parts.append(f"AdjT: {kenpom_stats['adj_tempo']}")
+                    if 'luck' in kenpom_stats:
+                        content_parts.append(f"Luck: {kenpom_stats['luck']}")
+                    if 'sos' in kenpom_stats:
+                        content_parts.append(f"SOS: {kenpom_stats['sos']}")
+                    if 'ncsos' in kenpom_stats:
+                        content_parts.append(f"NCSOS: {kenpom_stats['ncsos']}")
+                    # Four factors (if available from team page)
+                    if 'efg_pct' in kenpom_stats:
+                        content_parts.append(f"eFG%: {kenpom_stats['efg_pct']}%")
+                    if 'turnover_pct' in kenpom_stats:
+                        content_parts.append(f"TO%: {kenpom_stats['turnover_pct']}%")
+                    if 'off_reb_pct' in kenpom_stats:
+                        content_parts.append(f"OR%: {kenpom_stats['off_reb_pct']}%")
+                    if 'ft_rate' in kenpom_stats:
+                        content_parts.append(f"FTR: {kenpom_stats['ft_rate']}")
+                    
+                    content = "\n".join(content_parts) if content_parts else "KenPom stats available"
+                    
+                    advanced_stats_info.append({
+                        'source': f"KenPom.com - {team_name}",
+                        'url': f"https://kenpom.com/team.php?team={team_name.replace(' ', '%20')}",
+                        'snippet': f"Authenticated KenPom data for {team_name}",
+                        'content': content,
+                        'is_kenpom': True,
+                        'is_torvik': False,
+                        'is_advanced_stats': True,
+                        'raw_stats': kenpom_stats  # Include raw stats for programmatic access
+                    })
+                    
+                    self.logger.info(f"✓ Successfully retrieved KenPom stats for {team_name}")
+            except Exception as e:
+                self.logger.warning(f"Error fetching authenticated KenPom data: {e}, falling back to web search")
+        
+        # FALLBACK: Use web search if KenPom scraper not available or failed
+        if not advanced_stats_info:
+            # Try multiple search queries specifically targeting KenPom/Torvik
+            queries = [
+                f"{team_name} {sport} kenpom",
+                f"{team_name} {sport} bart torvik",
+                f"{team_name} {sport} torvik",
+                f"{team_name} kenpom.com",
+                f"kenpom {team_name} {sport}",
+                f"barttorvik.com {team_name}"
+            ]
+            
+            all_results = []
+            seen_urls = set()
+            
+            # Search with different queries
+            for query in queries:
+                results = self.search_web(query, max_results=5)
+                
+                for result in results:
+                    url = result.get('url', '')
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_results.append(result)
+            
+            # Filter and prioritize KenPom/Torvik URLs
+            kenpom_torvik_results = []
+            
+            for result in all_results:
+                url = result.get('url', '').lower()
+                title = result.get('title', '').lower()
+                snippet = result.get('snippet', '').lower()
+                
+                # Check if this is a KenPom or Torvik page
+                is_kenpom = 'kenpom' in url or 'kenpom' in title
+                is_torvik = 'torvik' in url or 'barttorvik' in url or 'torvik' in title
+                
+                if is_kenpom or is_torvik:
+                    kenpom_torvik_results.append((result, is_kenpom, is_torvik))
+            
+            # Process KenPom/Torvik pages with full content extraction
+            for result, is_kenpom, is_torvik in kenpom_torvik_results[:3]:  # Top 3 results
+                url = result['url']
+                self.logger.info(f"Fetching advanced stats from {'KenPom' if is_kenpom else 'Torvik'}: {url}")
+                
+                # Fetch more content for KenPom/Torvik pages (they contain detailed stats)
+                content = self.fetch_url(url, max_length=8000)
+                if content:
+                    advanced_stats_info.append({
+                        'source': result['title'],
+                        'url': url,
+                        'snippet': result['snippet'],
+                        'content': content,  # Full content for better extraction
+                        'is_kenpom': is_kenpom,
+                        'is_torvik': is_torvik,
+                        'is_advanced_stats': True
+                    })
+            
+            # If no KenPom/Torvik pages found, try broader advanced stats searches
+            if not advanced_stats_info:
+                self.logger.warning(f"No KenPom/Torvik pages found for {team_name}, trying broader search")
+                fallback_queries = [
+                    f"{team_name} {sport} adjusted offense defense",
+                    f"{team_name} {sport} efficiency ratings",
+                    f"{team_name} {sport} advanced metrics"
+                ]
+                
+                for query in fallback_queries[:2]:
+                    results = self.search_web(query, max_results=3)
+                    for result in results[:1]:
+                        content = self.fetch_url(result['url'], max_length=3000)
+                        if content and any(keyword in content.lower() for keyword in ['adjusted', 'efficiency', 'adj', 'kenpom', 'torvik']):
+                            advanced_stats_info.append({
+                                'source': result['title'],
+                                'url': result['url'],
+                                'snippet': result['snippet'],
+                                'content': content[:2000],
+                                'is_kenpom': False,
+                                'is_torvik': False,
+                                'is_advanced_stats': True
+                            })
+                            break
+        
+        self.logger.info(f"Found {len(advanced_stats_info)} advanced stats sources for {team_name}")
+        return advanced_stats_info
     
     def search_game_predictions(self, team1: str, team2: str, sport: str = "basketball", game_date: Optional[date] = None) -> List[Dict[str, Any]]:
         """
@@ -353,48 +605,95 @@ class WebBrowser:
         Returns:
             List of prediction articles with content and date verification
         """
+        # Normalize team names using centralized normalization
+        from src.utils.team_normalizer import normalize_team_name_for_lookup
+        
+        team1_normalized = normalize_team_name_for_lookup(team1)
+        team2_normalized = normalize_team_name_for_lookup(team2)
+        
         # Include date in search query if provided
         date_str = ""
         if game_date:
-            # Format date for search (e.g., "January 15, 2025" or "2025-01-15")
+            # Format date for search (e.g., "November 18, 2025" or "11-18-2025")
             date_str = f" {game_date.strftime('%B %d, %Y')}"
+            date_str_short = f" {game_date.strftime('%m-%d-%Y')}"
+        else:
+            date_str_short = ""
+        
+        # For basketball, use more specific terms to avoid football results
+        sport_terms = []
+        if sport.lower() == "basketball":
+            sport_terms = ["NCAAB", "college basketball", "men's college basketball", "NCAA basketball"]
+        else:
+            sport_terms = [sport]
         
         # Try multiple search queries to find prediction articles
-        queries = [
-            f"{team1} vs {team2}{date_str} {sport} prediction",
-            f"{team1} vs {team2}{date_str} {sport} pick",
-            f"{team1} vs {team2} {sport} prediction{date_str}",
-            f"{team1} vs {team2} {sport} expert pick{date_str}"
-        ]
+        # Prioritize queries with sport-specific terms
+        queries = []
+        for sport_term in sport_terms[:2]:  # Use first 2 sport terms
+            queries.extend([
+                f"{team1_normalized} vs {team2_normalized}{date_str} {sport_term} prediction",
+                f"{team1_normalized} vs {team2_normalized}{date_str} {sport_term} pick",
+                f"{team1_normalized} vs {team2_normalized} {sport_term} prediction{date_str}",
+                f"{team1_normalized} vs {team2_normalized} {sport_term} expert pick{date_str}",
+                f"{team1_normalized} vs {team2_normalized}{date_str_short} {sport_term}",
+            ])
+        
+        # Also try with full team names but prioritize sport-specific terms
+        if sport.lower() == "basketball":
+            queries.extend([
+                f"{team1} vs {team2}{date_str} NCAAB prediction",
+                f"{team1} vs {team2}{date_str} college basketball pick",
+            ])
         
         all_results = []
         seen_urls = set()
         
         # Search with different queries to get variety
-        for query in queries[:2]:  # Use first 2 queries to avoid too many requests
-            results = self.search_web(query, max_results=4)
+        for query in queries[:4]:  # Use first 4 queries to get good coverage
+            results = self.search_web(query, max_results=5)
             
             for result in results:
-                url = result.get('url', '')
+                url = result.get('url', '').lower()
+                title = result.get('title', '').lower()
+                snippet = result.get('snippet', '').lower()
+                
+                # Prioritize basketball-related results
+                basketball_keywords = ['basketball', 'ncaab', 'nba', 'hoops', 'cbb']
+                is_basketball = any(keyword in url or keyword in title or keyword in snippet for keyword in basketball_keywords)
+                
+                # Prioritize known good sources
+                good_sources = ['covers.com', 'espn.com', 'draftkings.com', 'winnersandwhiners.com', 
+                               'sportsbookreview.com', 'thescore.com', 'actionnetwork.com']
+                is_good_source = any(source in url for source in good_sources)
+                
                 if url and url not in seen_urls:
                     seen_urls.add(url)
+                    # Add priority score for sorting
+                    result['_priority'] = (3 if is_good_source else 0) + (2 if is_basketball else 0)
                     all_results.append(result)
+        
+        # Sort by priority (good sources + basketball content first)
+        all_results.sort(key=lambda x: x.get('_priority', 0), reverse=True)
         
         # Fetch and extract content from prediction articles
         prediction_articles = []
-        for result in all_results[:3]:  # Limit to top 3 articles
-            content = self.fetch_url(result['url'], max_length=3000)
+        for result in all_results[:5]:  # Check top 5 results
+            url = result.get('url', '')
+            content = self.fetch_url(url, max_length=3000)
             if content:
+                content_lower = content.lower()
+                
                 # Check if content looks like a prediction article
                 prediction_keywords = ['prediction', 'pick', 'pick:', 'predicted', 'forecast', 
                                      'winner', 'spread', 'total', 'over/under', 'betting', 
-                                     'expert', 'analysis', 'preview']
-                if any(keyword in content.lower() for keyword in prediction_keywords):
+                                     'expert', 'analysis', 'preview', 'odds', 'line']
+                if any(keyword in content_lower for keyword in prediction_keywords):
                     article_data = {
                         'source': result['title'],
-                        'url': result['url'],
+                        'url': url,
                         'snippet': result['snippet'],
-                        'content': content[:2000],  # First 2000 chars of article
+                        'content': content[:1500],  # Reduced from 2000 to 1500 chars to reduce token usage
                         'game_date': game_date.isoformat() if game_date else None  # Include game date for reference
                     }
                     prediction_articles.append(article_data)

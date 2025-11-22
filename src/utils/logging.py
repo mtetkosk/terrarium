@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime
 
 
@@ -98,4 +98,61 @@ class AgentInteractionLogger:
         self.logger.info(
             f"🎯 DECISION: {agent_name} | {decision} | {details}"
         )
+
+
+def log_data_object(logger: logging.Logger, obj_name: str, obj: Any, max_depth: int = 10) -> None:
+    """Log a data object in a readable format for debugging
+    
+    Args:
+        logger: Logger instance
+        obj_name: Name/description of the object
+        obj: Object to log
+        max_depth: Maximum depth for nested structures (default: 5)
+    """
+    from src.utils.config import config
+    if not config.is_debug_mode():
+        return
+    
+    import json
+    from dataclasses import asdict, is_dataclass
+    from enum import Enum
+    from datetime import datetime, date
+    
+    def make_serializable(o: Any, depth: int = 0) -> Any:
+        """Recursively convert object to JSON-serializable format"""
+        if depth > max_depth:
+            return f"<max depth {max_depth} reached>"
+        
+        # Handle None
+        if o is None:
+            return None
+        
+        # Handle simple types first (before checking for __dict__)
+        if isinstance(o, (str, int, float, bool)):
+            return o
+        elif isinstance(o, (datetime, date)):
+            return o.isoformat()
+        elif isinstance(o, Enum):
+            # Enums should be converted to their value (they're str enums)
+            return o.value if hasattr(o, 'value') else str(o)
+        elif is_dataclass(o):
+            return make_serializable(asdict(o), depth + 1)
+        elif isinstance(o, (list, tuple)):
+            return [make_serializable(item, depth + 1) for item in o[:10]]  # Limit to 10 items
+        elif isinstance(o, dict):
+            return {k: make_serializable(v, depth + 1) for k, v in list(o.items())[:20]}  # Limit to 20 keys
+        elif hasattr(o, '__dict__'):
+            # Only serialize __dict__ if it's not an Enum (already handled above)
+            if isinstance(o, Enum):
+                return o.value if hasattr(o, 'value') else str(o)
+            return make_serializable(o.__dict__, depth + 1)
+        else:
+            return str(o)[:500]  # Limit string length
+    
+    try:
+        serializable = make_serializable(obj)
+        json_str = json.dumps(serializable, indent=2, default=str)
+        logger.debug(f"🔍 DEBUG DATA: {obj_name}\n{json_str}")
+    except Exception as e:
+        logger.debug(f"🔍 DEBUG DATA: {obj_name} (serialization failed: {e})\n{str(obj)[:1000]}")
 

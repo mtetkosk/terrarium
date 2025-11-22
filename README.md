@@ -1,17 +1,15 @@
 # Terrarium - Sports Gambling Agent System
 
-A multi-agent system for daily sports gambling that uses specialized AI agents to research games, model predictions, select bets, manage bankroll, and track performance.
+A multi-agent system for daily sports gambling that uses specialized AI agents to research games, model predictions, select bets, assign units, and track performance.
 
 ## Overview
 
-The system consists of 7 specialized agents working together in a coordinated workflow:
+The system consists of 5 specialized agents working together in a coordinated workflow:
 
-- **President**: Executive lead, final approval, can request revisions (uses `gpt-5.1` for best reasoning)
+- **President**: Assigns betting units, selects up to 5 best bets, and generates comprehensive daily reports
 - **Researcher**: Data gathering and game insights with web browsing capabilities
 - **Modeler**: Predictive modeling and EV calculations
-- **Picker**: Bet selection (supports parlays)
-- **Banker**: Bankroll management (Kelly criterion, dynamic exposure)
-- **Compliance**: Validation and sanity checks
+- **Picker**: Makes exactly one pick per game with detailed reasoning
 - **Auditor**: Performance tracking and daily reports
 
 ## Workflow Diagram
@@ -22,20 +20,15 @@ graph TD
     ScrapeGames --> ScrapeLines[Scrape Betting Lines<br/>The Odds API]
     ScrapeLines --> Researcher[Researcher Agent<br/>Web Research & Insights]
     Researcher --> Modeler[Modeler Agent<br/>Predictions & EV]
-    Modeler --> Picker[Picker Agent<br/>Select Best Bets]
-    Picker --> Banker[Banker Agent<br/>Allocate Stakes]
-    Banker --> Compliance[Compliance Agent<br/>Validate Picks]
-    Compliance --> President{President<br/>Review & Approve}
-    President -->|Request Revision| RevisionLoop[Revision Loop]
-    RevisionLoop --> Researcher
-    President -->|Approve| PlaceBets[Place Bets<br/>Simulated]
+    Modeler --> Picker[Picker Agent<br/>One Pick Per Game]
+    Picker --> President[President Agent<br/>Assign Units & Select Best Bets]
+    President --> PlaceBets[Place Best Bets<br/>Simulated]
     PlaceBets --> Auditor[Auditor Agent<br/>Review Previous Day]
     Auditor --> End([Workflow Complete])
     
     style Start fill:#e1f5ff
     style End fill:#e1f5ff
     style President fill:#4a90e2,color:#fff
-    style RevisionLoop fill:#f0f0f0
 ```
 
 ## Features
@@ -43,13 +36,13 @@ graph TD
 - **Real-time Game Scraping**: Uses ESPN API to fetch NCAA basketball games
 - **Betting Lines**: Real betting lines via The Odds API (with mock data fallback)
 - **Web Browsing**: Researcher agent can search the web for injury reports, stats, and news
-- **Multi-Agent System**: 7 specialized LLM-powered agents working together
-- **Revision Loop**: President can request revisions from other agents
+- **Multi-Agent System**: 5 specialized LLM-powered agents working together
 - **Comprehensive Logging**: Detailed logs of all agent interactions
-- **Bankroll Management**: Kelly criterion and dynamic risk management
+- **Unit Assignment**: President assigns decimal betting units (0.5, 1.0, 2.5, etc.) to each pick
+- **Best Bet Selection**: President selects up to 5 best bets from all picks
 - **Performance Tracking**: Daily reports with insights and recommendations
 - **Model Optimization**: Different OpenAI models per agent for cost efficiency
-- **Parlay Support**: Occasional parlay betting for entertainment
+- **One Pick Per Game**: Picker makes exactly one pick per game with detailed reasoning
 - **Batch Processing**: Efficient processing of games in batches with retry logic
 - **Caching**: Smart caching for betting lines (1 hour) and research (24 hours)
 
@@ -172,7 +165,7 @@ The Modeler generates predictions, probabilities, and edge estimates for each ga
 
 ### Picker Agent
 
-The Picker selects the best betting opportunities based on edge and confidence.
+The Picker makes exactly one pick per game, choosing the best bet type (spread, total, or moneyline) with detailed reasoning.
 
 **Example Output:**
 ```json
@@ -184,28 +177,16 @@ The Picker selects the best betting opportunities based on edge and confidence.
       "selection": "App State +3.5",
       "odds": "-110",
       "justification": [
-        "Strong edge: 26% positive EV (model prob 55% vs implied 29%)",
+        "Why spread was chosen: Strong edge (26% positive EV) compared to total (10% EV)",
+        "Model edge: 26% positive EV (model prob 55% vs implied 29%)",
         "Advanced stats favor App State (AdjO advantage +12.9)",
-        "Expert consensus: 4 of 6 favor App State +3.5"
+        "Expert consensus: 4 of 6 favor App State +3.5",
+        "Historical pattern: Spread bets with >25% edge have performed well"
       ],
       "edge_estimate": 0.26,
       "confidence": 0.75,
-      "favorite": true,
-      "confidence_score": 8
-    },
-    {
-      "game_id": "10",
-      "bet_type": "total",
-      "selection": "Over 145.5",
-      "odds": "-110",
-      "justification": [
-        "Moderate edge: 10% positive EV",
-        "Both teams play at faster pace (AdjT 68.3 vs 65.1)"
-      ],
-      "edge_estimate": 0.10,
-      "confidence": 0.70,
-      "favorite": false,
-      "confidence_score": 6
+      "confidence_score": 8,
+      "notes": "Clear value on spread vs other bet types"
     }
   ],
   "overall_strategy_summary": [
@@ -215,88 +196,9 @@ The Picker selects the best betting opportunities based on edge and confidence.
 }
 ```
 
-### Banker Agent
-
-The Banker allocates stakes using fractional Kelly criterion.
-
-**Example Output:**
-```json
-{
-  "bankroll_status": {
-    "current_bankroll": 100.0,
-    "base_unit_size": 1.0,
-    "risk_mode": "normal",
-    "notes": "Bankroll healthy, using standard sizing"
-  },
-  "sized_picks": [
-    {
-      "game_id": "10",
-      "bet_type": "spread",
-      "selection": "App State +3.5",
-      "odds": "-110",
-      "edge_estimate": 0.26,
-      "confidence": 0.75,
-      "units": 2.0,
-      "stake_rationale": [
-        "High edge (26%) with good confidence (75%)",
-        "Fractional Kelly suggests 2.0 units",
-        "Within daily exposure limits"
-      ],
-      "risk_flags": []
-    }
-  ],
-  "total_daily_exposure_summary": {
-    "num_bets": 5,
-    "total_units_risked": 11.0,
-    "concentration_notes": "Well-diversified across 5 games"
-  }
-}
-```
-
-### Compliance Agent
-
-The Compliance agent validates picks for quality and risk.
-
-**Example Output:**
-```json
-{
-  "bet_reviews": [
-    {
-      "game_id": "10",
-      "selection": "App State +3.5",
-      "odds": "-110",
-      "units": 2.0,
-      "compliance_status": "approved",
-      "issues": [],
-      "recommendations": []
-    },
-    {
-      "game_id": "15",
-      "selection": "Team X -15.5",
-      "odds": "-110",
-      "units": 5.0,
-      "compliance_status": "approved_with_warning",
-      "issues": [
-        "High stake size (5 units) relative to bankroll",
-        "Large spread may indicate overconfidence"
-      ],
-      "recommendations": [
-        "Consider reducing stake to 3 units",
-        "Verify model confidence is justified"
-      ]
-    }
-  ],
-  "global_risk_assessment": [
-    "Overall risk posture: Conservative",
-    "No correlated bets detected",
-    "Daily exposure within limits"
-  ]
-}
-```
-
 ### President Agent
 
-The President reviews and approves the final betting card.
+The President assigns betting units to each pick, selects up to 5 best bets, and generates a comprehensive daily report.
 
 **Example Output:**
 ```json
@@ -308,22 +210,31 @@ The President reviews and approves the final betting card.
       "selection": "App State +3.5",
       "odds": "-110",
       "edge_estimate": 0.26,
-      "units": 2.0,
-      "final_decision_reasoning": "Strong edge with solid research backing. Model confidence is high and expert consensus supports this pick."
-    }
-  ],
-  "rejected_picks": [
+      "units": 2.5,
+      "best_bet": true,
+      "final_decision_reasoning": "Comprehensive reasoning combining: Picker's justification shows strong edge (26% EV) and clear value. Model edge analysis confirms 55% true probability vs 29% implied. Research context: App State has offensive advantage (+12.9 AdjO), expert consensus favors this pick (4 of 6). Historical patterns show spread bets with >25% edge perform well. Unit assignment: 2.5 units based on high edge (26%), strong confidence (75%), and excellent data quality. Best bet selection: This is a top opportunity due to exceptional edge, strong research backing, and clear value vs market pricing."
+    },
     {
       "game_id": "15",
-      "reason_rejected": "Stake size too large relative to edge. Compliance warning indicates overconfidence. Recommend reducing stake before approval."
+      "bet_type": "total",
+      "selection": "Over 145.5",
+      "odds": "-110",
+      "edge_estimate": 0.12,
+      "units": 1.0,
+      "best_bet": false,
+      "final_decision_reasoning": "Moderate edge (12% EV) with decent confidence (70%). Both teams play at faster pace. Unit assignment: 1.0 unit for moderate edge and confidence."
     }
   ],
-  "revision_requests": [],
-  "high_level_strategy_notes": [
-    "Focusing on quality over quantity - 5 high-confidence picks",
-    "Maintaining conservative bankroll management",
-    "Avoiding correlated exposures"
-  ]
+  "daily_report_summary": {
+    "total_games": 12,
+    "total_units": 18.5,
+    "best_bets_count": 5,
+    "strategic_notes": [
+      "Strong slate with multiple high-edge opportunities",
+      "Focusing on spread bets with >20% edge",
+      "Maintaining unit discipline - highest units on best bets"
+    ]
+  }
 }
 ```
 
@@ -366,10 +277,6 @@ The Auditor reviews previous day's results and generates performance insights.
     "picker": [
       "Good selection of high-edge opportunities",
       "Consider being more selective on lower-confidence plays"
-    ],
-    "banker": [
-      "Stake sizing is appropriate",
-      "No adjustments needed to Kelly fraction"
     ],
     "president": [
       "Approval process working well",
@@ -426,8 +333,6 @@ LOG_LEVEL=INFO
 ```
 
 6. **Configure settings** in `config/config.yaml`:
-   - Bankroll settings (initial balance, min balance)
-   - Betting thresholds (min EV, max confidence)
    - Agent configurations
    - LLM model assignments
    - Scheduler settings
@@ -446,9 +351,14 @@ Run for a specific date:
 python -m src.main --once --date 2025-01-15
 ```
 
-Run in test mode (processes only first 5 games):
+Run in test mode (processes only first 5 games by default):
 ```bash
 python -m src.main --once --test
+```
+
+Run in test mode with custom number of games:
+```bash
+python -m src.main --once --test 10
 ```
 
 Force refresh of cached data:
@@ -484,8 +394,11 @@ review = coordinator.run_daily_workflow()
 # Run workflow for specific date
 review = coordinator.run_daily_workflow(date(2025, 1, 15))
 
-# Run in test mode
-review = coordinator.run_daily_workflow(test_mode=True)
+# Run in test mode (limit to 5 games)
+review = coordinator.run_daily_workflow(test_limit=5)
+
+# Run in test mode with custom limit
+review = coordinator.run_daily_workflow(test_limit=10)
 
 # Check results
 print(f"Card approved: {review.approved}")
@@ -504,34 +417,13 @@ The daily workflow follows these steps:
 2. **Scrape Betting Lines**: Gets betting lines from configured sources (The Odds API or mock data)
 3. **Research**: Researcher gathers insights, stats, and injury reports (with web browsing)
 4. **Model**: Modeler generates predictions and EV estimates (batch processing)
-5. **Select**: Picker chooses highest-EV bets (may create parlays)
-6. **Allocate**: Banker assigns stakes using Kelly criterion (dynamic max exposure)
-7. **Validate**: Compliance checks picks for quality and risk
-8. **Review**: President reviews and approves/rejects card
-9. **Revise** (if needed): If President requests revisions, workflow loops back
-10. **Place Bets**: Approved picks are placed (simulated)
-11. **Track**: Results are tracked for future analysis
-12. **Report**: Auditor generates daily performance report
+5. **Select**: Picker makes exactly one pick per game with detailed reasoning
+6. **Review & Assign**: President assigns betting units to each pick, selects up to 5 best bets, and generates comprehensive report
+7. **Place Bets**: Best bets are placed (simulated)
+8. **Track**: Results are tracked for future analysis
+9. **Report**: Auditor generates daily performance report
 
 ## Configuration
-
-### Bankroll Settings (`config/config.yaml`)
-
-```yaml
-bankroll:
-  initial: 100.0        # Starting bankroll
-  min_balance: 10.0     # Stop betting if below this (10% of initial)
-  # max_daily_exposure is calculated dynamically by Banker agent
-```
-
-### Betting Settings
-
-```yaml
-betting:
-  min_ev: 0.05           # Minimum expected value to consider
-  max_confidence: 0.85   # Reject overconfident picks
-  kelly_fraction: 0.25    # Fractional Kelly (25% of full Kelly)
-```
 
 ### Agent Settings
 
@@ -540,18 +432,9 @@ agents:
   researcher:
     enabled: true
   modeler:
-    model_type: "simple_linear"
+    batch_size: 5  # Process 5 games per batch
   picker:
-    max_picks_per_day: 10
-    parlay_enabled: true
-    parlay_probability: 0.15  # 15% chance to create a parlay
-    parlay_min_legs: 2
-    parlay_max_legs: 4
-    parlay_min_confidence: 0.65
-  banker:
-    strategy: "fractional_kelly"  # or "flat"
-  compliance:
-    enabled: true
+    batch_size: 12  # Process 12 games per batch
   auditor:
     enabled: true
   president:
@@ -570,13 +453,11 @@ llm:
   
   # Per-agent model optimization
   agent_models:
-    president: "gpt-5.1"        # Best reasoning for critical decisions
-    researcher: "gpt-5-mini"    # Many calls, needs efficiency
-    modeler: "gpt-5-mini"       # Per game, math in code
-    picker: "gpt-5-mini"        # Filters edges
-    banker: "gpt-5-mini"        # Risk management
-    compliance: "gpt-5-nano"   # Rule checking
-    auditor: "gpt-5-nano"       # Summarization
+    president: "gpt-5-mini"     # Assigns units and selects best bets
+    researcher: "gpt-4o-mini"   # Many calls, needs efficiency
+    modeler: "gpt-4o-mini"      # Per game, math in code
+    picker: "gpt-5-mini"         # Makes one pick per game
+    auditor: "gpt-4o-mini"       # Summarization
 ```
 
 **Note**: GPT-5 models don't support the `temperature` parameter, so it's automatically omitted for those models.
@@ -705,26 +586,26 @@ Each agent generates a detailed report saved to `data/reports/{agent_name}/{agen
 
 - **Researcher**: Game insights, advanced stats, injuries
 - **Modeler**: Predictions, edge estimates, confidence scores
-- **Picker**: Selected picks with rationale
-- **Banker**: Stake allocations and risk assessment
-- **Compliance**: Validation results
-- **President**: Approval decisions and strategic notes
+- **Picker**: One pick per game with detailed reasoning
+- **President**: Unit assignments, best bet selections, and comprehensive daily report
 - **Auditor**: Performance analysis and recommendations
 
 ### Betting Card
 
-A simple betting card is generated for manual review:
+A betting card is generated for manual review:
 - Saved to `data/reports/betting_card_YYYY-MM-DD.txt`
-- Shows favorite picks (with stakes) and other picks (for reference)
+- Shows all picks with units assigned
+- Highlights best bets (up to 5)
 - Includes confidence scores and rationale
 
 ### President's Report
 
-A comprehensive report from the President:
+A comprehensive daily report from the President:
 - Saved to `data/reports/president/presidents_report_YYYY-MM-DD.txt`
-- Includes approved picks with full rationale
-- Shows rejected picks with rejection reasons
-- Provides strategic overview
+- Lists every game with pick, reasoning, and unit assignment
+- Highlights best bets (up to 5) with detailed analysis
+- Includes strategic notes and daily summary
+- Combines Picker's reasoning with President's analysis
 
 ### Accessing Reports
 
@@ -753,16 +634,21 @@ cat data/reports/betting_card_2025-01-15.txt
 cat data/reports/president/presidents_report_2025-01-15.txt
 ```
 
-## Revision System
+## Unit Assignment and Best Bet Selection
 
-The President agent can request revisions from other agents if quality thresholds aren't met:
+The President agent assigns decimal betting units (0.5, 1.0, 2.5, etc.) to each pick based on:
+- Model edge and expected value
+- Confidence level and data quality
+- Risk/reward ratio
+- Historical performance patterns
 
-- **Research Revisions**: Requested if >30% of games have low data quality
-- **Modeling Revisions**: Requested if >40% of predictions have low confidence
-- **Selection Revisions**: Requested if >50% of picks have low EV
-- **Validation Revisions**: Requested if >50% rejection rate
+The President also selects up to 5 best bets from all picks. Best bets are chosen based on:
+- Highest expected value
+- Best risk-adjusted opportunities
+- Strongest model confidence and edge estimates
+- Clear value vs. market pricing
 
-The coordinator automatically loops back up to 2 times (configurable) to process revisions.
+All picks are included in the daily report, with best bets clearly labeled.
 
 ## Database
 
@@ -782,8 +668,8 @@ SELECT * FROM picks ORDER BY created_at DESC LIMIT 10;
 # View daily reports
 SELECT * FROM daily_reports ORDER BY date DESC;
 
-# View bankroll history
-SELECT * FROM bankroll_history ORDER BY date DESC;
+# View picks with units
+SELECT game_id, bet_type, stake_units, best_bet FROM picks ORDER BY created_at DESC LIMIT 10;
 ```
 
 ## Troubleshooting
@@ -856,21 +742,22 @@ terrarium/
 │   │   ├── researcher.py
 │   │   ├── modeler.py
 │   │   ├── picker.py
-│   │   ├── banker.py
-│   │   ├── compliance.py
 │   │   ├── president.py
-│   │   └── auditor.py
+│   │   ├── auditor.py
+│   │   └── results_processor.py
 │   ├── data/            # Data models and scrapers
 │   │   ├── models.py
 │   │   ├── storage.py
 │   │   └── scrapers/
 │   ├── orchestration/   # Workflow coordination
-│   │   └── coordinator.py
+│   │   ├── coordinator.py
+│   │   └── data_converter.py
 │   ├── prompts.py       # Agent system prompts
 │   └── utils/           # Utilities (logging, config, LLM)
 │       ├── logging.py
 │       ├── config.py
 │       ├── llm.py
+│       ├── reporting.py
 │       └── web_browser.py
 ├── config/              # Configuration files
 │   └── config.yaml
@@ -882,10 +769,9 @@ terrarium/
 │       ├── researcher/
 │       ├── modeler/
 │       ├── picker/
-│       ├── banker/
-│       ├── compliance/
 │       ├── president/
-│       └── auditor/
+│       ├── auditor/
+│       └── results_processor/
 └── tests/               # Test files
 ```
 
@@ -919,8 +805,8 @@ For issues or questions:
 
 After running the pipeline:
 1. Review daily reports to assess performance
-2. Adjust configuration based on results
-3. Monitor bankroll health
-4. Review revision requests to improve agent performance
-5. Analyze long-term trends using summary reports
-6. Check individual agent reports for detailed insights
+2. Check President's report for all picks with units and best bet selections
+3. Review betting card for best bets to place
+4. Analyze long-term trends using summary reports
+5. Check individual agent reports for detailed insights
+6. Monitor unit assignments and best bet performance over time

@@ -210,41 +210,106 @@ class ReportGenerator:
         finally:
             session.close()
     
-    def generate_betting_card(self, approved_picks: List[Pick], card_date: date) -> str:
-        """Generate betting card with approved picks for manual review"""
+    def generate_betting_card(
+        self, 
+        approved_picks: List[Pick], 
+        card_date: date, 
+        approved: bool = True,
+        modeler_output: Optional[Dict[str, Any]] = None,
+        president_response: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Generate betting card with picks for manual review
+        
+        Generated from president's report structure:
+        - Approved picks become best bets
+        - Rejected picks go in "other picks" section (without rejection reasons)
+        
+        Args:
+            approved_picks: List of picks to include in the card (includes both approved and rejected)
+            card_date: Date of the betting card
+            approved: Whether the card was approved (default: True)
+            modeler_output: Optional modeler output containing predicted scores
+            president_response: Optional president response (not currently used, for future extensibility)
+        """
         from src.data.storage import GameModel
         
+        status = "APPROVED" if approved else "REJECTED"
         lines = [
             "=" * 80,
             f"BETTING CARD - {card_date}",
+            f"STATUS: {status}",
             "=" * 80,
-            "",
-            f"Total Picks: {len(approved_picks)}",
             "",
         ]
         
-        # Separate favorites from other picks
-        favorite_picks = [p for p in approved_picks if p.favorite]
-        other_picks = [p for p in approved_picks if not p.favorite]
+        if not approved:
+            lines.append("⚠️  CARD REJECTED - NO BETS PLACED")
+            lines.append("")
+            lines.append("The President has rejected this betting card. All picks below were analyzed")
+            lines.append("but no bets will be placed. Review the picks and President's report for details.")
+            lines.append("")
+            lines.append("-" * 80)
+            lines.append("")
+        
+        # Separate best bets from other picks (best_bet is the primary field, favorite is deprecated)
+        favorite_picks = [p for p in approved_picks if p.best_bet or p.favorite]  # Support both for backwards compatibility
+        other_picks = [p for p in approved_picks if not (p.best_bet or p.favorite)]
         
         total_units = sum(p.stake_units for p in favorite_picks)
         total_amount = sum(p.stake_amount for p in favorite_picks)
         
-        lines.append(f"Total Picks: {len(approved_picks)} ({len(favorite_picks)} favorites, {len(other_picks)} others)")
-        lines.append(f"Total Units: {total_units:.2f}")
-        lines.append(f"Total Amount: ${total_amount:.2f}")
+        lines.append(f"Total Picks: {len(approved_picks)} ({len(favorite_picks)} best bets, {len(other_picks)} others)")
+        if approved:
+            lines.append(f"Total Units: {total_units:.2f}")
+            lines.append(f"Total Amount: ${total_amount:.2f}")
+        else:
+            lines.append(f"Total Units (not placed): {total_units:.2f}")
+            lines.append(f"Total Amount (not placed): ${total_amount:.2f}")
         lines.append("")
         lines.append("-" * 80)
         lines.append("")
         
+        # Get game information and betting lines from database first (needed for underdog matchup)
+        underdog_game_id = None
+        if president_response:
+            daily_portfolio = president_response.get("daily_portfolio", {})
+            if not daily_portfolio:
+                daily_portfolio = president_response
+            underdog_data = daily_portfolio.get("underdog_of_the_day")
+            if underdog_data:
+                underdog_game_id = underdog_data.get("game_id")
+        
         # Get game information and betting lines from database
         game_info_map = {}
         betting_lines_map = {}  # Map pick to original betting line for context
+        predicted_scores_map = {}  # Map game_id to predicted score
+        
+        # Extract predicted scores from modeler output
+        if modeler_output:
+            game_models = modeler_output.get("game_models", [])
+            for model in game_models:
+                game_id = model.get("game_id")
+                predicted_score = model.get("predicted_score")
+                if game_id and predicted_score:
+                    # Store as dict with away_score and home_score
+                    predicted_scores_map[str(game_id)] = predicted_score
+        
         if self.db:
             from src.data.storage import BettingLineModel
             session = self.db.get_session()
             try:
                 game_ids = [p.game_id for p in approved_picks if p.game_id]
+                # Also include underdog game_id if available
+                if president_response:
+                    daily_portfolio = president_response.get("daily_portfolio", {})
+                    if not daily_portfolio:
+                        daily_portfolio = president_response
+                    underdog = daily_portfolio.get("underdog_of_the_day")
+                    if underdog:
+                        underdog_game_id = underdog.get("game_id")
+                        if underdog_game_id and int(underdog_game_id) not in game_ids:
+                            game_ids.append(int(underdog_game_id))
+                
                 games = session.query(GameModel).filter(GameModel.id.in_(game_ids)).all()
                 for game in games:
                     game_info_map[game.id] = {
@@ -267,15 +332,58 @@ class ReportGenerator:
             finally:
                 session.close()
         
-        # Show favorites first
+        # Extract and display Underdog of the Day if available (after we have game_info_map)
+        if president_response and underdog_game_id:
+            daily_portfolio = president_response.get("daily_portfolio", {})
+            if not daily_portfolio:
+                daily_portfolio = president_response
+            
+            underdog = daily_portfolio.get("underdog_of_the_day")
+            if underdog:
+                lines.append("🐕 UNDERDOG OF THE DAY")
+                lines.append("=" * 80)
+                lines.append("")
+                
+                game_id_int = int(underdog_game_id) if isinstance(underdog_game_id, str) else underdog_game_id
+                game_info = game_info_map.get(game_id_int, {})
+                team1 = game_info.get('team1', 'Home')
+                team2 = game_info.get('team2', 'Away')
+                venue = game_info.get('venue', '')
+                
+                matchup = f"{team2} @ {team1}"
+                if venue:
+                    matchup += f" ({venue})"
+                
+                selection = underdog.get("selection", "")
+                odds = underdog.get("market_odds", "")
+                model_projection = underdog.get("model_projection", "")
+                reasoning = underdog.get("reasoning", "")
+                
+                lines.append(f"  Matchup: {matchup}")
+                lines.append(f"  Selection: {selection}")
+                if odds:
+                    lines.append(f"  Odds: {odds}")
+                if model_projection:
+                    lines.append(f"  Model Projection: {model_projection}")
+                if reasoning:
+                    lines.append(f"  Reasoning: {reasoning}")
+                
+                lines.append("")
+                lines.append("-" * 80)
+                lines.append("")
+        
+        # Show best bets first
         if favorite_picks:
-            lines.append("⭐ FAVORITE PICKS (Place These)")
+            if approved:
+                lines.append("⭐ BEST BETS (Place These)")
+            else:
+                lines.append("⭐ BEST BETS (Not Placed - Card Rejected)")
             lines.append("=" * 80)
             lines.append("")
             
             for i, pick in enumerate(favorite_picks, 1):
-                lines.append(f"FAVORITE #{i}")
-                self._format_pick_details(lines, pick, game_info_map, betting_lines_map, i)
+                lines.append(f"BEST BET #{i}")
+                self._format_pick_details(lines, pick, game_info_map, betting_lines_map, predicted_scores_map, i)
             
             lines.append("")
             lines.append("-" * 80)
@@ -289,7 +397,7 @@ class ReportGenerator:
             
             for i, pick in enumerate(other_picks, 1):
                 lines.append(f"PICK #{i}")
-                self._format_pick_details(lines, pick, game_info_map, betting_lines_map, len(favorite_picks) + i)
+                self._format_pick_details(lines, pick, game_info_map, betting_lines_map, predicted_scores_map, len(favorite_picks) + i)
             
             lines.append("")
         
@@ -299,12 +407,176 @@ class ReportGenerator:
         
         return "\n".join(lines)
     
+    def _get_game_info_map(self, game_ids: List[int]) -> Dict[int, Dict[str, str]]:
+        """Helper to get game information map from database"""
+        game_info_map = {}
+        if self.db:
+            from src.data.storage import GameModel
+            session = self.db.get_session()
+            try:
+                games = session.query(GameModel).filter(GameModel.id.in_(game_ids)).all()
+                for game in games:
+                    game_info_map[game.id] = {
+                        'team1': game.team1,
+                        'team2': game.team2,
+                        'venue': game.venue
+                    }
+            finally:
+                session.close()
+        return game_info_map
+    
+    def _format_pick_with_teams(
+        self,
+        pick_data: Dict[str, Any],
+        game_info_map: Dict[int, Dict[str, str]],
+        modeler_output: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Format a pick with team names and matchup instead of game number"""
+        game_id = pick_data.get('game_id')
+        if not game_id:
+            return f"Game {game_id} - {pick_data.get('bet_type', 'N/A').upper()} ({pick_data.get('selection', 'N/A')})"
+        
+        # Normalize game_id to int
+        try:
+            game_id_int = int(game_id) if isinstance(game_id, str) and game_id.isdigit() else game_id
+        except (ValueError, TypeError):
+            game_id_int = game_id
+        
+        # Get game info
+        game_info = game_info_map.get(game_id_int, {})
+        team1 = game_info.get('team1', 'Team 1')
+        team2 = game_info.get('team2', 'Team 2')
+        
+        # Get bet type and selection
+        bet_type = pick_data.get('bet_type', '').upper()
+        selection = pick_data.get('selection', '')
+        
+        # Get line - handle both float and string
+        line = pick_data.get('line', 0.0)
+        if isinstance(line, str):
+            try:
+                line = float(line)
+            except (ValueError, TypeError):
+                line = 0.0
+        
+        # Format the pick display
+        if bet_type == 'SPREAD':
+            # Extract team name from selection or determine from line
+            if selection:
+                # Try to find team name in selection
+                if team1 and team1.lower() in selection.lower():
+                    team_name = team1
+                    opponent = team2
+                elif team2 and team2.lower() in selection.lower():
+                    team_name = team2
+                    opponent = team1
+                else:
+                    # Infer from line: positive = away team (team2), negative = home team (team1)
+                    if line > 0:
+                        team_name = team2
+                        opponent = team1
+                    else:
+                        team_name = team1
+                        opponent = team2
+            else:
+                # Infer from line
+                if line > 0:
+                    team_name = team2
+                    opponent = team1
+                else:
+                    team_name = team1
+                    opponent = team2
+            
+            # Format line: show as +1.5 or -1.5, removing unnecessary decimals
+            if line == 0:
+                line_str = "0"
+            elif line == int(line):
+                line_str = f"{int(line):+d}"
+            else:
+                line_str = f"{line:+.1f}"
+            return f"{team_name} {line_str} vs {opponent}"
+        
+        elif bet_type == 'TOTAL':
+            # For totals, show the over/under
+            over_under = "Over" if "over" in selection.lower() else "Under" if "under" in selection.lower() else ""
+            if over_under:
+                return f"{over_under} {line:.1f} - {team2} @ {team1}"
+            else:
+                return f"Total {line:.1f} - {team2} @ {team1}"
+        
+        elif bet_type == 'MONEYLINE':
+            # Convert odds to int once for all uses
+            odds = pick_data.get('odds', 0)
+            try:
+                odds_int = int(odds) if odds else 0
+            except (ValueError, TypeError):
+                odds_int = 0
+            
+            # Try to extract team name from selection
+            if selection:
+                if team1 and team1.lower() in selection.lower():
+                    team_name = team1
+                    opponent = team2
+                elif team2 and team2.lower() in selection.lower():
+                    team_name = team2
+                    opponent = team1
+                else:
+                    # Infer from odds: negative = favorite (likely home), positive = underdog (likely away)
+                    if odds_int < 0:
+                        team_name = team1
+                        opponent = team2
+                    else:
+                        team_name = team2
+                        opponent = team1
+            else:
+                # Infer from odds
+                if odds_int < 0:
+                    team_name = team1
+                    opponent = team2
+                else:
+                    team_name = team2
+                    opponent = team1
+            
+            return f"{team_name} (ML {odds_int:+d}) vs {opponent}"
+        
+        else:
+            return f"{team2} @ {team1} - {bet_type} ({selection})"
+    
+    def _get_predicted_score(
+        self,
+        game_id: Any,
+        modeler_output: Optional[Dict[str, Any]] = None,
+        game_info_map: Optional[Dict[int, Dict[str, str]]] = None
+    ) -> Optional[str]:
+        """Get predicted score for a game from modeler output"""
+        if not modeler_output:
+            return None
+        
+        game_models = modeler_output.get("game_models", [])
+        for model in game_models:
+            if str(model.get("game_id")) == str(game_id):
+                predicted_score = model.get("predicted_score")
+                if predicted_score:
+                    away_score = predicted_score.get('away_score')
+                    home_score = predicted_score.get('home_score')
+                    if away_score is not None and home_score is not None:
+                        # If game_info_map provided, include team names
+                        if game_info_map:
+                            game_info = game_info_map.get(int(game_id) if isinstance(game_id, str) and game_id.isdigit() else game_id, {})
+                            team1 = game_info.get('team1', 'Home')
+                            team2 = game_info.get('team2', 'Away')
+                            return f"{team2} {away_score:.0f} - {team1} {home_score:.0f}"
+                        else:
+                            return f"{away_score:.0f}-{home_score:.0f}"
+        return None
+    
     def _format_pick_details(
         self,
         lines: List[str],
         pick: 'Pick',
         game_info_map: Dict[int, Dict[str, str]],
         betting_lines_map: Dict[int, Any],
+        predicted_scores_map: Dict[str, Dict[str, float]],
         pick_number: int
     ) -> None:
         """Helper method to format pick details for betting card"""
@@ -322,6 +594,14 @@ class ReportGenerator:
             lines.append(f"  Matchup: {matchup}")
         else:
             lines.append(f"  Game ID: {pick.game_id}")
+        
+        # Add predicted score if available
+        predicted_score = predicted_scores_map.get(str(pick.game_id))
+        if predicted_score:
+            away_score = predicted_score.get('away_score')
+            home_score = predicted_score.get('home_score')
+            if away_score is not None and home_score is not None:
+                lines.append(f"  Predicted Score: {team2} {away_score:.1f} - {team1} {home_score:.1f}")
         
         lines.append(f"  Bet Type: {pick.bet_type.value.upper()}")
         
@@ -384,8 +664,9 @@ class ReportGenerator:
             lines.append(f"  Line: {pick.line:+.1f}")
         lines.append(f"  Odds: {pick.odds:+d}")
         
-        # Show stake info only for favorites (they're the ones being bet)
-        if pick.favorite:
+        # Show stake info if stake was allocated (stake_units > 0)
+        # This should always be true for best bets that are being placed
+        if pick.stake_units > 0:
             lines.append(f"  Units: {pick.stake_units:.2f}")
             lines.append(f"  Amount: ${pick.stake_amount:.2f}")
         
@@ -432,22 +713,87 @@ class ReportGenerator:
         lines.append(f"Average Expected Value: {avg_ev:.3f}")
         lines.append("")
         
-        # Strategic notes from President
-        if card_review.review_notes:
+        # Strategic notes from President (from daily_report_summary)
+        daily_report_summary = president_response.get("daily_report_summary", {}) if president_response else {}
+        strategic_notes = daily_report_summary.get("strategic_notes", [])
+        if strategic_notes:
+            lines.append("📝 STRATEGIC NOTES")
+            lines.append("-" * 80)
+            for note in strategic_notes:
+                lines.append(f"  • {note}")
+            lines.append("")
+        elif card_review.review_notes:
             lines.append("📝 STRATEGIC NOTES")
             lines.append("-" * 80)
             lines.append(card_review.review_notes)
             lines.append("")
         
-        # Detailed picks with rationale
-        lines.append("🎯 APPROVED PICKS WITH RATIONALE")
+        # Best bets summary
+        best_bet_picks = [p for p in approved_picks if p.best_bet]
+        if best_bet_picks:
+            lines.append("⭐ BEST BETS (Top Picks)")
+            lines.append("-" * 80)
+            lines.append(f"Total Best Bets: {len(best_bet_picks)}")
+            lines.append("")
+        
+        # Get game info for all picks
+        game_ids = [p.game_id for p in approved_picks if p.game_id]
+        game_info_map = self._get_game_info_map(game_ids) if game_ids else {}
+        
+        # Detailed picks with rationale - show all picks
+        lines.append("🎯 ALL PICKS WITH RATIONALE")
         lines.append("-" * 80)
         lines.append("")
         
-        for i, pick in enumerate(approved_picks, 1):
-            lines.append(f"PICK #{i}")
-            lines.append(f"  Game ID: {pick.game_id}")
-            lines.append(f"  Bet Type: {pick.bet_type.value.upper()}")
+        # Sort picks: best bets first, then by units
+        sorted_picks = sorted(approved_picks, key=lambda p: (not p.best_bet, -p.stake_units))
+        
+        for i, pick in enumerate(sorted_picks, 1):
+            # Get game info
+            game_info = game_info_map.get(pick.game_id, {})
+            team1 = game_info.get('team1', 'Team 1')
+            team2 = game_info.get('team2', 'Team 2')
+            
+            # Format pick display with team names
+            pick_data = {
+                'game_id': pick.game_id,
+                'bet_type': pick.bet_type.value,
+                'selection': pick.selection_text or '',
+                'line': pick.line,
+                'odds': pick.odds
+            }
+            pick_display = self._format_pick_with_teams(pick_data, game_info_map, modeler_output)
+            
+            # Mark best bets
+            best_bet_marker = " ⭐ BEST BET" if pick.best_bet else ""
+            lines.append(f"PICK #{i}{best_bet_marker}")
+            lines.append(f"  {pick_display}")
+            
+            # Get predicted score
+            predicted_score = None
+            if modeler_output:
+                game_prediction = None
+                for pred in modeler_output.get('game_models', []):
+                    if str(pred.get('game_id')) == str(pick.game_id):
+                        game_prediction = pred
+                        break
+                
+                if game_prediction:
+                    predicted_score_dict = game_prediction.get("predicted_score")
+                    if predicted_score_dict:
+                        away_score = predicted_score_dict.get('away_score')
+                        home_score = predicted_score_dict.get('home_score')
+                        if away_score is not None and home_score is not None:
+                            # Format as "Away 84 - Home 78" for clarity
+                            predicted_score = f"{team2} {away_score:.0f} - {team1} {home_score:.0f}"
+            
+            if predicted_score:
+                lines.append(f"  Projected score: {predicted_score}")
+            
+            lines.append("")
+            
+            # Additional details (keep for reference but less prominent)
+            lines.append(f"  Details: {pick.bet_type.value.upper()}")
             if pick.line:
                 lines.append(f"  Line: {pick.line:+.1f}")
             lines.append(f"  Odds: {pick.odds:+d}")
@@ -500,8 +846,12 @@ class ReportGenerator:
                         pass
             
             if president_reasoning:
-                lines.append("  ✅ PRESIDENT'S DECISION REASONING:")
-                lines.append(f"    {president_reasoning}")
+                lines.append("  💼 PRESIDENT'S ANALYSIS:")
+                # Split reasoning into bullet points if it contains multiple sentences
+                reasoning_lines = president_reasoning.split('. ')
+                for reasoning_line in reasoning_lines:
+                    if reasoning_line.strip():
+                        lines.append(f"    • {reasoning_line.strip()}")
                 lines.append("")
             
             # Try to find additional context from researcher insights
@@ -514,20 +864,31 @@ class ReportGenerator:
                 
                 if game_insights:
                     lines.append("  🔍 RESEARCHER'S INSIGHTS:")
-                    if game_insights.get('key_injuries'):
-                        injuries = game_insights['key_injuries']
-                        if injuries:
-                            lines.append("    Injuries:")
-                            for injury in injuries[:3]:  # Limit to 3 most important
+                    # Check new schema first, fallback to old for compatibility
+                    injuries = game_insights.get('injuries') or game_insights.get('key_injuries', [])
+                    if injuries:
+                        lines.append("    Injuries:")
+                        for injury in injuries[:3]:  # Limit to 3 most important
+                            if isinstance(injury, dict):
+                                player = injury.get('player', 'Unknown')
+                                status = injury.get('status', 'Unknown')
+                                notes = injury.get('notes', '')
+                                lines.append(f"      - {player} ({status}): {notes}")
+                            else:
                                 lines.append(f"      - {injury}")
-                    if game_insights.get('recent_form_summary'):
+                    recent = game_insights.get('recent') or {}
+                    if recent:
+                        away_rec = recent.get('away', {}).get('rec', '')
+                        home_rec = recent.get('home', {}).get('rec', '')
+                        if away_rec or home_rec:
+                            lines.append(f"    Recent Form: Away {away_rec}, Home {home_rec}")
+                    elif game_insights.get('recent_form_summary'):
                         lines.append(f"    Recent Form: {game_insights['recent_form_summary']}")
-                    if game_insights.get('notable_context'):
-                        context = game_insights['notable_context']
-                        if context:
-                            lines.append("    Context:")
-                            for ctx in context[:3]:  # Limit to 3
-                                lines.append(f"      - {ctx}")
+                    context = game_insights.get('context') or game_insights.get('notable_context', [])
+                    if context:
+                        lines.append("    Context:")
+                        for ctx in context[:3]:  # Limit to 3
+                            lines.append(f"      - {ctx}")
                     lines.append("")
             
             # Try to find model predictions
@@ -551,7 +912,17 @@ class ReportGenerator:
                         lines.append(f"    Model Confidence: {total_pred.get('model_confidence', 0):.1%}")
                     elif pick.bet_type.value == 'moneyline' and 'moneyline' in predictions:
                         ml_pred = predictions['moneyline']
+                        # Handle both formats: team_probabilities dict or direct away_win_probability/home_win_probability
                         probs = ml_pred.get('team_probabilities', {})
+                        if not probs:
+                            # Try direct keys format
+                            away_prob = ml_pred.get('away_win_probability')
+                            home_prob = ml_pred.get('home_win_probability')
+                            if away_prob is not None or home_prob is not None:
+                                probs = {
+                                    'away': away_prob if away_prob is not None else 0,
+                                    'home': home_prob if home_prob is not None else 0
+                                }
                         lines.append(f"    Win Probabilities: {probs}")
                         lines.append(f"    Model Confidence: {ml_pred.get('model_confidence', 0):.1%}")
                     
@@ -559,8 +930,10 @@ class ReportGenerator:
                     edges = game_prediction.get('market_edges', [])
                     for edge in edges:
                         if edge.get('market_type') == pick.bet_type.value:
-                            lines.append(f"    Edge: {edge.get('edge', 0):.3f}")
-                            lines.append(f"    Edge Confidence: {edge.get('edge_confidence', 0):.1%}")
+                            edge_val = edge.get('edge', 0) or 0
+                            edge_conf = edge.get('edge_confidence', 0) or 0
+                            lines.append(f"    Edge: {edge_val:.3f}")
+                            lines.append(f"    Edge Confidence: {edge_conf:.1%}")
                             break
                     lines.append("")
             
@@ -749,22 +1122,43 @@ class ReportGenerator:
                         ml = market["moneyline"]
                         lines.append(f"    Moneyline: Away {ml.get('away', 'N/A')} / Home {ml.get('home', 'N/A')}")
                 
-                injuries = game.get("key_injuries", [])
+                # Check new schema first, fallback to old for compatibility
+                injuries = game.get("injuries") or game.get("key_injuries", [])
                 if injuries:
                     lines.append(f"  Key Injuries ({len(injuries)}):")
                     for injury in injuries[:5]:  # Limit to 5
-                        lines.append(f"    - {injury}")
+                        if isinstance(injury, dict):
+                            player = injury.get('player', 'Unknown')
+                            status = injury.get('status', 'Unknown')
+                            notes = injury.get('notes', '')
+                            lines.append(f"    - {player} ({status}): {notes}")
+                        else:
+                            lines.append(f"    - {injury}")
                 
-                if game.get("recent_form_summary"):
+                recent = game.get("recent") or {}
+                if recent:
+                    away_rec = recent.get('away', {}).get('rec', '')
+                    home_rec = recent.get('home', {}).get('rec', '')
+                    away_notes = recent.get('away', {}).get('notes', '')
+                    home_notes = recent.get('home', {}).get('notes', '')
+                    if away_rec or home_rec:
+                        lines.append(f"  Recent Form: Away {away_rec}" + (f" ({away_notes})" if away_notes else ""))
+                        lines.append(f"                Home {home_rec}" + (f" ({home_notes})" if home_notes else ""))
+                elif game.get("recent_form_summary"):
                     lines.append(f"  Recent Form: {game['recent_form_summary']}")
                 
-                context = game.get("notable_context", [])
+                context = game.get("context") or game.get("notable_context", [])
                 if context:
                     lines.append(f"  Notable Context ({len(context)}):")
                     for ctx in context[:5]:  # Limit to 5
                         lines.append(f"    - {ctx}")
                 
-                if game.get("data_quality_notes"):
+                dq = game.get("dq") or []
+                if dq:
+                    lines.append(f"  Data Quality Notes ({len(dq)}):")
+                    for note in dq[:5]:  # Limit to 5
+                        lines.append(f"    - {note}")
+                elif game.get("data_quality_notes"):
                     lines.append(f"  Data Quality Notes: {game['data_quality_notes']}")
                 
                 lines.append("")
@@ -791,19 +1185,45 @@ class ReportGenerator:
                         lines.append(f"    Confidence: {total.get('model_confidence', 0):.1%}")
                     if "moneyline" in predictions:
                         ml = predictions["moneyline"]
+                        # Handle both formats: team_probabilities dict or direct away_win_probability/home_win_probability
                         probs = ml.get("team_probabilities", {})
-                        lines.append(f"    Moneyline Probabilities: Away {probs.get('away', 0):.1%} / Home {probs.get('home', 0):.1%}")
+                        away_prob = probs.get('away')
+                        home_prob = probs.get('home')
+                        
+                        # If not found in team_probabilities, try direct keys
+                        if away_prob is None:
+                            away_prob = ml.get('away_win_probability')
+                        if home_prob is None:
+                            home_prob = ml.get('home_win_probability')
+                        
+                        # Default to 0 if still not found
+                        away_prob = away_prob if away_prob is not None else 0
+                        home_prob = home_prob if home_prob is not None else 0
+                        
+                        lines.append(f"    Moneyline Probabilities: Away {away_prob:.1%} / Home {home_prob:.1%}")
                         lines.append(f"    Confidence: {ml.get('model_confidence', 0):.1%}")
+                
+                predicted_score = model.get("predicted_score", {})
+                if predicted_score:
+                    away_score = predicted_score.get('away_score')
+                    home_score = predicted_score.get('home_score')
+                    if away_score is not None and home_score is not None:
+                        lines.append(f"  Predicted Score: Away {away_score:.1f} - Home {home_score:.1f}")
                 
                 edges = model.get("market_edges", [])
                 if edges:
                     lines.append(f"  Market Edges ({len(edges)}):")
                     for edge in edges:
-                        lines.append(f"    {edge.get('market_type', 'N/A').upper()}: Edge {edge.get('edge', 0):.3f} "
-                                   f"(Confidence: {edge.get('edge_confidence', 0):.1%})")
+                        edge_value = edge.get('edge')
+                        edge_str = f"{edge_value:.3f}" if edge_value is not None else "N/A"
+                        edge_confidence = edge.get('edge_confidence', 0) or 0
+                        model_prob = edge.get('model_estimated_probability', 0) or 0
+                        implied_prob = edge.get('implied_probability', 0) or 0
+                        lines.append(f"    {edge.get('market_type', 'N/A').upper()}: Edge {edge_str} "
+                                   f"(Confidence: {edge_confidence:.1%})")
                         lines.append(f"      Market Line: {edge.get('market_line', 'N/A')}")
-                        lines.append(f"      Model Prob: {edge.get('model_estimated_probability', 0):.1%} "
-                                   f"vs Implied: {edge.get('implied_probability', 0):.1%}")
+                        lines.append(f"      Model Prob: {model_prob:.1%} "
+                                   f"vs Implied: {implied_prob:.1%}")
                 
                 if model.get("model_notes"):
                     lines.append(f"  Model Notes: {model['model_notes']}")
@@ -828,8 +1248,10 @@ class ReportGenerator:
                 lines.append(f"  Bet Type: {pick.get('bet_type', 'N/A').upper()}")
                 lines.append(f"  Selection: {pick.get('selection', 'N/A')}")
                 lines.append(f"  Odds: {pick.get('odds', 'N/A')}")
-                lines.append(f"  Edge Estimate: {pick.get('edge_estimate', 0):.3f}")
-                lines.append(f"  Confidence: {pick.get('confidence', 0):.1%}")
+                edge_est = pick.get('edge_estimate', 0) or 0
+                conf = pick.get('confidence', 0) or 0
+                lines.append(f"  Edge Estimate: {edge_est:.3f}")
+                lines.append(f"  Confidence: {conf:.1%}")
                 
                 justification = pick.get("justification", [])
                 if justification:
@@ -839,96 +1261,6 @@ class ReportGenerator:
                 
                 if pick.get("notes"):
                     lines.append(f"  Notes: {pick['notes']}")
-                
-                lines.append("")
-        
-        elif agent_name.lower() == "banker":
-            sized_picks = agent_output.get("sized_picks", [])
-            bankroll_status = agent_output.get("bankroll_status", {})
-            
-            lines.append("Bankroll Status:")
-            lines.append(f"  Current Bankroll: ${bankroll_status.get('current_bankroll', 0):.2f}")
-            lines.append(f"  Base Unit Size: {bankroll_status.get('base_unit_size', 0):.2f}")
-            lines.append(f"  Risk Mode: {bankroll_status.get('risk_mode', 'N/A')}")
-            if bankroll_status.get("notes"):
-                lines.append(f"  Notes: {bankroll_status['notes']}")
-            
-            lines.append("")
-            lines.append(f"Total Sized Picks: {len(sized_picks)}")
-            
-            exposure = agent_output.get("total_daily_exposure_summary", {})
-            if exposure:
-                lines.append("")
-                lines.append("Daily Exposure Summary:")
-                lines.append(f"  Number of Bets: {exposure.get('num_bets', 0)}")
-                lines.append(f"  Total Units Risked: {exposure.get('total_units_risked', 0):.2f}")
-                if exposure.get("concentration_notes"):
-                    lines.append(f"  Concentration: {exposure['concentration_notes']}")
-            
-            lines.append("")
-            for i, pick in enumerate(sized_picks, 1):
-                lines.append(f"SIZED PICK #{i}")
-                lines.append(f"  Game ID: {pick.get('game_id', 'N/A')}")
-                lines.append(f"  Bet Type: {pick.get('bet_type', 'N/A').upper()}")
-                lines.append(f"  Selection: {pick.get('selection', 'N/A')}")
-                lines.append(f"  Odds: {pick.get('odds', 'N/A')}")
-                lines.append(f"  Units: {pick.get('units', 0):.2f}")
-                lines.append(f"  Edge: {pick.get('edge_estimate', 0):.3f}")
-                lines.append(f"  Confidence: {pick.get('confidence', 0):.1%}")
-                
-                rationale = pick.get("stake_rationale", [])
-                if rationale:
-                    lines.append("  Stake Rationale:")
-                    for r in rationale:
-                        lines.append(f"    - {r}")
-                
-                flags = pick.get("risk_flags", [])
-                if flags:
-                    lines.append("  Risk Flags:")
-                    for flag in flags:
-                        lines.append(f"    ⚠️  {flag}")
-                
-                lines.append("")
-        
-        elif agent_name.lower() == "compliance":
-            bet_reviews = agent_output.get("bet_reviews", [])
-            global_assessment = agent_output.get("global_risk_assessment", [])
-            
-            lines.append(f"Total Bet Reviews: {len(bet_reviews)}")
-            
-            approved = sum(1 for r in bet_reviews if r.get("compliance_status") == "approved")
-            approved_warn = sum(1 for r in bet_reviews if r.get("compliance_status") == "approved_with_warning")
-            rejected = sum(1 for r in bet_reviews if r.get("compliance_status") == "rejected")
-            
-            lines.append(f"  Approved: {approved}")
-            lines.append(f"  Approved with Warning: {approved_warn}")
-            lines.append(f"  Rejected: {rejected}")
-            
-            if global_assessment:
-                lines.append("")
-                lines.append("Global Risk Assessment:")
-                for item in global_assessment:
-                    lines.append(f"  - {item}")
-            
-            lines.append("")
-            for i, review in enumerate(bet_reviews, 1):
-                lines.append(f"REVIEW #{i}")
-                lines.append(f"  Game ID: {review.get('game_id', 'N/A')}")
-                lines.append(f"  Selection: {review.get('selection', 'N/A')}")
-                lines.append(f"  Units: {review.get('units', 0):.2f}")
-                lines.append(f"  Status: {review.get('compliance_status', 'N/A').upper()}")
-                
-                issues = review.get("issues", [])
-                if issues:
-                    lines.append("  Issues:")
-                    for issue in issues:
-                        lines.append(f"    ⚠️  {issue}")
-                
-                recommendations = review.get("recommendations", [])
-                if recommendations:
-                    lines.append("  Recommendations:")
-                    for rec in recommendations:
-                        lines.append(f"    ✓ {rec}")
                 
                 lines.append("")
         
@@ -946,12 +1278,36 @@ class ReportGenerator:
                 for note in strategy_notes:
                     lines.append(f"  - {note}")
             
+            # Get game info for all picks
+            all_game_ids = []
+            for pick in approved_picks + rejected_picks:
+                game_id = pick.get('game_id')
+                if game_id:
+                    try:
+                        all_game_ids.append(int(game_id) if isinstance(game_id, str) and game_id.isdigit() else game_id)
+                    except (ValueError, TypeError):
+                        pass
+            
+            game_info_map = self._get_game_info_map(all_game_ids) if all_game_ids else {}
+            
+            # Get modeler output if available (for predicted scores)
+            modeler_output = None  # Will be passed if available in future
+            
             if approved_picks:
                 lines.append("")
                 lines.append("APPROVED PICKS:")
                 for i, pick in enumerate(approved_picks, 1):
-                    lines.append(f"  #{i}: Game {pick.get('game_id', 'N/A')} - {pick.get('bet_type', 'N/A').upper()} "
-                               f"({pick.get('selection', 'N/A')}) - {pick.get('units', 0):.2f} units")
+                    # Format with team names
+                    pick_display = self._format_pick_with_teams(pick, game_info_map, modeler_output)
+                    units = pick.get('units', 0)
+                    lines.append(f"  #{i}: {pick_display} - {units:.2f} units")
+                    
+                    # Get predicted score if available
+                    game_id = pick.get('game_id')
+                    predicted_score = self._get_predicted_score(game_id, modeler_output, game_info_map)
+                    if predicted_score:
+                        lines.append(f"    Projected score: {predicted_score}")
+                    
                     if pick.get("final_decision_reasoning"):
                         lines.append(f"    Reasoning: {pick['final_decision_reasoning']}")
             
@@ -959,8 +1315,9 @@ class ReportGenerator:
                 lines.append("")
                 lines.append("REJECTED PICKS:")
                 for i, pick in enumerate(rejected_picks, 1):
-                    lines.append(f"  #{i}: Game {pick.get('game_id', 'N/A')} - {pick.get('bet_type', 'N/A').upper()} "
-                               f"({pick.get('selection', 'N/A')})")
+                    # Format with team names
+                    pick_display = self._format_pick_with_teams(pick, game_info_map, modeler_output)
+                    lines.append(f"  #{i}: {pick_display}")
                     lines.append(f"    Reason: {pick.get('reason_rejected', 'N/A')}")
         
         elif agent_name.lower() == "auditor":
@@ -986,8 +1343,10 @@ class ReportGenerator:
                     lines.append(f"  BET #{i}: {bet.get('selection', 'N/A')}")
                     lines.append(f"    Result: {bet.get('result', 'N/A').upper()}")
                     lines.append(f"    Units Result: {bet.get('units_result', 0):+.2f}")
-                    lines.append(f"    Edge Estimate: {bet.get('edge_estimate', 0):.3f}")
-                    lines.append(f"    Confidence: {bet.get('confidence', 0):.1%}")
+                    edge_est = bet.get('edge_estimate', 0) or 0
+                    conf = bet.get('confidence', 0) or 0
+                    lines.append(f"    Edge Estimate: {edge_est:.3f}")
+                    lines.append(f"    Confidence: {conf:.1%}")
                     lines.append(f"    Consistent with Model: {bet.get('was_result_consistent_with_model', 'N/A')}")
                     if bet.get("post_hoc_notes"):
                         lines.append(f"    Notes: {bet['post_hoc_notes']}")

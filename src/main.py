@@ -2,7 +2,9 @@
 
 import sys
 import argparse
+import logging
 from datetime import date
+from typing import Optional
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -17,11 +19,28 @@ logger = setup_logging(
 )
 
 
-def run_daily(target_date: date = None, test_mode: bool = False, force_refresh: bool = False):
-    """Run daily workflow"""
+def run_daily(target_date: date = None, test_limit: Optional[int] = None, force_refresh: bool = False, debug: bool = False, single_game_id: Optional[int] = None):
+    """Run daily workflow
+    
+    Args:
+        target_date: Date to run workflow for (default: today)
+        test_limit: If set, limit processing to this many games (default: None for all games)
+        force_refresh: If True, bypass cache and fetch fresh data
+        debug: If True, enable debug mode with detailed data logging
+        single_game_id: If set, process only this specific game ID
+    """
+    import os
+    if debug:
+        os.environ['DEBUG'] = 'true'
+        from src.utils.config import config
+        # Set log level to DEBUG if debug mode is enabled
+        logger.setLevel(logging.DEBUG)
+        for handler in logger.handlers:
+            handler.setLevel(logging.DEBUG)
+    
     coordinator = Coordinator()
     try:
-        review = coordinator.run_daily_workflow(target_date, test_mode=test_mode, force_refresh=force_refresh)
+        review = coordinator.run_daily_workflow(target_date, test_limit=test_limit, force_refresh=force_refresh, single_game_id=single_game_id)
         logger.info(f"Daily workflow completed. Card approved: {review.approved}")
         return review
     finally:
@@ -71,13 +90,26 @@ def main():
     )
     parser.add_argument(
         '--test',
-        action='store_true',
-        help='Test mode: Only process first 5 games for testing'
+        nargs='?',
+        type=int,
+        const=5,
+        default=None,
+        help='Test mode: Process only first N games (default: 5 if --test used without number)'
     )
     parser.add_argument(
         '--force-refresh',
         action='store_true',
         help='Force refresh: Bypass cache and fetch fresh data from APIs/web'
+    )
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Debug mode: Enable detailed logging of all data objects at each step'
+    )
+    parser.add_argument(
+        '--game-id',
+        type=int,
+        help='Single game mode: Process only the specified game ID'
     )
     
     args = parser.parse_args()
@@ -101,14 +133,22 @@ def main():
                 logger.error(f"Invalid date format: {args.date}. Use YYYY-MM-DD")
                 sys.exit(1)
         
-        if args.test:
-            logger.info("🧪 TEST MODE ENABLED: Processing only first 5 games")
+        test_limit = None
+        if args.test is not None:
+            test_limit = args.test
+            logger.info(f"🧪 TEST MODE ENABLED: Processing only first {test_limit} games")
         
         if args.force_refresh:
             logger.info("🔄 FORCE REFRESH ENABLED: Bypassing cache")
         
+        if args.debug:
+            logger.info("🐛 DEBUG MODE ENABLED")
+        
+        if args.game_id:
+            logger.info(f"🎯 SINGLE GAME MODE: Processing game ID {args.game_id}")
+        
         logger.info("Running daily workflow once...")
-        review = run_daily(target_date, test_mode=args.test, force_refresh=args.force_refresh)
+        review = run_daily(target_date, test_limit=test_limit, force_refresh=args.force_refresh, debug=args.debug, single_game_id=args.game_id)
         
         if review.approved:
             logger.info(f"Card approved with {len(review.picks_approved)} picks")

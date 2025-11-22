@@ -1,35 +1,18 @@
-bankroll:
-  initial: 100.0
-  min_balance: 10.0  # Stop betting if below (10% of initial)
-  # max_daily_exposure is now calculated dynamically by Banker agent
-  # based on bankroll health and performance
-
-betting:
-  min_ev: 0.05  # Minimum expected value
-  max_confidence: 0.85  # Reject overconfident picks
-  kelly_fraction: 0.25  # Fractional Kelly
-
 scraping:
   games_source: "espn"
   lines_sources: ["draftkings"]  # Only DraftKings to reduce API calls
-  update_interval: 3600  # seconds
+  kenpom:
+    # KenPom credentials (set via environment variables KENPOM_EMAIL and KENPOM_PASSWORD)
+    # If not set, will fall back to web search (limited access)
+    enabled: true  # Set to false to disable KenPom scraping even if credentials are set
 
 agents:
   researcher:
     enabled: true
   modeler:
-    model_type: "simple_linear"
+    batch_size: 5  # Process 5 games per batch (increased from 3 for better efficiency)
   picker:
-    max_picks_per_day: 10
-    parlay_enabled: true
-    parlay_probability: 0.15  # 15% chance to create a parlay when conditions are met
-    parlay_min_legs: 2
-    parlay_max_legs: 4
-    parlay_min_confidence: 0.65  # Only use high-confidence picks for parlays
-  banker:
-    strategy: "fractional_kelly"  # or "flat"
-  compliance:
-    enabled: true
+    batch_size: 12  # Process 12 games per batch
   auditor:
     enabled: true
   president:
@@ -38,7 +21,6 @@ agents:
 llm:
   # Default model (used if agent-specific model not specified)
   model: "gpt-5-mini"  # Options: gpt-4o-mini (cheapest), gpt-4o, gpt-4-turbo
-  temperature_default: 0.7
   
   # Per-agent model optimization
   # Model mapping: gpt-5-mini → gpt-4o-mini, gpt-5.1 → gpt-4o, gpt-5-nano → gpt-4o-mini
@@ -50,24 +32,31 @@ llm:
     president: "gpt-5.1"  # gpt-5.1 equivalent - best reasoning where it counts most
     
     # Researcher (High importance, many calls per run)
-    researcher: "gpt-5-mini"  # gpt-5-mini equivalent - tool use + web, good reasoning, cheaper
+    researcher: "gpt-4o-mini"  # gpt-5-mini equivalent - tool use + web, good reasoning, cheaper
     
     # Modeler (High importance, per game)
-    modeler: "gpt-5-mini"  # gpt-5-mini equivalent - numbers + probabilities, heavy math in code
+    modeler: "gpt-5.1"  # gpt-5-mini equivalent - numbers + probabilities, heavy math in code
     
     # Picker (High importance, 1-2x per run)
     picker: "gpt-5-mini"  # gpt-5-mini equivalent - filters edges into picks
     
-    # Banker (High importance, risk management, 1x per run)
-    banker: "gpt-5-mini"  # gpt-5-mini equivalent - sizing + risk buckets, math aided by code
-    
-    # Compliance (Medium importance, 1x per run)
-    compliance: "gpt-5-nano"  # gpt-5-nano equivalent - mostly rule-checking + commentary
-    
     # Auditor (Medium importance, 1x per day/week)
-    auditor: "gpt-5-nano"  # gpt-5-nano equivalent - summarization + pattern spotting
+    auditor: "gpt-4o-mini"  # gpt-5-nano equivalent - summarization + pattern spotting
 
 scheduler:
   run_time: "09:00"  # Daily run time
   timezone: "America/New_York"
+
+email:
+  # Email sending configuration
+  # SMTP settings (use environment variables for sensitive data)
+  smtp_server: "smtp.gmail.com"  # Gmail SMTP, change for other providers
+  smtp_port: 587  # TLS port (use 465 for SSL)
+  use_tls: true
+  # Set via environment variables:
+  # EMAIL_SENDER - sender email address
+  # EMAIL_PASSWORD - sender email password (use app password for Gmail)
+  # EMAIL_RECIPIENTS - comma-separated list of recipient emails
+  # Or specify recipients in config below
+  sender_name: "Terrarium Betting"  # Display name for sender
 

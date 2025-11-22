@@ -75,10 +75,16 @@ class LLMClient:
         if not self.model.startswith("gpt-5"):
             kwargs["temperature"] = temperature
         
+        # GPT-5 models use max_completion_tokens instead of max_tokens
         if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+            if self.model.startswith("gpt-5"):
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
         
-        # If response_format is specified, use structured output
+        # If response_format is specified, use structured output (JSON schema)
+        # Note: Structured output requires models that support it (e.g., gpt-4o, gpt-4-turbo, gpt-5)
+        # For models that don't support it, the API will return an error - we'll handle that gracefully
         if response_format:
             kwargs["response_format"] = response_format
         
@@ -90,7 +96,22 @@ class LLMClient:
         
         try:
             self.logger.debug(f"Calling {self.model} with {len(system_prompt)} char system prompt")
-            response = self.client.chat.completions.create(**kwargs)
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+            except Exception as api_error:
+                error_msg = str(api_error)
+                # Check if error is due to unsupported response_format
+                if "response_format" in error_msg.lower() or "structured output" in error_msg.lower():
+                    self.logger.warning(
+                        f"Model {self.model} may not support structured output. "
+                        f"Falling back to regular JSON parsing. Error: {error_msg}"
+                    )
+                    # Retry without response_format
+                    if response_format:
+                        kwargs.pop("response_format", None)
+                        response = self.client.chat.completions.create(**kwargs)
+                else:
+                    raise
             
             # Extract and log token usage
             usage = response.usage
@@ -327,12 +348,12 @@ def get_llm_client(agent_name: Optional[str] = None) -> LLMClient:
     if agent_name:
         # Get agent-specific model (this will log the model name)
         model = config.get_agent_model(agent_name)
-        logger.info(f"🤖 LLM Client for '{agent_name}': using model '{model}'")
+        logger.debug(f"🤖 LLM Client for '{agent_name}': using model '{model}'")
     else:
         # Get default model
         llm_config = config.get_llm_config()
         model = llm_config.get('model', 'gpt-4o-mini')
-        logger.info(f"🤖 LLM Client (default): using model '{model}'")
+        logger.debug(f"🤖 LLM Client (default): using model '{model}'")
     
     return LLMClient(model=model)
 
