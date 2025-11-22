@@ -2,7 +2,7 @@
 
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Date, Boolean, JSON, ForeignKey, Enum as SQLEnum
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Date, Boolean, JSON, ForeignKey, Enum as SQLEnum, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.orm import scoped_session
@@ -243,6 +243,96 @@ class DailyReportModel(Base):
     insights = Column(JSON, nullable=True)  # What went well and what needs improvement
     recommendations = Column(JSON, nullable=True)  # List of recommendations
     created_at = Column(DateTime, default=datetime.now)
+
+
+class AnalyticsGameModel(Base):
+    """Analytics game database model"""
+    __tablename__ = 'analytics_games'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game_id = Column(Integer, ForeignKey('games.id'), nullable=False)
+    date = Column(Date, nullable=False)
+    home_team = Column(String, nullable=False)
+    away_team = Column(String, nullable=False)
+    home_conference = Column(String, nullable=True)
+    away_conference = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    
+    # Unique constraint on game_id and date
+    __table_args__ = (
+        UniqueConstraint('game_id', 'date', name='uq_analytics_games_game_date'),
+    )
+    
+    # Relationships
+    game = relationship("GameModel")
+
+
+class AnalyticsOddsModel(Base):
+    """Analytics odds database model"""
+    __tablename__ = 'analytics_odds'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game_id = Column(Integer, ForeignKey('games.id'), nullable=False)
+    date = Column(Date, nullable=False)
+    home_spread = Column(Float, nullable=True)
+    home_spread_odds = Column(Integer, nullable=True)
+    away_spread = Column(Float, nullable=True)
+    away_spread_odds = Column(Integer, nullable=True)
+    total = Column(Float, nullable=True)
+    over_odds = Column(Integer, nullable=True)
+    under_odds = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    
+    # Unique constraint on game_id and date
+    __table_args__ = (
+        UniqueConstraint('game_id', 'date', name='uq_analytics_odds_game_date'),
+    )
+    
+    # Relationships
+    game = relationship("GameModel")
+
+
+class AnalyticsPredictionModel(Base):
+    """Analytics prediction database model"""
+    __tablename__ = 'analytics_predictions'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game_id = Column(Integer, ForeignKey('games.id'), nullable=False)
+    date = Column(Date, nullable=False)
+    home_projected_score = Column(Float, nullable=True)
+    away_projected_score = Column(Float, nullable=True)
+    projected_total = Column(Float, nullable=True)
+    projected_spread = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    
+    # Unique constraint on game_id and date
+    __table_args__ = (
+        UniqueConstraint('game_id', 'date', name='uq_analytics_predictions_game_date'),
+    )
+    
+    # Relationships
+    game = relationship("GameModel")
+
+
+class AnalyticsResultModel(Base):
+    """Analytics result database model"""
+    __tablename__ = 'analytics_results'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game_id = Column(Integer, ForeignKey('games.id'), nullable=False)
+    date = Column(Date, nullable=False)
+    home_actual_score = Column(Integer, nullable=True)
+    away_actual_score = Column(Integer, nullable=True)
+    actual_total = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    
+    # Unique constraint on game_id and date
+    __table_args__ = (
+        UniqueConstraint('game_id', 'date', name='uq_analytics_results_game_date'),
+    )
+    
+    # Relationships
+    game = relationship("GameModel")
 
 
 class Database:
