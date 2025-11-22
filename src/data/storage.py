@@ -47,6 +47,7 @@ class BettingLineModel(Base):
     bet_type = Column(SQLEnum(BetType), nullable=False)
     line = Column(Float, nullable=False)
     odds = Column(Integer, nullable=False)
+    team = Column(String, nullable=True)  # Team name for spread/moneyline, "over"/"under" for totals
     timestamp = Column(DateTime, default=datetime.now)
     
     # Relationships
@@ -126,7 +127,9 @@ class PickModel(Base):
     expected_value = Column(Float, nullable=False)
     book = Column(String, nullable=False)
     parlay_legs = Column(JSON, nullable=True)  # List of pick IDs for parlays
-    favorite = Column(Boolean, default=False)  # True if this is a favorite pick
+    selection_text = Column(String, nullable=True)  # Original selection text from Picker
+    best_bet = Column(Boolean, default=False)  # True if this is a "best bet" (reviewed by President)
+    favorite = Column(Boolean, default=False)  # Deprecated: use best_bet instead. Kept for backwards compatibility
     confidence_score = Column(Integer, default=5)  # 1-10 confidence score
     created_at = Column(DateTime, default=datetime.now)
     
@@ -275,9 +278,24 @@ class Database:
         from sqlalchemy import inspect, text
         
         inspector = inspect(self.engine)
+        table_names = inspector.get_table_names()
         
-        # Check if picks table exists
-        if 'picks' in inspector.get_table_names():
+        # Migrate betting_lines table
+        if 'betting_lines' in table_names:
+            existing_columns = [col['name'] for col in inspector.get_columns('betting_lines')]
+            
+            # Add team column if missing
+            if 'team' not in existing_columns:
+                try:
+                    with self.engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE betting_lines ADD COLUMN team VARCHAR"))
+                        conn.commit()
+                    logger.info("✅ Added 'team' column to betting_lines table")
+                except Exception as e:
+                    logger.warning(f"Could not add 'team' column to betting_lines: {e}")
+        
+        # Migrate picks table
+        if 'picks' in table_names:
             # Get existing columns
             existing_columns = [col['name'] for col in inspector.get_columns('picks')]
             
@@ -301,6 +319,27 @@ class Database:
                     logger.info("✅ Added 'confidence_score' column to picks table")
                 except Exception as e:
                     logger.warning(f"Could not add 'confidence_score' column: {e}")
+            
+            # Add best_bet column if missing
+            if 'best_bet' not in existing_columns:
+                try:
+                    with self.engine.connect() as conn:
+                        # SQLite uses INTEGER for booleans (0/1)
+                        conn.execute(text("ALTER TABLE picks ADD COLUMN best_bet INTEGER DEFAULT 0"))
+                        conn.commit()
+                    logger.info("✅ Added 'best_bet' column to picks table")
+                except Exception as e:
+                    logger.warning(f"Could not add 'best_bet' column: {e}")
+            
+            # Add selection_text column if missing
+            if 'selection_text' not in existing_columns:
+                try:
+                    with self.engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE picks ADD COLUMN selection_text VARCHAR"))
+                        conn.commit()
+                    logger.info("✅ Added 'selection_text' column to picks table")
+                except Exception as e:
+                    logger.warning(f"Could not add 'selection_text' column: {e}")
 
 
 # Global database instance

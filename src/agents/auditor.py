@@ -412,20 +412,40 @@ class Auditor(BaseAgent):
         if not picks:
             return metrics
         
+        # Extract pick data upfront to avoid detached instance errors
+        # Access all attributes while picks are still bound to session
+        picks_data = []
+        for pick in picks:
+            try:
+                pick_data = {
+                    'id': pick.id,
+                    'confidence': pick.confidence,
+                    'expected_value': pick.expected_value,
+                    'stake_amount': pick.stake_amount or 0.0
+                }
+                picks_data.append(pick_data)
+            except Exception as e:
+                # If pick is detached, log and skip
+                self.log_error(f"Error accessing pick attributes in _calculate_accuracy_metrics: {e}")
+                continue
+        
+        if not picks_data:
+            return metrics
+        
         # Average confidence
-        avg_confidence = sum(p.confidence for p in picks) / len(picks)
+        avg_confidence = sum(p['confidence'] for p in picks_data) / len(picks_data)
         metrics['average_confidence'] = avg_confidence
         
         # Average EV
-        avg_ev = sum(p.expected_value for p in picks) / len(picks)
+        avg_ev = sum(p['expected_value'] for p in picks_data) / len(picks_data)
         metrics['average_ev'] = avg_ev
         
         # Calculate realized vs expected
-        total_expected_ev = sum(p.expected_value * p.stake_amount for p in picks)
+        total_expected_ev = sum(p['expected_value'] * p['stake_amount'] for p in picks_data)
         total_realized = 0.0
         
-        for pick in picks:
-            bet = session.query(BetModel).filter_by(pick_id=pick.id).first()
+        for pick_data in picks_data:
+            bet = session.query(BetModel).filter_by(pick_id=pick_data['id']).first()
             if bet and bet.result == BetResult.WIN:
                 total_realized += bet.profit_loss
         

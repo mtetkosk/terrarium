@@ -3,7 +3,7 @@
 import os
 import yaml
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 from src.utils.logging import get_logger
 
@@ -55,6 +55,21 @@ class Config:
         """Get scraping configuration"""
         return self._config.get('scraping', {})
     
+    def get_kenpom_credentials(self) -> Optional[Dict[str, str]]:
+        """Get KenPom credentials from environment variables"""
+        email = os.getenv('KENPOM_EMAIL')
+        password = os.getenv('KENPOM_PASSWORD')
+        
+        if email and password:
+            return {'email': email, 'password': password}
+        return None
+    
+    def is_kenpom_enabled(self) -> bool:
+        """Check if KenPom scraping is enabled"""
+        scraping_config = self.get_scraping_config()
+        kenpom_config = scraping_config.get('kenpom', {})
+        return kenpom_config.get('enabled', True) and self.get_kenpom_credentials() is not None
+    
     def get_agents_config(self) -> Dict[str, Any]:
         """Get agents configuration"""
         return self._config.get('agents', {})
@@ -71,6 +86,10 @@ class Config:
         """Get log level"""
         return os.getenv('LOG_LEVEL', 'INFO')
     
+    def is_debug_mode(self) -> bool:
+        """Check if debug mode is enabled"""
+        return os.getenv('DEBUG', '').lower() in ('true', '1', 'yes') or self.get('debug', False)
+    
     def get_llm_config(self) -> Dict[str, Any]:
         """Get LLM configuration"""
         return self._config.get('llm', {})
@@ -82,7 +101,7 @@ class Config:
         # Use agent-specific model if available, otherwise default
         model_name = agent_models.get(agent_name.lower(), llm_config.get('model', 'gpt-4o-mini'))
         
-        logger.info(f"📋 Model config for '{agent_name}': '{model_name}'")
+        logger.debug(f"📋 Model config for '{agent_name}': '{model_name}'")
         
         return model_name
 

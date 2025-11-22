@@ -62,6 +62,7 @@ class BettingLine:
     bet_type: BetType
     line: float
     odds: int
+    team: Optional[str] = None  # Team name for spread/moneyline, "over"/"under" for totals
     id: Optional[int] = None
     timestamp: datetime = field(default_factory=datetime.now)
 
@@ -139,7 +140,8 @@ class Pick:
     stake_amount: float = 0.0
     parlay_legs: Optional[List[int]] = None
     selection_text: Optional[str] = None  # Original selection text from Picker (e.g., "Team A +3.5", "Over 160.5")
-    favorite: bool = False  # True if this is a favorite pick (will be placed on betting card)
+    best_bet: bool = False  # True if this is a "best bet" (will be reviewed by President)
+    favorite: bool = False  # Deprecated: use best_bet instead. Kept for backwards compatibility
     confidence_score: int = 5  # 1-10 confidence score (1 = low, 10 = high)
     created_at: datetime = field(default_factory=datetime.now)
 

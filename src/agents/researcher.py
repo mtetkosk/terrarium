@@ -15,6 +15,7 @@ from src.data.storage import Database
 from src.prompts import RESEARCHER_PROMPT
 from src.utils.logging import get_logger
 from src.utils.web_browser import WebBrowser, get_web_browser
+from src.utils.json_schemas import get_researcher_schema
 
 logger = get_logger("agents.researcher")
 
@@ -65,23 +66,37 @@ class Researcher(BaseAgent):
         # Use hash for shorter keys
         return hashlib.md5(key_data.encode()).hexdigest()
     
-    def _is_cache_valid(self, cache_entry: Dict[str, Any]) -> bool:
-        """Check if cache entry is still valid"""
+    def _is_cache_valid(self, cache_entry: Dict[str, Any], target_date: Optional[date]) -> bool:
+        """Check if cache entry is valid for the target date (ignores timestamp age)"""
         try:
-            cached_time = datetime.fromisoformat(cache_entry.get('timestamp', ''))
-            age = datetime.now() - cached_time
-            return age < self.cache_ttl
+            # Check if cache entry has a date field
+            cached_date_str = cache_entry.get('date')
+            if cached_date_str is None:
+                return False
+            
+            # Parse the cached date
+            if isinstance(cached_date_str, str):
+                cached_date = date.fromisoformat(cached_date_str)
+            else:
+                cached_date = cached_date_str
+            
+            # If target_date is provided, check if it matches
+            if target_date is not None:
+                return cached_date == target_date
+            else:
+                # If no target_date provided, check if cached date exists (any date is valid)
+                return cached_date is not None
         except Exception:
             return False
     
     def _get_cached_insights(self, games: List[Game], target_date: Optional[date]) -> Optional[Dict[str, Any]]:
-        """Get cached insights if available and valid"""
+        """Get cached insights if available and valid for the target date"""
         cache_key = self._get_cache_key(games, target_date)
         cache_entry = self.cache.get(cache_key)
         
-        if cache_entry and self._is_cache_valid(cache_entry):
-            age = datetime.now() - datetime.fromisoformat(cache_entry['timestamp'])
-            logger.info(f"Using cached researcher insights (age: {age})")
+        if cache_entry and self._is_cache_valid(cache_entry, target_date):
+            cached_date = cache_entry.get('date', 'unknown')
+            logger.info(f"Using cached researcher insights for date {cached_date}")
             return cache_entry.get('insights')
         return None
     
@@ -130,6 +145,8 @@ class Researcher(BaseAgent):
         batch_size = 5  # Process 5 games at a time
         all_insights = []
         failed_batches = []
+        # Track which games have been processed
+        processed_game_ids = set()
         
         for i in range(0, len(games), batch_size):
             batch_games = games[i:i + batch_size]
@@ -149,19 +166,43 @@ class Researcher(BaseAgent):
             
             if batch_insights and len(batch_insights) > 0:
                 all_insights.extend(batch_insights)
+                # Track which games were successfully processed
+                for insight in batch_insights:
+                    game_id = insight.get('game_id')
+                    if game_id:
+                        processed_game_ids.add(str(game_id))
                 self.log_info(f"✅ Batch {batch_num} completed: {len(batch_insights)} insights")
             else:
                 failed_batches.append(batch_num)
                 self.log_warning(f"⚠️  Batch {batch_num} failed to generate insights")
         
+        # CRITICAL: Create fallback entries for any games that failed to process
+        # This ensures ALL games are passed to the next agent, even if data is unavailable
+        missing_games = []
+        for game in games:
+            game_id_str = str(game.id) if game.id else f"{game.team1}_{game.team2}_{game.date}"
+            if game_id_str not in processed_game_ids:
+                # Create fallback entry with minimal data
+                fallback_insight = self._create_fallback_insight(game, target_date, betting_lines)
+                all_insights.append(fallback_insight)
+                missing_games.append(game_id_str)
+                self.log_warning(f"⚠️  Created fallback insight for game {game_id_str} (data unavailable)")
+        
         # Combine all insights
         result = {"games": all_insights}
         
-        if failed_batches:
-            self.log_warning(f"⚠️  {len(failed_batches)} batch(es) failed: {failed_batches}")
-            self.log_warning(f"Generated insights for {len(all_insights)}/{len(games)} games")
+        if failed_batches or missing_games:
+            self.log_warning(f"⚠️  {len(failed_batches)} batch(es) failed, {len(missing_games)} games needed fallback entries")
+            self.log_warning(f"Total insights: {len(all_insights)}/{len(games)} games (all games included, some with limited data)")
         else:
             self.log_info(f"✅ Successfully generated insights for all {len(all_insights)} games")
+        
+        # Validate that we have insights for all games
+        if len(all_insights) != len(games):
+            self.log_error(
+                f"CRITICAL: Game count mismatch! Expected {len(games)} games, got {len(all_insights)} insights. "
+                f"This should not happen - all games should have entries."
+            )
         
         # Cache the results (even if incomplete, to avoid re-processing successful batches)
         self._cache_insights(games, target_date, result)
@@ -272,17 +313,42 @@ class Researcher(BaseAgent):
                 market = {}
                 for line in game_lines:
                     if line.bet_type.value == "spread":
-                        market["spread"] = f"{line.line:+.1f}" if line.line else None
+                        # Format spread with team name if available
+                        if line.team:
+                            # Match team name to home/away
+                            if line.team.lower() in game.team1.lower() or game.team1.lower() in line.team.lower():
+                                market["spread"] = f"{game.team1} {line.line:+.1f}"
+                            elif line.team.lower() in game.team2.lower() or game.team2.lower() in line.team.lower():
+                                market["spread"] = f"{game.team2} {line.line:+.1f}"
+                            else:
+                                # Fallback: just show the line
+                                market["spread"] = f"{line.line:+.1f}"
+                        else:
+                            market["spread"] = f"{line.line:+.1f}" if line.line else None
                     elif line.bet_type.value == "total":
                         market["total"] = line.line
                     elif line.bet_type.value == "moneyline":
                         if not market.get("moneyline"):
                             market["moneyline"] = {}
-                        # Determine which team based on line (0 = team1, 1 = team2)
-                        if line.line == 0:
-                            market["moneyline"]["home"] = f"{line.odds:+d}"
+                        # Use team name to determine home/away
+                        if line.team:
+                            # Match team name to home/away
+                            if line.team.lower() in game.team1.lower() or game.team1.lower() in line.team.lower():
+                                market["moneyline"]["home"] = f"{line.odds:+d}"
+                            elif line.team.lower() in game.team2.lower() or game.team2.lower() in line.team.lower():
+                                market["moneyline"]["away"] = f"{line.odds:+d}"
+                            else:
+                                # Fallback: use odds to guess (negative = favorite, likely home)
+                                if line.odds < 0:
+                                    market["moneyline"]["home"] = f"{line.odds:+d}"
+                                else:
+                                    market["moneyline"]["away"] = f"{line.odds:+d}"
                         else:
-                            market["moneyline"]["away"] = f"{line.odds:+d}"
+                            # Fallback: use odds to guess (negative = favorite, likely home)
+                            if line.odds < 0:
+                                market["moneyline"]["home"] = f"{line.odds:+d}"
+                            else:
+                                market["moneyline"]["away"] = f"{line.odds:+d}"
                 
                 if market:
                     game_data["market"] = market
@@ -346,7 +412,18 @@ class Researcher(BaseAgent):
             
             # If LLM requested tool calls, execute them and call again
             if response.get("tool_calls"):
-                tool_results = self._execute_tool_calls(response["tool_calls"], games_data)
+                # Extract target_date from games_data or use parameter
+                game_date = None
+                if games_data and len(games_data) > 0:
+                    date_str = games_data[0].get("date")
+                    if date_str:
+                        try:
+                            game_date = date.fromisoformat(date_str) if isinstance(date_str, str) else date_str
+                        except (ValueError, TypeError):
+                            pass
+                # Use target_date parameter if game_date not available
+                tool_target_date = target_date if target_date else game_date
+                tool_results = self._execute_tool_calls(response["tool_calls"], games_data, tool_target_date)
                 
                 # Format tool results for OpenAI function calling format
                 # We need to include the assistant's tool_calls message and then the tool results
@@ -370,21 +447,94 @@ class Researcher(BaseAgent):
                 }
                 
                 # Then add tool result messages
+                # Truncate large tool results to avoid token limit issues
+                # gpt-4o-mini has 128K context window, so we can allow larger results
+                MAX_TOOL_RESULT_SIZE = 25000  # Max characters per tool result (increased for gpt-4o-mini)
                 for tool_call in response["tool_calls"]:
                     call_id = tool_call.get("id", "")
                     result = tool_results.get(call_id, {"error": "No result"})
+                    
+                    # Truncate result if it's too large
+                    result_str = json.dumps(result)
+                    if len(result_str) > MAX_TOOL_RESULT_SIZE:
+                        # Try to truncate intelligently - if it's a list, keep first N items
+                        if isinstance(result, list) and len(result) > 0:
+                            # Prioritize items: keep advanced stats sources first, then truncate content within items
+                            prioritized = sorted(
+                                result,
+                                key=lambda x: (
+                                    1 if isinstance(x, dict) and x.get('is_advanced_stats') else 0,
+                                    -len(str(x.get('content', ''))) if isinstance(x, dict) else 0
+                                ),
+                                reverse=True
+                            )
+                            
+                            # Keep top items and truncate content within each
+                            truncated = []
+                            for item in prioritized[:10]:  # Keep top 10 items (increased from 3)
+                                if isinstance(item, dict):
+                                    truncated_item = item.copy()
+                                    # Less aggressive truncation for gpt-4o-mini
+                                    if 'content' in truncated_item and isinstance(truncated_item['content'], str):
+                                        # Allow up to 5000 chars per content field (increased from 1000)
+                                        if len(truncated_item['content']) > 5000:
+                                            truncated_item['content'] = truncated_item['content'][:5000] + "... [truncated]"
+                                    truncated.append(truncated_item)
+                                else:
+                                    truncated.append(item)
+                            
+                            truncated.append({
+                                "_truncated": True,
+                                "_original_count": len(result),
+                                "_message": f"Result truncated from {len(result)} items to {len(truncated)-1} to save tokens"
+                            })
+                            result_str = json.dumps(truncated)
+                        elif isinstance(result, dict):
+                            # For dicts, truncate large string values less aggressively
+                            truncated_result = {}
+                            for key, value in result.items():
+                                if isinstance(value, str):
+                                    # Allow more content for gpt-4o-mini (5000 chars for content, 2000 for others)
+                                    max_len = 5000 if key == 'content' else 2000
+                                    if len(value) > max_len:
+                                        truncated_result[key] = value[:max_len] + "... [truncated]"
+                                    else:
+                                        truncated_result[key] = value
+                                elif isinstance(value, list) and len(value) > 10:
+                                    truncated_result[key] = value[:10] + ["... [truncated]"]
+                                else:
+                                    truncated_result[key] = value
+                            truncated_result["_truncated"] = True
+                            result_str = json.dumps(truncated_result)
+                        else:
+                            # For other types, just truncate the string
+                            result_str = result_str[:MAX_TOOL_RESULT_SIZE] + '... [truncated]'
+                        
+                        self.logger.warning(
+                            f"⚠️  Tool result for {tool_call['function']['name']} was too large "
+                            f"({len(json.dumps(result))} chars), truncated to {len(result_str)} chars"
+                        )
+                    
                     tool_messages.append({
                         "role": "tool",
                         "tool_call_id": call_id,
                         "name": tool_call["function"]["name"],
-                        "content": json.dumps(result)
+                        "content": result_str
                     })
                 
                 # Call LLM again with tool results using proper function calling format
                 # Add explicit instruction to return JSON (not use tools again)
                 final_prompt = f"""{user_prompt}
 
-IMPORTANT: You have now received the results from your web searches. You MUST now return your final analysis in JSON format. Do NOT request additional tool calls. Simply analyze the search results you received and return the JSON response with game insights for all {len(games)} games."""
+CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE EXACTLY:
+1. You have received the results from your web searches. DO NOT request additional tool calls.
+2. You MUST return ONLY valid JSON in the exact format specified by the response schema.
+3. DO NOT include any explanatory text, tool call instructions, or markdown formatting.
+4. DO NOT write "Now searching..." or "Calling..." - just return the JSON directly.
+5. Your response must be a valid JSON object starting with {{ and ending with }}.
+6. Return game insights for ALL {len(games)} games in the "games" array.
+
+Return your JSON response now:"""
                 
                 response = self.call_llm_with_tool_results(
                     initial_user_prompt=final_prompt,
@@ -409,7 +559,7 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
                 if response.get("parse_error"):
                     self.log_warning(f"JSON parsing error: {response.get('parse_error')}")
                 if response.get("raw_response"):
-                    self.log_debug(f"Raw response snippet: {response.get('raw_response')[:500]}")
+                    self.logger.debug(f"Raw response snippet: {response.get('raw_response')[:500]}")
             else:
                 self.log_info(f"✅ Batch generated insights for {games_count}/{len(games)} games")
             
@@ -419,6 +569,58 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
             self.log_error(f"Error in batch LLM research: {e}", exc_info=True)
             # Return empty response on error (will trigger retry)
             return {"games": []}, input_data
+    
+    def _create_fallback_insight(self, game: Game, target_date: Optional[date], betting_lines: Optional[List]) -> Dict[str, Any]:
+        """
+        Create a fallback insight entry for a game when processing fails
+        
+        This ensures the game is still passed to the next agent, marked as having unavailable data
+        """
+        game_id_str = str(game.id) if game.id else f"{game.team1}_{game.team2}_{game.date}"
+        
+        # Get betting lines for this game if available
+        market = {}
+        if betting_lines:
+            game_lines = [l for l in betting_lines if l.game_id == game.id]
+            for line in game_lines:
+                if line.bet_type.value == "spread":
+                    market["spread"] = f"{line.line:+.1f}" if line.line else None
+                elif line.bet_type.value == "total":
+                    market["total"] = line.line
+                elif line.bet_type.value == "moneyline":
+                    if not market.get("moneyline"):
+                        market["moneyline"] = {}
+                    if line.line == 0:
+                        market["moneyline"]["home"] = f"{line.odds:+d}"
+                    else:
+                        market["moneyline"]["away"] = f"{line.odds:+d}"
+        
+        return {
+            "game_id": game_id_str,
+            "league": "UNKNOWN",  # Will be determined later if possible
+            "teams": {
+                "away": game.team2,
+                "home": game.team1
+            },
+            "start_time": game.date.isoformat() if isinstance(game.date, date) else str(game.date),
+            "market": market if market else {},
+            "adv": {
+                "data_unavailable": True
+            },
+            "injuries": [],
+            "recent": {
+                "away": {"rec": "?", "notes": "data unavailable"},
+                "home": {"rec": "?", "notes": "data unavailable"}
+            },
+            "experts": {},
+            "common_opp": [],
+            "context": ["Research data unavailable - batch processing failed"],
+            "dq": [
+                "CRITICAL: Research data unavailable",
+                "Modeler/Picker: use minimal/default values",
+                "President: DO NOT request revision (causes infinite loops)"
+            ]
+        }
     
     def _get_web_browsing_tools(self) -> List[Dict[str, Any]]:
         """Get web browsing tools for function calling"""
@@ -448,14 +650,14 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
             {
                 "type": "function",
                 "function": {
-                    "name": "search_injury_reports",
-                    "description": "Search specifically for injury reports for a team. This is optimized for finding injury information.",
+                    "name": "search_team_stats",
+                    "description": "Search for team statistics and recent performance data.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "team_name": {
                                 "type": "string",
-                                "description": "Name of the team (e.g., 'Duke', 'Purdue Boilermakers')"
+                                "description": "Name of the team"
                             },
                             "sport": {
                                 "type": "string",
@@ -470,14 +672,14 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
             {
                 "type": "function",
                 "function": {
-                    "name": "search_team_stats",
-                    "description": "Search for team statistics and recent performance data.",
+                    "name": "search_advanced_stats",
+                    "description": "Search specifically for advanced statistics (KenPom, Bart Torvik) for a team. This is the BEST method to find AdjO, AdjD, AdjT, efficiency ratings, and rankings. Use this for Power 5 teams and any team that should have KenPom/Torvik data. Returns full content from KenPom/Torvik pages for better stat extraction.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "team_name": {
                                 "type": "string",
-                                "description": "Name of the team"
+                                "description": "Name of the team (e.g., 'Georgia Bulldogs', 'Duke', 'Purdue Boilermakers')"
                             },
                             "sport": {
                                 "type": "string",
@@ -510,7 +712,7 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
                 "type": "function",
                 "function": {
                     "name": "search_game_predictions",
-                    "description": "Search for game prediction articles and expert picks. Use this to find what other analysts and experts are predicting for a specific matchup. This helps gather consensus opinions and different perspectives on the game. CRITICAL: Always provide the game_date parameter to ensure you're getting predictions for the correct game (teams play multiple times per season).",
+                    "description": "Search for game prediction articles and expert picks. Use this to find what other analysts and experts are predicting for a specific matchup. This helps gather consensus opinions and different perspectives on the game. IMPORTANT: Injury information is typically mentioned in prediction articles, so extract injuries from these articles rather than searching separately. CRITICAL: Always provide the game_date parameter to ensure you're getting predictions for the correct game (teams play multiple times per season).",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -538,7 +740,7 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
             }
         ]
     
-    def _execute_tool_call(self, tool_call: Dict[str, Any], games_data: List[Dict[str, Any]]) -> tuple:
+    def _execute_tool_call(self, tool_call: Dict[str, Any], games_data: List[Dict[str, Any]], target_date: Optional[date] = None) -> tuple:
         """Execute a single tool call (used for parallel execution)"""
         function_name = tool_call["function"]["name"]
         arguments = json.loads(tool_call["function"]["arguments"])
@@ -552,18 +754,18 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
                 result = self.web_browser.search_web(query, max_results)
                 return (call_id, result)
                 
-            elif function_name == "search_injury_reports":
-                team_name = arguments.get("team_name")
-                sport = arguments.get("sport", "basketball")
-                self.log_info(f"🏥 Searching injury reports for: {team_name}")
-                result = self.web_browser.search_injury_reports(team_name, sport)
-                return (call_id, result)
-                
             elif function_name == "search_team_stats":
                 team_name = arguments.get("team_name")
                 sport = arguments.get("sport", "basketball")
                 self.log_info(f"📊 Searching stats for: {team_name}")
                 result = self.web_browser.search_team_stats(team_name, sport)
+                return (call_id, result)
+                
+            elif function_name == "search_advanced_stats":
+                team_name = arguments.get("team_name")
+                sport = arguments.get("sport", "basketball")
+                self.log_info(f"📈 Searching advanced stats (KenPom/Torvik) for: {team_name}")
+                result = self.web_browser.search_advanced_stats(team_name, sport, target_date=target_date)
                 return (call_id, result)
                 
             elif function_name == "fetch_url":
@@ -601,7 +803,7 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
             self.log_error(f"Error executing tool {function_name}: {e}")
             return (call_id, {"error": str(e)})
     
-    def _execute_tool_calls(self, tool_calls: List[Dict[str, Any]], games_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _execute_tool_calls(self, tool_calls: List[Dict[str, Any]], games_data: List[Dict[str, Any]], target_date: Optional[date] = None) -> Dict[str, Any]:
         """Execute tool calls in parallel for better performance"""
         results = {}
         
@@ -614,7 +816,7 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
             call_id = tool_call.get("id", "")
             
             # Create a unique key for deduplication
-            if function_name in ["search_team_stats", "search_injury_reports"]:
+            if function_name == "search_team_stats":
                 # For team-level searches, deduplicate by team name
                 team_name = arguments.get("team_name", "")
                 dedup_key = (function_name, team_name.lower())
@@ -649,7 +851,7 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
             function_name = tool_call["function"]["name"]
             arguments = json.loads(tool_call["function"]["arguments"])
             
-            if function_name in ["search_team_stats", "search_injury_reports"]:
+            if function_name == "search_team_stats":
                 team_name = arguments.get("team_name", "").lower()
                 dedup_key = (function_name, team_name)
             elif function_name == "search_game_predictions":
@@ -674,7 +876,7 @@ IMPORTANT: You have now received the results from your web searches. You MUST no
         with ThreadPoolExecutor(max_workers=10) as executor:
             # Submit all tasks
             future_to_call = {
-                executor.submit(self._execute_tool_call, call, games_data): call.get("id", "")
+                executor.submit(self._execute_tool_call, call, games_data, target_date): call.get("id", "")
                 for call in unique_calls_list
             }
             
@@ -727,7 +929,7 @@ Input data:
             parse_json=True,
             tools=tools,
             tool_choice="auto",  # Let LLM decide when to use tools
-            max_tokens=4000  # Reduced for batch processing (5 games per batch)
+            max_tokens=4000,  # Reduced for batch processing (5 games per batch)
         )
         
         # Get usage stats after call and log delta
@@ -785,19 +987,49 @@ Input data:
         kwargs = {
             "model": self.llm_client.model,
             "messages": messages,
-            "max_tokens": 8000,  # Reduced for batch processing (5 games per batch)
         }
         
         # Only add temperature if model is not gpt-5 (gpt-5 models don't support temperature)
         if not self.llm_client.model.startswith("gpt-5"):
             kwargs["temperature"] = temperature
         
+        # Calculate max_tokens dynamically based on prompt size
+        # Estimate prompt tokens (roughly 4 chars per token for English text)
+        try:
+            import tiktoken
+            encoding = tiktoken.encoding_for_model(self.llm_client.model)
+            prompt_tokens_estimate = sum(len(encoding.encode(str(msg.get("content", "")))) for msg in messages)
+        except (ImportError, KeyError, Exception):
+            # Fallback: rough estimate (4 chars per token for English text)
+            # This is a conservative estimate - actual tokens may be slightly different
+            prompt_tokens_estimate = sum(len(str(msg.get("content", ""))) // 4 for msg in messages)
+        
+        # Set max_tokens based on prompt size
+        # For large prompts (>20K tokens), allow more completion tokens
+        if prompt_tokens_estimate > 20000:
+            max_completion = 16000  # Allow 16K tokens for completion
+            self.logger.warning(
+                f"⚠️  Large prompt detected ({prompt_tokens_estimate:,} tokens), "
+                f"increasing max_completion_tokens to {max_completion:,}"
+            )
+        elif prompt_tokens_estimate > 10000:
+            max_completion = 12000  # Allow 12K tokens for completion
+        else:
+            max_completion = 8000  # Default for smaller prompts
+        
+        if not self.llm_client.model.startswith("gpt-5"):
+            kwargs["max_tokens"] = max_completion
+        else:
+            # GPT-5 models use max_completion_tokens instead of max_tokens
+            kwargs["max_completion_tokens"] = max_completion
+        
         if tools:
             kwargs["tools"] = tools
             # If tools are provided, allow the LLM to use them
-            # If tools is None, explicitly prevent tool usage
-            if tools is None:
-                kwargs["tool_choice"] = "none"  # Force no tool usage
+        else:
+            # If tools is None, we don't set tool_choice (API doesn't allow it without tools)
+            # When tools are disabled, use structured output schema to enforce valid JSON
+            kwargs["response_format"] = get_researcher_schema()
         
         try:
             self.logger.debug(f"Calling LLM for {self.name} with tool results")
@@ -805,7 +1037,22 @@ Input data:
             # Get usage stats before call
             usage_before = self.llm_client.get_usage_stats()
             
-            response = self.llm_client.client.chat.completions.create(**kwargs)
+            try:
+                response = self.llm_client.client.chat.completions.create(**kwargs)
+            except Exception as api_error:
+                error_msg = str(api_error)
+                # Check if error is due to unsupported response_format
+                if "response_format" in error_msg.lower() or "structured output" in error_msg.lower():
+                    self.logger.warning(
+                        f"Model {self.llm_client.model} may not support structured output. "
+                        f"Falling back to regular JSON parsing. Error: {error_msg}"
+                    )
+                    # Retry without response_format
+                    if "response_format" in kwargs:
+                        kwargs.pop("response_format", None)
+                        response = self.llm_client.client.chat.completions.create(**kwargs)
+                else:
+                    raise
             
             # Extract and log token usage
             usage = response.usage
@@ -864,8 +1111,14 @@ Input data:
             
             # Parse JSON response
             if content:
+                # Clean content - remove any leading/trailing whitespace and explanatory text
+                content_cleaned = content.strip()
+                
+                # If structured output was requested, the response should be pure JSON
+                # But sometimes LLMs include explanatory text - try to extract JSON
                 try:
-                    parsed = json.loads(content)
+                    # First, try parsing the content directly
+                    parsed = json.loads(content_cleaned)
                     # Validate that we have games
                     if "games" not in parsed:
                         self.logger.warning(f"LLM response missing 'games' field. Response keys: {list(parsed.keys())}")
@@ -878,12 +1131,79 @@ Input data:
                     return parsed
                 except json.JSONDecodeError as e:
                     self.logger.warning(f"JSON parsing error in call_llm_with_tool_results: {e}")
+                    
+                    # Try to find the actual data JSON (skip schema definitions)
+                    # Look for JSON that starts with {"games": (the actual data)
+                    games_start = content_cleaned.find('{"games":')
+                    if games_start >= 0:
+                        # Find the matching closing brace for this JSON object
+                        brace_count = 0
+                        json_end = games_start
+                        for i in range(games_start, len(content_cleaned)):
+                            if content_cleaned[i] == '{':
+                                brace_count += 1
+                            elif content_cleaned[i] == '}':
+                                brace_count -= 1
+                                if brace_count == 0:
+                                    json_end = i + 1
+                                    break
+                        
+                        if json_end > games_start:
+                            json_str = content_cleaned[games_start:json_end]
+                            try:
+                                parsed = json.loads(json_str)
+                                if "games" not in parsed:
+                                    self.logger.warning("Extracted JSON missing 'games' field")
+                                    return {"games": []}
+                                self.logger.info(f"Successfully extracted data JSON from response (removed {games_start} chars before)")
+                                return parsed
+                            except json.JSONDecodeError as e2:
+                                self.logger.warning(f"Failed to parse extracted JSON: {e2}")
+                    
+                    # Fallback: Try to find JSON object in the content (look for first { and last })
+                    # But skip if it looks like a schema definition
+                    first_brace = content_cleaned.find('{')
+                    last_brace = content_cleaned.rfind('}')
+                    
+                    if first_brace >= 0 and last_brace > first_brace:
+                        # Extract the JSON portion
+                        json_str = content_cleaned[first_brace:last_brace + 1]
+                        # Skip if it looks like a schema definition (contains "type":"object" and "properties")
+                        if '"type":"object"' in json_str and '"properties"' in json_str and '"games"' not in json_str:
+                            # This is likely a schema, try to find the actual data after it
+                            data_start = content_cleaned.find('{"games":', first_brace + 1)
+                            if data_start > first_brace:
+                                # Found data JSON after schema
+                                brace_count = 0
+                                json_end = data_start
+                                for i in range(data_start, len(content_cleaned)):
+                                    if content_cleaned[i] == '{':
+                                        brace_count += 1
+                                    elif content_cleaned[i] == '}':
+                                        brace_count -= 1
+                                        if brace_count == 0:
+                                            json_end = i + 1
+                                            break
+                                
+                                if json_end > data_start:
+                                    json_str = content_cleaned[data_start:json_end]
+                        
+                        try:
+                            parsed = json.loads(json_str)
+                            if "games" not in parsed:
+                                self.logger.warning("Extracted JSON missing 'games' field")
+                                return {"games": []}
+                            self.logger.info(f"Successfully extracted JSON from response (removed {first_brace} chars before, {len(content_cleaned) - json_end} chars after)")
+                            return parsed
+                        except json.JSONDecodeError as e2:
+                            self.logger.warning(f"Failed to parse extracted JSON: {e2}")
+                    
                     # Try to extract JSON from markdown code blocks
-                    if "```json" in content:
-                        json_start = content.find("```json") + 7
-                        json_end = content.find("```", json_start)
+                    if "```json" in content_cleaned:
+                        json_start = content_cleaned.find("```json") + 7
+                        json_end = content_cleaned.find("```", json_start)
                         if json_end > json_start:
-                            json_str = content[json_start:json_end].strip()
+                            json_str = content_cleaned[json_start:json_end].strip()
                             try:
                                 parsed = json.loads(json_str)
                                 if "games" not in parsed:
@@ -892,11 +1212,11 @@ Input data:
                                 return parsed
                             except json.JSONDecodeError as e2:
                                 self.logger.warning(f"Failed to parse extracted JSON: {e2}")
-                    elif "```" in content:
-                        json_start = content.find("```") + 3
-                        json_end = content.find("```", json_start)
+                    elif "```" in content_cleaned:
+                        json_start = content_cleaned.find("```") + 3
+                        json_end = content_cleaned.find("```", json_start)
                         if json_end > json_start:
-                            json_str = content[json_start:json_end].strip()
+                            json_str = content_cleaned[json_start:json_end].strip()
                             try:
                                 parsed = json.loads(json_str)
                                 if "games" not in parsed:
@@ -906,8 +1226,16 @@ Input data:
                             except json.JSONDecodeError as e2:
                                 self.logger.warning(f"Failed to parse extracted JSON: {e2}")
                     
-                    # Log the problematic content for debugging
-                    self.logger.error(f"Failed to parse JSON response. Content (first 1000 chars):\n{content[:1000]}")
+                    # Log the problematic content for debugging with full context
+                    self.logger.error(f"Failed to parse JSON response. Content (first 2000 chars):\n{content[:2000]}")
+                    self.logger.error(f"Full content length: {len(content)} chars")
+                    self.logger.error(f"JSON error position: {e.pos if hasattr(e, 'pos') else 'unknown'}")
+                    self.logger.error(f"JSON error message: {e.msg if hasattr(e, 'msg') else str(e)}")
+                    # Log the content around the error position if available
+                    if hasattr(e, 'pos') and e.pos:
+                        start = max(0, e.pos - 100)
+                        end = min(len(content), e.pos + 100)
+                        self.logger.error(f"Content around error position ({e.pos}):\n{content[start:end]}")
                     return {"games": [], "parse_error": str(e), "raw_response": content[:500]}
             else:
                 # Empty content - log detailed diagnostics
@@ -926,13 +1254,20 @@ Input data:
                 
                 # Check if response was truncated
                 if finish_reason == "length":
+                    current_max = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens", "unknown")
                     self.logger.error("⚠️  Response was TRUNCATED due to max_tokens limit!")
-                    self.logger.error(f"Current max_tokens: 8000 (may need to increase for batch processing)")
+                    self.logger.error(f"Current max_tokens/max_completion_tokens: {current_max}")
+                    self.logger.error(f"Prompt tokens: {usage.prompt_tokens if usage else 'unknown'}")
+                    self.logger.error(f"Completion tokens used: {usage.completion_tokens if usage else 'unknown'}")
                 
                 # Log message structure for debugging
-                self.logger.error(f"📋 Message structure: {dir(choice.message)}")
                 if hasattr(choice.message, 'role'):
                     self.logger.error(f"📋 Message role: {choice.message.role}")
+                if hasattr(choice.message, 'content'):
+                    content_preview = str(choice.message.content)[:500] if choice.message.content else "None"
+                    self.logger.error(f"📋 Message content preview: {content_preview}")
+                if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
+                    self.logger.error(f"📋 Message has {len(choice.message.tool_calls)} tool_calls")
                 
                 return {"games": [], "error": "empty_content", "finish_reason": finish_reason}
                 

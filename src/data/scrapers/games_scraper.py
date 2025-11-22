@@ -108,16 +108,38 @@ class GamesScraper:
                     else:
                         game_status = GameStatus.SCHEDULED
                     
+                    # Extract final scores if game is final
+                    result_data = None
+                    if game_status == GameStatus.FINAL:
+                        scores = {}
+                        for competitor in competitors:
+                            team_name = competitor.get('team', {}).get('displayName', '')
+                            score = competitor.get('score', 0)
+                            is_home = competitor.get('homeAway') == 'home'
+                            if is_home:
+                                scores['home'] = {'team': team_name, 'score': score}
+                            else:
+                                scores['away'] = {'team': team_name, 'score': score}
+                        
+                        if scores:
+                            result_data = {
+                                'home_score': scores.get('home', {}).get('score', 0),
+                                'away_score': scores.get('away', {}).get('score', 0),
+                                'home_team': scores.get('home', {}).get('team', ''),
+                                'away_team': scores.get('away', {}).get('team', '')
+                            }
+                    
                     if team1 and team2:
                         game = Game(
                             team1=team1,
                             team2=team2,
                             date=target_date,
                             venue=venue if venue else None,
-                            status=game_status
+                            status=game_status,
+                            result=result_data
                         )
                         games.append(game)
-                        logger.debug(f"Found game: {team1} vs {team2}")
+                        logger.debug(f"Found game: {team1} vs {team2} (Status: {game_status.value})")
                     
                 except Exception as e:
                     logger.warning(f"Error parsing game event: {e}")

@@ -50,8 +50,8 @@ class BaseAgent(ABC):
         # Get agent-specific LLM client if not provided
         self.llm_client = llm_client or get_llm_client(agent_name=name)
         self.system_prompt = self._get_system_prompt()
-        # Log which model is being used (at INFO level so it's visible)
-        self.logger.info(f"🤖 Agent '{self.name}' initialized with model: {self.llm_client.model}")
+        # Log which model is being used (at DEBUG level)
+        self.logger.debug(f"🤖 Agent '{self.name}' initialized with model: {self.llm_client.model}")
     
     def log_action(self, action: str, data: Optional[Dict[str, Any]] = None) -> None:
         """Log agent action to database"""
@@ -112,7 +112,8 @@ class BaseAgent(ABC):
         user_prompt: str,
         input_data: Optional[Dict[str, Any]] = None,
         temperature: float = 0.7,
-        parse_json: bool = True
+        parse_json: bool = True,
+        response_format: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Call LLM with agent's system prompt
@@ -122,6 +123,7 @@ class BaseAgent(ABC):
             input_data: Optional input data to include in prompt
             temperature: Sampling temperature
             parse_json: Whether to parse response as JSON
+            response_format: Optional response format (JSON schema) for structured output
             
         Returns:
             LLM response (parsed JSON if parse_json=True)
@@ -149,7 +151,8 @@ Input data:
             system_prompt=self.system_prompt,
             user_prompt=formatted_prompt,
             temperature=temperature,
-            parse_json=parse_json
+            parse_json=parse_json,
+            response_format=response_format
         )
         
         # Get usage stats after call and log delta
