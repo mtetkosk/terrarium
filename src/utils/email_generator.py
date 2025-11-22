@@ -65,8 +65,8 @@ class EmailGenerator:
         # So to get results for games on yesterday, we pass target_date (today)
         yesterday_results = self._get_yesterday_results(target_date)
         
-        # Get today's betting card (instead of presidents report)
-        today_betting_card = self._get_today_betting_card(target_date)
+        # Get today's presidents report
+        today_presidents_report = self._get_today_presidents_report(target_date)
         
         # Get game information
         today_games = self._get_today_games(target_date)
@@ -77,12 +77,12 @@ class EmailGenerator:
         if format_html:
             email_content = self._generate_html_email(
                 target_date, yesterday, recipient_name,
-                yesterday_results, today_betting_card, today_games, yesterday_games
+                yesterday_results, today_presidents_report, today_games, yesterday_games
             )
         else:
             email_content = self._generate_plain_text_email(
                 target_date, yesterday, recipient_name,
-                yesterday_results, today_betting_card, today_games, yesterday_games
+                yesterday_results, today_presidents_report, today_games, yesterday_games
             )
         
         return subject, email_content
@@ -93,7 +93,7 @@ class EmailGenerator:
         yesterday: date,
         recipient_name: str,
         yesterday_results: Optional[Dict[str, Any]],
-        today_betting_card: Optional[str],
+        today_presidents_report: Optional[str],
         today_games: List[Dict[str, Any]],
         yesterday_games: List[Dict[str, Any]]
     ) -> str:
@@ -230,7 +230,7 @@ class EmailGenerator:
                     html_parts.append('</div>')
         
         # 3. Underdog of the Day (if available)
-        underdog = self._extract_underdog_of_the_day(target_date, today_betting_card)
+        underdog = self._extract_underdog_of_the_day(target_date, today_presidents_report)
         if underdog:
             html_parts.append('<div class="section">')
             html_parts.append('<h2><span class="emoji">🐕</span> UNDERDOG OF THE DAY</h2>')
@@ -256,9 +256,9 @@ class EmailGenerator:
             html_parts.append('</div>')
             html_parts.append('</div>')
         
-        # 4. Today's best bets from betting card
-        if today_betting_card:
-            best_bets = self._extract_best_bets_from_card(today_betting_card)
+        # 4. Today's best bets from presidents report
+        if today_presidents_report:
+            best_bets = self._extract_best_bets(today_presidents_report)
             if best_bets:
                 html_parts.append('<div class="section">')
                 html_parts.append('<h2><span class="emoji">⭐</span> TODAY\'S BEST BETS</h2>')
@@ -282,9 +282,9 @@ class EmailGenerator:
                         html_parts.append(f'<div class="bet-item"><div class="bet-selection">{i}. {bet}</div></div>')
                 html_parts.append('</div>')
         
-        # 5. Other picks from betting card (without rationale)
-        if today_betting_card:
-            other_picks = self._extract_other_picks_from_card(today_betting_card)
+        # 5. Other picks from presidents report (without rationale)
+        if today_presidents_report:
+            other_picks = self._extract_other_picks(today_presidents_report)
             if other_picks:
                 html_parts.append('<div class="section">')
                 html_parts.append('<h2><span class="emoji">📋</span> OTHER PICKS</h2>')
@@ -308,7 +308,7 @@ class EmailGenerator:
         yesterday: date,
         recipient_name: str,
         yesterday_results: Optional[Dict[str, Any]],
-        today_betting_card: Optional[str],
+        today_presidents_report: Optional[str],
         today_games: List[Dict[str, Any]],
         yesterday_games: List[Dict[str, Any]]
     ) -> str:
@@ -344,7 +344,7 @@ class EmailGenerator:
                     email_lines.append("")
         
         # 3. Underdog of the Day (if available)
-        underdog = self._extract_underdog_of_the_day(target_date, today_betting_card)
+        underdog = self._extract_underdog_of_the_day(target_date, today_presidents_report)
         if underdog:
             email_lines.append("🐕 UNDERDOG OF THE DAY")
             email_lines.append("-" * 60)
@@ -368,9 +368,9 @@ class EmailGenerator:
             
             email_lines.append("")
         
-        # 4. Today's best bets from betting card
-        if today_betting_card:
-            best_bets = self._extract_best_bets_from_card(today_betting_card)
+        # 4. Today's best bets from presidents report
+        if today_presidents_report:
+            best_bets = self._extract_best_bets(today_presidents_report)
             if best_bets:
                 email_lines.append("⭐ TODAY'S BEST BETS")
                 email_lines.append("-" * 60)
@@ -392,9 +392,9 @@ class EmailGenerator:
                         email_lines.append(f"{i}. {bet}")
                 email_lines.append("")
         
-        # 5. Other picks from betting card (without rationale)
-        if today_betting_card:
-            other_picks = self._extract_other_picks_from_card(today_betting_card)
+        # 5. Other picks from presidents report (without rationale)
+        if today_presidents_report:
+            other_picks = self._extract_other_picks(today_presidents_report)
             if other_picks:
                 email_lines.append("📋 OTHER PICKS")
                 email_lines.append("-" * 60)
@@ -490,15 +490,15 @@ class EmailGenerator:
             logger.error(f"Error parsing results file: {e}")
             return None
     
-    def _get_today_betting_card(self, target_date: date) -> Optional[str]:
-        """Get today's betting card content"""
-        card_file = self.reports_dir / f"betting_card_{target_date.isoformat()}.txt"
-        if card_file.exists():
+    def _get_today_presidents_report(self, target_date: date) -> Optional[str]:
+        """Get today's presidents report content"""
+        report_file = self.reports_dir / "president" / f"presidents_report_{target_date.isoformat()}.txt"
+        if report_file.exists():
             try:
-                with open(card_file, 'r') as f:
+                with open(report_file, 'r') as f:
                     return f.read()
             except Exception as e:
-                logger.error(f"Error reading betting card: {e}")
+                logger.error(f"Error reading presidents report: {e}")
         return None
     
     def _get_today_presidents_report(self, target_date: date) -> Optional[str]:
@@ -542,8 +542,8 @@ class EmailGenerator:
         
         return None
     
-    def _extract_underdog_of_the_day(self, target_date: date, betting_card: Optional[str] = None) -> Optional[Dict[str, str]]:
-        """Extract underdog of the day from president response or betting card"""
+    def _extract_underdog_of_the_day(self, target_date: date, presidents_report: Optional[str] = None) -> Optional[Dict[str, str]]:
+        """Extract underdog of the day from president response or presidents report"""
         # First, try to get from president's JSON response
         president_response = self._get_president_response_json(target_date)
         if president_response:
@@ -585,11 +585,11 @@ class EmailGenerator:
                     'reasoning': reasoning
                 }
         
-        # Fallback: try to extract from betting card if it includes underdog section
-        if betting_card:
+        # Fallback: try to extract from presidents report if it includes underdog section
+        if presidents_report:
             underdog_match = re.search(
                 r'UNDERDOG OF THE DAY.*?\n(.*?)(?=\n-{80}|\n⭐|$)', 
-                betting_card, 
+                presidents_report, 
                 re.DOTALL | re.IGNORECASE
             )
             if underdog_match:
@@ -1238,136 +1238,150 @@ class EmailGenerator:
         """Extract best bets from presidents report with rationale"""
         best_bets = []
         
-        # Find the APPROVED PICKS section
-        approved_match = re.search(r'🎯 APPROVED PICKS WITH RATIONALE.*?\n(.*?)(?=\n❌|$)', report_text, re.DOTALL)
-        if not approved_match:
+        # Find the ALL PICKS section (can be "ALL PICKS WITH RATIONALE" or "APPROVED PICKS WITH RATIONALE")
+        picks_match = re.search(r'🎯 (?:ALL|APPROVED) PICKS WITH RATIONALE.*?\n(.*?)(?=\n❌|$)', report_text, re.DOTALL)
+        if not picks_match:
             return best_bets
         
-        approved_section = approved_match.group(1)
+        picks_section = picks_match.group(1)
         
-        # Extract each approved pick
-        pick_pattern = r'PICK #\d+\s*\n(.*?)(?=\nPICK #|\n-{80}|\n❌|$)'
-        picks = re.findall(pick_pattern, approved_section, re.DOTALL)
+        # Extract each pick that has "⭐ BEST BET" marker
+        # Pattern: PICK #N ⭐ BEST BET followed by pick details
+        pick_pattern = r'PICK #\d+\s+⭐ BEST BET\s*\n(.*?)(?=\nPICK #|\n-{80}|\n❌|$)'
+        picks = re.findall(pick_pattern, picks_section, re.DOTALL)
         
         for pick_text in picks:
-            # Extract key info from presidents report format
-            # Format can be:
-            # "Over 160.5 - Wake Forest Demon Deacons @ Texas Tech Red Raiders" (for totals)
-            # "Purdue Boilermakers -15.5 vs Memphis Tigers" (for spreads)
-            first_line_match = re.search(r'^  (.+)$', pick_text, re.MULTILINE)
-            odds_match = re.search(r'  Odds: (.+)', pick_text)
-            reasoning_match = re.search(r'  Reasoning:\s*(.+?)(?=\n  🔍|\n-{80}|$)', pick_text, re.DOTALL)
-            
-            if first_line_match:
-                first_line = first_line_match.group(1).strip()
+            # Extract the selection/matchup line (first non-empty line after PICK header)
+            # Format examples:
+            # "North Carolina Central Eagles +28.5 vs Dayton Flyers" (spread)
+            # "Under 154.5 - North Alabama Lions @ Chattanooga Mocs" (total)
+            selection_line_match = re.search(r'^  (.+?)(?:\n|$)', pick_text, re.MULTILINE)
+            if not selection_line_match:
+                continue
                 
-                # Parse the first line to extract selection and matchup
-                # Check if it's a total format (contains " - " and "@")
-                if ' - ' in first_line and '@' in first_line:
-                    # Total format: "Over 160.5 - Team1 @ Team2"
-                    parts = first_line.split(' - ', 1)
-                    selection = parts[0].strip()
-                    matchup = parts[1].strip()
-                elif ' vs ' in first_line:
-                    # Spread format: "Team1 -15.5 vs Team2"
-                    # Extract the line value and teams
-                    vs_match = re.search(r'^(.+?)\s+([+-]?\d+\.?\d*)\s+vs\s+(.+)$', first_line)
-                    if vs_match:
-                        team1 = vs_match.group(1).strip()
-                        line = vs_match.group(2).strip()
-                        team2 = vs_match.group(3).strip()
-                        selection = f"{team1} {line}"
-                        matchup = f"{team1} vs {team2}"
+            selection_line = selection_line_match.group(1).strip()
+            
+            # Extract odds
+            odds_match = re.search(r'  Odds: (.+)', pick_text)
+            odds = odds_match.group(1).strip() if odds_match else ""
+            
+            # Extract rationale from PRESIDENT'S ANALYSIS section (more concise than PICKER'S RATIONALE)
+            rationale_match = re.search(r'💼 PRESIDENT\'S ANALYSIS:\s*(.+?)(?=\n  🔍|\n-{80}|$)', pick_text, re.DOTALL)
+            if not rationale_match:
+                # Fallback to PICKER'S RATIONALE
+                rationale_match = re.search(r'📋 PICKER\'S RATIONALE:\s*(.+?)(?=\nPresident\'s Analysis|\n  💼|\n  🔍|\n-{80}|$)', pick_text, re.DOTALL)
+            
+            rationale = ""
+            if rationale_match:
+                rationale = rationale_match.group(1).strip()
+                # Clean up formatting - preserve bullet structure but normalize whitespace
+                # Replace multiple spaces/newlines with single space, but keep bullet points
+                rationale = re.sub(r'\n\s*', ' ', rationale)  # Replace newlines with space
+                rationale = re.sub(r'\s+', ' ', rationale)  # Normalize multiple spaces
+                # Take first 2-3 bullet points or first 250 chars
+                if '•' in rationale:
+                    bullets = [b.strip() for b in rationale.split('•') if b.strip()]
+                    if bullets:
+                        # Take first 2-3 bullets, join with separator
+                        selected_bullets = bullets[:3]
+                        rationale = ' • '.join(selected_bullets)
+                        if len(bullets) > 3:
+                            rationale += '...'
+                elif len(rationale) > 250:
+                    # Try to break at sentence boundary
+                    sentences = re.split(r'[.!?]\s+', rationale)
+                    if sentences and len(sentences[0]) < 250:
+                        rationale = sentences[0] + '.'
                     else:
-                        # Fallback: just split on vs
-                        parts = first_line.split(' vs ', 1)
-                        selection = parts[0].strip()
-                        matchup = first_line.strip()
+                        rationale = rationale[:250] + '...'
+            
+            # Parse selection and matchup from selection_line
+            matchup = ""
+            selection = ""
+            
+            # Check if it's a total format (contains " - " and "@")
+            if ' - ' in selection_line and '@' in selection_line:
+                # Total format: "Under 154.5 - North Alabama Lions @ Chattanooga Mocs"
+                parts = selection_line.split(' - ', 1)
+                selection = parts[0].strip()
+                matchup = parts[1].strip()
+            elif ' vs ' in selection_line:
+                # Spread format: "North Carolina Central Eagles +28.5 vs Dayton Flyers"
+                # Extract the line value and teams
+                vs_match = re.search(r'^(.+?)\s+([+-]?\d+\.?\d*)\s+vs\s+(.+)$', selection_line)
+                if vs_match:
+                    team1 = vs_match.group(1).strip()
+                    line = vs_match.group(2).strip()
+                    team2 = vs_match.group(3).strip()
+                    selection = f"{team1} {line}"
+                    matchup = f"{team1} vs {team2}"
                 else:
-                    # Fallback: use the whole line as selection, try to extract matchup from projected score
-                    selection = first_line
+                    # Fallback: just use the whole line
+                    selection = selection_line
+                    # Try to get matchup from projected score
                     projected_match = re.search(r'Projected score: (.+)', pick_text)
                     if projected_match:
                         matchup = projected_match.group(1).strip()
                     else:
                         matchup = "Matchup TBD"
-                
-                odds = odds_match.group(1).strip() if odds_match else ""
-                
-                # Extract and clean rationale from Reasoning section
-                rationale = ""
-                if reasoning_match:
-                    rationale = reasoning_match.group(1).strip()
-                    # Clean up rationale - remove extra whitespace but keep full text
-                    rationale = re.sub(r'\s+', ' ', rationale)
-                    # Don't truncate - show full rationale
-                
-                best_bets.append({
-                    'matchup': matchup,
-                    'selection': selection,
-                    'odds': odds,
-                    'rationale': rationale
-                })
+            else:
+                # Fallback: use the whole line as selection
+                selection = selection_line
+                # Try to get matchup from projected score
+                projected_match = re.search(r'Projected score: (.+)', pick_text)
+                if projected_match:
+                    matchup = projected_match.group(1).strip()
+                else:
+                    matchup = "Matchup TBD"
+            
+            best_bets.append({
+                'matchup': matchup,
+                'selection': selection,
+                'odds': odds,
+                'rationale': rationale
+            })
         
         return best_bets
     
     def _extract_other_picks(self, report_text: str) -> List[str]:
-        """Extract other picks from presidents report (rejected picks)"""
+        """Extract other picks from presidents report (non-best-bet picks)"""
         other_picks = []
         
-        # Find the REJECTED PICKS section
-        rejected_match = re.search(r'❌ REJECTED PICKS WITH REASONING.*?\n(.*?)(?=\n={80}|$)', report_text, re.DOTALL)
-        if not rejected_match:
+        # Find the ALL PICKS section
+        picks_match = re.search(r'🎯 (?:ALL|APPROVED) PICKS WITH RATIONALE.*?\n(.*?)(?=\n❌|$)', report_text, re.DOTALL)
+        if not picks_match:
             return other_picks
         
-        rejected_section = rejected_match.group(1)
+        picks_section = picks_match.group(1)
         
-        # Extract each rejected pick
-        pick_pattern = r'REJECTED PICK #\d+\s*\n(.*?)(?=\nREJECTED PICK #|\n-{80}|$)'
-        picks = re.findall(pick_pattern, rejected_section, re.DOTALL)
+        # Extract all picks with their full text including header
+        # Pattern matches: PICK #N or PICK #N ⭐ BEST BET, followed by content
+        pick_pattern = r'(PICK #\d+(?:\s+⭐ BEST BET)?)\s*\n(.*?)(?=\nPICK #|\n-{80}|\n❌|$)'
+        all_picks = re.findall(pick_pattern, picks_section, re.DOTALL)
         
-        for pick_text in picks:
-            # Extract key info
-            matchup_match = re.search(r'  Matchup: (.+)', pick_text)
-            bet_type_match = re.search(r'  Bet Type: (.+)', pick_text)
-            line_match = re.search(r'  Line: (.+)', pick_text)
+        # Extract picks that are NOT best bets
+        for pick_header, pick_text in all_picks:
+            # Check if this pick is a best bet
+            if '⭐ BEST BET' in pick_header:
+                continue  # Skip best bets
             
-            if matchup_match:
-                matchup = matchup_match.group(1).strip()
-                bet_type = bet_type_match.group(1).strip() if bet_type_match else ""
-                line = line_match.group(1).strip() if line_match else ""
+            # Extract the selection/matchup line (first non-empty line after PICK header)
+            selection_line_match = re.search(r'^  (.+?)(?:\n|$)', pick_text, re.MULTILINE)
+            if not selection_line_match:
+                continue
                 
-                # Format the pick nicely
-                if bet_type and line:
-                    # Parse the line value (remove + sign for totals)
-                    line_value = line.lstrip('+')
-                    
-                    # Format selection based on bet type
-                    if bet_type == "TOTAL":
-                        selection = f"Over {line_value}"
-                    elif bet_type == "SPREAD":
-                        # For spreads, determine which team based on line sign
-                        teams = matchup.split(' @ ') if ' @ ' in matchup else matchup.split(' vs ')
-                        if len(teams) >= 2:
-                            # Negative line means first team is favorite, positive means underdog
-                            if line.startswith('-'):
-                                selection = f"{teams[0]} {line}"
-                            else:
-                                selection = f"{teams[1]} {line}"
-                        else:
-                            selection = f"{matchup} {line}"
-                    elif bet_type == "MONEYLINE":
-                        teams = matchup.split(' @ ') if ' @ ' in matchup else matchup.split(' vs ')
-                        if len(teams) >= 1:
-                            selection = f"{teams[0]} ML"
-                        else:
-                            selection = f"{matchup} ML"
-                    else:
-                        selection = f"{bet_type} {line}"
-                    
-                    other_picks.append(f"{matchup} - {selection}")
-                else:
-                    other_picks.append(matchup)
+            selection_line = selection_line_match.group(1).strip()
+            
+            # Extract odds
+            odds_match = re.search(r'  Odds: (.+)', pick_text)
+            odds = odds_match.group(1).strip() if odds_match else ""
+            
+            # Format the pick line
+            pick_line = selection_line
+            if odds:
+                pick_line += f" ({odds})"
+            
+            other_picks.append(pick_line)
         
         return other_picks
     
