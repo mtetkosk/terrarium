@@ -310,11 +310,24 @@ class ReportGenerator:
                         if underdog_game_id and int(underdog_game_id) not in game_ids:
                             game_ids.append(int(underdog_game_id))
                 
-                games = session.query(GameModel).filter(GameModel.id.in_(game_ids)).all()
-                for game in games:
+                from src.data.storage import TeamModel
+                from sqlalchemy.orm import aliased
+                team1_alias = aliased(TeamModel)
+                team2_alias = aliased(TeamModel)
+                games = session.query(
+                    GameModel,
+                    team1_alias.normalized_team_name.label('team1_name'),
+                    team2_alias.normalized_team_name.label('team2_name')
+                ).join(
+                    team1_alias, GameModel.team1_id == team1_alias.id
+                ).join(
+                    team2_alias, GameModel.team2_id == team2_alias.id
+                ).filter(GameModel.id.in_(game_ids)).all()
+                
+                for game, team1_name, team2_name in games:
                     game_info_map[game.id] = {
-                        'team1': game.team1,
-                        'team2': game.team2,
+                        'team1': team1_name,
+                        'team2': team2_name,
                         'venue': game.venue
                     }
                 
@@ -414,11 +427,24 @@ class ReportGenerator:
             from src.data.storage import GameModel
             session = self.db.get_session()
             try:
-                games = session.query(GameModel).filter(GameModel.id.in_(game_ids)).all()
-                for game in games:
+                from src.data.storage import TeamModel
+                from sqlalchemy.orm import aliased
+                team1_alias = aliased(TeamModel)
+                team2_alias = aliased(TeamModel)
+                games = session.query(
+                    GameModel,
+                    team1_alias.normalized_team_name.label('team1_name'),
+                    team2_alias.normalized_team_name.label('team2_name')
+                ).join(
+                    team1_alias, GameModel.team1_id == team1_alias.id
+                ).join(
+                    team2_alias, GameModel.team2_id == team2_alias.id
+                ).filter(GameModel.id.in_(game_ids)).all()
+                
+                for game, team1_name, team2_name in games:
                     game_info_map[game.id] = {
-                        'team1': game.team1,
-                        'team2': game.team2,
+                        'team1': team1_name,
+                        'team2': team2_name,
                         'venue': game.venue
                     }
             finally:
@@ -996,11 +1022,24 @@ class ReportGenerator:
                     game_ids = [p.game_id for p in rejected_picks_models if p.game_id]
                     
                     if game_ids:
-                        games = session.query(GameModel).filter(GameModel.id.in_(game_ids)).all()
-                        for game in games:
+                        from src.data.storage import TeamModel
+                        from sqlalchemy.orm import aliased
+                        team1_alias = aliased(TeamModel)
+                        team2_alias = aliased(TeamModel)
+                        games = session.query(
+                            GameModel,
+                            team1_alias.normalized_team_name.label('team1_name'),
+                            team2_alias.normalized_team_name.label('team2_name')
+                        ).join(
+                            team1_alias, GameModel.team1_id == team1_alias.id
+                        ).join(
+                            team2_alias, GameModel.team2_id == team2_alias.id
+                        ).filter(GameModel.id.in_(game_ids)).all()
+                        
+                        for game, team1_name, team2_name in games:
                             game_info_map[game.id] = {
-                                'team1': game.team1,
-                                'team2': game.team2,
+                                'team1': team1_name,
+                                'team2': team2_name,
                                 'venue': game.venue
                             }
                 finally:

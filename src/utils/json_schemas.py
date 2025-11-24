@@ -187,6 +187,10 @@ def get_modeler_schema() -> dict:
                                         }
                                     }
                                 },
+                                "ev_estimate": {
+                                    "type": "number",
+                                    "description": "Expected value estimate for the best betting opportunity (per unit stake). Calculate using: EV = (win_prob * payout_multiplier) - (loss_prob * stake). Use standard -110 odds if specific odds not available."
+                                },
                                 "model_notes": {"type": "string"}
                             },
                             "required": ["game_id"]

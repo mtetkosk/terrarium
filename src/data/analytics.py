@@ -527,4 +527,110 @@ class AnalyticsService:
             return []
         finally:
             session.close()
+    
+    def get_historical_performance(self, target_date: date, days_back: int = 7) -> Optional[Dict[str, Any]]:
+        """
+        Get historical performance data from recent days for learning
+        
+        Args:
+            target_date: Current date
+            days_back: Number of days to look back (default: 7)
+            
+        Returns:
+            Dictionary with historical performance summary or None if no data
+        """
+        if not self.db:
+            return None
+        
+        session = self.db.get_session()
+        try:
+            from src.data.storage import DailyReportModel
+            from datetime import timedelta
+            
+            # Get daily reports from recent days
+            start_date = target_date - timedelta(days=days_back)
+            daily_reports = session.query(DailyReportModel).filter(
+                DailyReportModel.date >= start_date,
+                DailyReportModel.date < target_date
+            ).order_by(DailyReportModel.date.desc()).all()
+            
+            if not daily_reports:
+                return None
+            
+            # Aggregate performance metrics
+            total_picks = sum(r.total_picks for r in daily_reports)
+            total_wins = sum(r.wins for r in daily_reports)
+            total_losses = sum(r.losses for r in daily_reports)
+            total_pushes = sum(r.pushes for r in daily_reports)
+            total_wagered = sum(r.total_wagered for r in daily_reports)
+            total_profit = sum(r.profit_loss for r in daily_reports)
+            
+            # Calculate win rate and ROI
+            win_rate = (total_wins / total_picks * 100) if total_picks > 0 else 0.0
+            roi = (total_profit / total_wagered * 100) if total_wagered > 0 else 0.0
+            
+            # Get bet type performance
+            bet_type_performance = {}
+            for report in daily_reports:
+                if report.accuracy_metrics:
+                    metrics = report.accuracy_metrics
+                    if isinstance(metrics, dict) and 'bet_type_performance' in metrics:
+                        for bet_type, perf in metrics['bet_type_performance'].items():
+                            if bet_type not in bet_type_performance:
+                                bet_type_performance[bet_type] = {'wins': 0, 'losses': 0, 'wagered': 0.0, 'profit': 0.0}
+                            bet_type_performance[bet_type]['wins'] += perf.get('wins', 0)
+                            bet_type_performance[bet_type]['losses'] += perf.get('losses', 0)
+                            bet_type_performance[bet_type]['wagered'] += perf.get('wagered', 0.0)
+                            bet_type_performance[bet_type]['profit'] += perf.get('payout', 0.0) - perf.get('wagered', 0.0)
+            
+            # Get recent recommendations from daily reports
+            recent_recommendations = []
+            for report in daily_reports[:3]:  # Last 3 days
+                if report.recommendations:
+                    if isinstance(report.recommendations, list):
+                        recent_recommendations.extend(report.recommendations)
+                    elif isinstance(report.recommendations, str):
+                        recent_recommendations.append(report.recommendations)
+            
+            # Get insights from recent reports
+            recent_insights = []
+            for report in daily_reports[:3]:
+                if report.insights:
+                    if isinstance(report.insights, dict):
+                        recent_insights.append(report.insights)
+                    elif isinstance(report.insights, str):
+                        recent_insights.append({"note": report.insights})
+            
+            return {
+                "period": f"{start_date} to {target_date - timedelta(days=1)}",
+                "days_reviewed": len(daily_reports),
+                "total_picks": total_picks,
+                "wins": total_wins,
+                "losses": total_losses,
+                "pushes": total_pushes,
+                "win_rate": round(win_rate, 2),
+                "total_wagered": round(total_wagered, 2),
+                "total_profit": round(total_profit, 2),
+                "roi": round(roi, 2),
+                "bet_type_performance": bet_type_performance,
+                "recent_recommendations": recent_recommendations[:10],  # Limit to 10 most recent
+                "recent_insights": recent_insights,
+                "daily_summaries": [
+                    {
+                        "date": r.date.isoformat(),
+                        "picks": r.total_picks,
+                        "wins": r.wins,
+                        "losses": r.losses,
+                        "win_rate": round(r.win_rate * 100, 2) if r.win_rate else 0.0,
+                        "profit": round(r.profit_loss, 2),
+                        "roi": round(r.roi, 2) if r.roi else 0.0
+                    }
+                    for r in daily_reports[:7]  # Last 7 days
+                ]
+            }
+        except Exception as e:
+            logger.error(f"Error fetching historical performance: {e}", exc_info=True)
+            return None
+        finally:
+            session.close()
 
