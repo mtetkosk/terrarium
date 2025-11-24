@@ -24,7 +24,7 @@ class LinesScraper:
     
     def __init__(self):
         """Initialize lines scraper"""
-        self.config = config.get_scraping_config()
+        self.config = config.get('scraping', {})
         self.sources = self.config.get('lines_sources', ['draftkings', 'fanduel'])
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -63,7 +63,8 @@ class LinesScraper:
             cached_time = datetime.fromisoformat(cache_entry.get('timestamp', ''))
             age = datetime.now() - cached_time
             return age < self.cache_ttl
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Invalid cache timestamp format: {e}")
             return False
     
     def _get_cached_lines(self, book: str, game_date: date) -> Optional[List[Dict[str, Any]]]:
@@ -575,20 +576,16 @@ class LinesScraper:
                                 
                                 # Match team name from outcome to game teams
                                 if team_name:
-                                    # Try to match outcome team name to one of our game teams
-                                    outcome_normalized = self._normalize_team_name_for_matching(team_name)
-                                    team1_normalized = self._normalize_team_name_for_matching(game.team1)
-                                    team2_normalized = self._normalize_team_name_for_matching(game.team2)
-                                    
-                                    if outcome_normalized in team1_normalized or team1_normalized in outcome_normalized:
+                                    # Use centralized normalization for matching
+                                    if are_teams_matching(team_name, game.team1):
                                         team_name = game.team1
-                                    elif outcome_normalized in team2_normalized or team2_normalized in outcome_normalized:
+                                    elif are_teams_matching(team_name, game.team2):
                                         team_name = game.team2
                                     else:
                                         # If can't match, try using mapped home/away teams
-                                        if outcome_normalized in self._normalize_team_name_for_matching(event_home_team):
+                                        if are_teams_matching(team_name, event_home_team) and home_team_mapped:
                                             team_name = home_team_mapped
-                                        elif outcome_normalized in self._normalize_team_name_for_matching(event_away_team):
+                                        elif are_teams_matching(team_name, event_away_team) and away_team_mapped:
                                             team_name = away_team_mapped
                                 
                                 # If team name is still empty, try to infer from line sign and event teams
@@ -647,20 +644,16 @@ class LinesScraper:
                                 
                                 # Match team name from outcome to game teams
                                 if team_name:
-                                    # Try to match outcome team name to one of our game teams
-                                    outcome_normalized = self._normalize_team_name_for_matching(team_name)
-                                    team1_normalized = self._normalize_team_name_for_matching(game.team1)
-                                    team2_normalized = self._normalize_team_name_for_matching(game.team2)
-                                    
-                                    if outcome_normalized in team1_normalized or team1_normalized in outcome_normalized:
+                                    # Use centralized normalization for matching
+                                    if are_teams_matching(team_name, game.team1):
                                         team_name = game.team1
-                                    elif outcome_normalized in team2_normalized or team2_normalized in outcome_normalized:
+                                    elif are_teams_matching(team_name, game.team2):
                                         team_name = game.team2
                                     else:
                                         # If can't match, try using mapped home/away teams
-                                        if outcome_normalized in self._normalize_team_name_for_matching(event_home_team):
+                                        if are_teams_matching(team_name, event_home_team) and home_team_mapped:
                                             team_name = home_team_mapped
-                                        elif outcome_normalized in self._normalize_team_name_for_matching(event_away_team):
+                                        elif are_teams_matching(team_name, event_away_team) and away_team_mapped:
                                             team_name = away_team_mapped
                                 
                                 # If team name is still empty, try to match by odds and event teams

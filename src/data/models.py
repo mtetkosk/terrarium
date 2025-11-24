@@ -45,10 +45,12 @@ class RevisionRequestType(str, Enum):
 @dataclass
 class Game:
     """Game model"""
-    team1: str
-    team2: str
+    team1: str  # Keep for backwards compatibility, but prefer team1_id
+    team2: str  # Keep for backwards compatibility, but prefer team2_id
     date: date
     id: Optional[int] = None
+    team1_id: Optional[int] = None  # Team ID (preferred)
+    team2_id: Optional[int] = None  # Team ID (preferred)
     venue: Optional[str] = None
     status: GameStatus = GameStatus.SCHEDULED
     result: Optional[Dict[str, Any]] = None
@@ -140,6 +142,8 @@ class Pick:
     stake_amount: float = 0.0
     parlay_legs: Optional[List[int]] = None
     selection_text: Optional[str] = None  # Original selection text from Picker (e.g., "Team A +3.5", "Over 160.5")
+    team_name: Optional[str] = None  # Team name for spread/moneyline bets (null for totals) - deprecated, use team_id
+    team_id: Optional[int] = None  # Team ID for spread/moneyline bets (null for totals) - preferred
     best_bet: bool = False  # True if this is a "best bet" (will be reviewed by President)
     favorite: bool = False  # Deprecated: use best_bet instead. Kept for backwards compatibility
     confidence_score: int = 5  # 1-10 confidence score (1 = low, 10 = high)

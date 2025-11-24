@@ -1,8 +1,9 @@
 """Analytics service for tracking game analytics"""
 
 from datetime import date
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
 
 from src.data.storage import (
     Database,
@@ -13,7 +14,10 @@ from src.data.storage import (
     BettingLineModel,
     PredictionModel,
     GameModel,
-    BetType
+    PickModel,
+    BetModel,
+    BetType,
+    BetResult
 )
 from src.utils.logging import get_logger
 
@@ -373,6 +377,154 @@ class AnalyticsService:
             session.rollback()
             logger.error(f"Error saving result analytics: {e}", exc_info=True)
             return False
+        finally:
+            session.close()
+    
+    def get_picks_for_date(self, target_date: date) -> List[PickModel]:
+        """
+        Get all picks for a specific date.
+        
+        CRITICAL: Returns only the latest pick per game_id (enforced by unique constraint).
+        All picks are guaranteed to be unique by (game_id, pick_date).
+        
+        Args:
+            target_date: Date to get picks for
+            
+        Returns:
+            List of PickModel objects, one per game_id
+        """
+        session = self.db.get_session()
+        try:
+            # Query by pick_date, with fallback to DATE(created_at) for legacy records without pick_date
+            picks = session.query(PickModel).filter(
+                or_(
+                    PickModel.pick_date == target_date,
+                    func.date(PickModel.created_at) == target_date
+                )
+            ).order_by(PickModel.created_at.desc()).all()
+            
+            # Ensure pick_date is set for any legacy records without it
+            for pick in picks:
+                if not pick.pick_date:
+                    pick.pick_date = target_date
+                    session.commit()
+            
+            logger.debug(f"Retrieved {len(picks)} picks for {target_date}")
+            return picks
+        except Exception as e:
+            logger.error(f"Error getting picks for date {target_date}: {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+    
+    def get_results_for_date(self, target_date: date) -> Dict[str, Any]:
+        """
+        Get all bet results for picks made on a specific date.
+        
+        Args:
+            target_date: Date to get results for (date when picks were made)
+            
+        Returns:
+            Dictionary with:
+            - picks: List of PickModel objects
+            - bets: List of BetModel objects (matched by pick_id)
+            - stats: Dictionary with summary statistics
+        """
+        session = self.db.get_session()
+        try:
+            # Get picks for this date
+            picks = self.get_picks_for_date(target_date)
+            
+            if not picks:
+                return {
+                    'picks': [],
+                    'bets': [],
+                    'stats': {
+                        'total_picks': 0,
+                        'settled_bets': 0,
+                        'wins': 0,
+                        'losses': 0,
+                        'pushes': 0,
+                        'pending': 0
+                    }
+                }
+            
+            # Get bets for these picks
+            pick_ids = [p.id for p in picks if p.id]
+            bets = session.query(BetModel).filter(
+                BetModel.pick_id.in_(pick_ids)
+            ).all() if pick_ids else []
+            
+            # Create bet lookup
+            bet_map = {bet.pick_id: bet for bet in bets}
+            
+            # Calculate stats
+            stats = {
+                'total_picks': len(picks),
+                'settled_bets': len([b for b in bets if b.result != BetResult.PENDING]),
+                'wins': len([b for b in bets if b.result == BetResult.WIN]),
+                'losses': len([b for b in bets if b.result == BetResult.LOSS]),
+                'pushes': len([b for b in bets if b.result == BetResult.PUSH]),
+                'pending': len([b for b in bets if b.result == BetResult.PENDING])
+            }
+            
+            logger.debug(f"Retrieved {len(picks)} picks and {len(bets)} bets for {target_date}")
+            return {
+                'picks': picks,
+                'bets': bets,
+                'bet_map': bet_map,
+                'stats': stats
+            }
+        except Exception as e:
+            logger.error(f"Error getting results for date {target_date}: {e}", exc_info=True)
+            return {
+                'picks': [],
+                'bets': [],
+                'bet_map': {},
+                'stats': {
+                    'total_picks': 0,
+                    'settled_bets': 0,
+                    'wins': 0,
+                    'losses': 0,
+                    'pushes': 0,
+                    'pending': 0
+                }
+            }
+        finally:
+            session.close()
+    
+    def get_betting_lines_for_date(self, target_date: date) -> List[BettingLineModel]:
+        """
+        Get all betting lines for games on a specific date.
+        
+        Args:
+            target_date: Date to get betting lines for
+            
+        Returns:
+            List of BettingLineModel objects
+        """
+        session = self.db.get_session()
+        try:
+            # Get games for this date
+            games = session.query(GameModel).filter(
+                GameModel.date == target_date
+            ).all()
+            
+            if not games:
+                return []
+            
+            game_ids = [g.id for g in games]
+            
+            # Get betting lines for these games
+            lines = session.query(BettingLineModel).filter(
+                BettingLineModel.game_id.in_(game_ids)
+            ).all()
+            
+            logger.debug(f"Retrieved {len(lines)} betting lines for {target_date}")
+            return lines
+        except Exception as e:
+            logger.error(f"Error getting betting lines for date {target_date}: {e}", exc_info=True)
+            return []
         finally:
             session.close()
 

@@ -199,20 +199,23 @@ class Coordinator:
             from sqlalchemy import func
             
             # Get all games from yesterday that have results
-            games_with_results = session.query(GameModel).filter(
+            # Use with_entities to select only the ID column to avoid detached instance errors
+            game_ids = session.query(GameModel.id).filter(
                 func.date(GameModel.date) == yesterday,
                 GameModel.result.isnot(None)
             ).all()
             
-            for game in games_with_results:
-                if game.id:
-                    try:
-                        self.analytics_service.save_result_analytics(
-                            game_id=game.id,
-                            game_date=yesterday
-                        )
-                    except Exception as e:
-                        logger.debug(f"Could not save result analytics for game_id={game.id}: {e}")
+            # Extract IDs from tuples (with_entities returns tuples)
+            game_ids = [game_id for (game_id,) in game_ids if game_id]
+            
+            for game_id in game_ids:
+                try:
+                    self.analytics_service.save_result_analytics(
+                        game_id=game_id,
+                        game_date=yesterday
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not save result analytics for game_id={game_id}: {e}")
         finally:
             session.close()
         
@@ -424,9 +427,12 @@ class Coordinator:
         self.modeler.interaction_logger.log_handoff("Researcher", "Modeler", "GameInsights", len(insights_games))
         predictions = self.modeler.process(insights, betting_lines=lines, target_date=target_date, force_refresh=force_refresh)
         
-        # Save prediction analytics
+        # Save PredictionModel records and prediction analytics
         session = self.db.get_session()
         try:
+            from src.data.storage import PredictionModel
+            from datetime import datetime
+            
             # Get all games that were modeled
             game_models = predictions.get("game_models", [])
             for game_model in game_models:
@@ -439,6 +445,61 @@ class Coordinator:
                 except (ValueError, TypeError):
                     continue
                 
+                # Extract prediction data from modeler output
+                pred_data = game_model.get("predictions", {})
+                scores = pred_data.get("scores", {})
+                away_score = scores.get("away")
+                home_score = scores.get("home")
+                margin = pred_data.get("margin")
+                total = pred_data.get("total")
+                win_probs = pred_data.get("win_probs", {})
+                confidence = pred_data.get("confidence", 0.5)
+                
+                # Handle total: it can be a float or a dict with 'projected_total' key
+                if total is not None:
+                    if isinstance(total, dict):
+                        total = total.get("projected_total")
+                    elif not isinstance(total, (int, float)):
+                        total = None
+                
+                # Calculate spread and total if not directly provided
+                if margin is None and away_score is not None and home_score is not None:
+                    margin = home_score - away_score
+                if total is None and away_score is not None and home_score is not None:
+                    total = away_score + home_score
+                
+                # Get win probabilities
+                win_prob_team1 = win_probs.get("home", 0.5)
+                win_prob_team2 = win_probs.get("away", 0.5)
+                
+                # Use merge() for upsert - will update if exists, create if not
+                # Merge requires the unique constraint keys (game_id, prediction_date)
+                
+                # Validate margin is available (required field)
+                if margin is None:
+                    logger.warning(
+                        f"Missing predicted margin for game_id={game_id}. "
+                        f"This may indicate a model failure or data quality issue."
+                    )
+                    margin = 0.0  # Default only for data quality issues
+                
+                prediction_model = PredictionModel(
+                    game_id=game_id,
+                    prediction_date=target_date,
+                    model_type="modeler",
+                    predicted_spread=float(margin),
+                    predicted_total=float(total) if total is not None else None,
+                    win_probability_team1=float(win_prob_team1),
+                    win_probability_team2=float(win_prob_team2),
+                    ev_estimate=None,  # Nullable - will be calculated when needed
+                    confidence_score=float(confidence),
+                    mispricing_detected=False,
+                    created_at=datetime.now()
+                )
+                merged_pred = session.merge(prediction_model)
+                # merge() returns the merged instance, which is automatically tracked
+                
+                # Now save to analytics (which reads from PredictionModel)
                 try:
                     self.analytics_service.save_prediction_analytics(
                         game_id=game_id,
@@ -446,6 +507,12 @@ class Coordinator:
                     )
                 except Exception as e:
                     logger.debug(f"Could not save prediction analytics for game_id={game_id}: {e}")
+            
+            session.commit()
+            logger.info(f"Saved {len(game_models)} PredictionModel records")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error saving predictions: {e}", exc_info=True)
         finally:
             session.close()
         
@@ -822,12 +889,50 @@ class Coordinator:
             session.close()
     
     def _save_pick(self, pick: Pick) -> None:
-        """Save pick to database (used for new picks)"""
+        """Save pick to database using upsert pattern.
+        
+        CRITICAL: Database unique constraint on (game_id, pick_date) ensures only one pick per game per day.
+        This method updates existing pick or creates new one. No manual duplicate handling needed.
+        """
         if not self.db:
             return
         
         session = self.db.get_session()
         try:
+            # Validate critical fields before saving
+            if not pick.game_id:
+                logger.error(f"Cannot save pick: missing game_id. Pick data: {pick}")
+                return
+            
+            if not pick.selection_text and pick.bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
+                logger.warning(
+                    f"Pick for game_id={pick.game_id} missing selection_text! "
+                    f"This is critical for identifying which team we're betting on. "
+                    f"Rationale: {pick.rationale[:100] if pick.rationale else 'None'}"
+                )
+            
+            from datetime import date as date_type
+            
+            # Get the date for this pick (use today if not set)
+            pick_date = pick.created_at.date() if pick.created_at else date_type.today()
+            
+            # Get or create team_id if this is a spread/moneyline bet
+            team_id = pick.team_id
+            if not team_id and pick.team_name and pick.bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
+                # Look up team by normalized name
+                from src.utils.team_normalizer import normalize_team_name
+                from src.data.storage import TeamModel
+                normalized_name = normalize_team_name(pick.team_name, for_matching=True)
+                team = session.query(TeamModel).filter_by(normalized_team_name=normalized_name).first()
+                if not team:
+                    # Create new team
+                    team = TeamModel(normalized_team_name=normalized_name)
+                    session.add(team)
+                    session.flush()
+                team_id = team.id
+            
+            # Use merge() for upsert - will update if exists, create if not
+            # Merge requires the unique constraint keys (game_id, pick_date)
             pick_model = PickModel(
                 game_id=pick.game_id,
                 bet_type=pick.bet_type,
@@ -839,14 +944,27 @@ class Coordinator:
                 confidence=pick.confidence,
                 expected_value=pick.expected_value,
                 book=pick.book,
-                parlay_legs=pick.parlay_legs
+                parlay_legs=pick.parlay_legs,
+                selection_text=pick.selection_text,
+                team_id=team_id,
+                best_bet=pick.best_bet,
+                confidence_score=pick.confidence_score,
+                favorite=pick.favorite,
+                pick_date=pick_date,
+                created_at=pick.created_at if pick.created_at else datetime.now()
             )
-            session.add(pick_model)
+            merged_pick = session.merge(pick_model)
             session.commit()
-            pick.id = pick_model.id
+            pick.id = merged_pick.id
+            
+            logger.info(
+                f"Upserted pick for game_id={pick.game_id} on {pick_date}: bet_type={pick.bet_type.value}, "
+                f"selection_text='{pick.selection_text}', best_bet={pick.best_bet}"
+            )
         except Exception as e:
-            logger.error(f"Error saving pick: {e}")
+            logger.error(f"Error saving pick: {e}", exc_info=True)
             session.rollback()
+            raise
         finally:
             session.close()
     

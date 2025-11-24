@@ -171,16 +171,26 @@ def normalize_team_name_for_lookup(team_name: str) -> str:
     normalized = normalize_team_name(team_name, for_matching=True)
     
     # Remove common team name suffixes for lookup
+    # Order matters - check longer/more specific suffixes first
     suffixes = [
-        ' bulldogs', ' wildcats', ' tigers', ' eagles', ' hawks', ' owls',
-        ' bears', ' lions', ' panthers', ' warriors', ' knights', ' pirates',
-        ' blue devils', ' blue raiders', ' tar heels', ' cavaliers', ' seminoles', ' hurricanes',
-        ' boilermakers', ' fighting irish', ' cardinal', ' crimson', ' crimson tide',
-        ' longhorns', ' buckeyes', ' wolverines', ' spartans', ' badgers',
+        ' blue devils', ' blue raiders', ' tar heels', ' crimson tide',
         ' nittany lions', ' golden eagles', ' upstate spartans',
-        ' gulf coast eagles', ' fgcu', ' jayhawks', ' hoosiers',
-        ' demons', ' lopes', ' red wolves', ' mustangs', ' jaspers', ' aggies',
-        ' razorbacks', ' red raiders', ' boilermakers', ' quakers', ' dragons'
+        ' gulf coast eagles', ' red wolves', ' red raiders',
+        ' fighting irish', ' boilermakers',
+        ' bulldogs', ' wildcats', ' tigers', ' eagles', ' hawks', ' owls', ' falcons',
+        ' bears', ' lions', ' panthers', ' warriors', ' knights', ' pirates',
+        ' cavaliers', ' seminoles', ' hurricanes',
+        ' cardinal', ' crimson',
+        ' longhorns', ' buckeyes', ' wolverines', ' spartans', ' badgers',
+        ' fgcu', ' jayhawks', ' hoosiers',
+        ' demons', ' lopes', ' mustangs', ' jaspers', ' aggies',
+        ' razorbacks', ' quakers', ' dragons',
+        ' colonels', ' highlanders', ' keydets', ' rams', ' shockers',
+        ' sycamores', ' cowboys', ' flyers', ' fighting hawks', ' chanticleers',
+        ' dolphins', ' stags', ' roadrunners', ' delta devils', ' colonels',
+        ' bears', ' mavericks', ' spiders', ' runnin\' bulldogs', ' nittany lions',
+        ' friars', ' anteaters', ' panthers', ' peacocks', ' river hawks',
+        ' sharks', ' fighting illini', ' midshipmen', ' hoyas', ' seahawks'
     ]
     
     for suffix in suffixes:

@@ -8,6 +8,7 @@ from src.data.models import (
     Bet, Pick, DailyReport, AccuracyMetrics, BetResult, BetType
 )
 from src.data.storage import Database, BetModel, PickModel, DailyReportModel, GameModel
+from src.data.analytics import AnalyticsService
 from sqlalchemy import func
 from src.utils.logging import get_logger
 from collections import defaultdict
@@ -21,6 +22,7 @@ class Auditor(BaseAgent):
     def __init__(self, db: Optional[Database] = None):
         """Initialize Auditor agent"""
         super().__init__("Auditor", db)
+        self.analytics_service = AnalyticsService(db) if db else None
     
     def process(self, target_date: Optional[date] = None) -> DailyReport:
         """Review previous day's results and generate comprehensive report"""
@@ -57,8 +59,13 @@ class Auditor(BaseAgent):
         return report
     
     def review_daily_results(self, report_date: date, review_date: date) -> DailyReport:
-        """Review previous day's results and generate comprehensive insights"""
-        if not self.db:
+        """
+        Review previous day's results and generate comprehensive insights.
+        
+        CRITICAL: Uses analytics service which ensures only latest pick per game_id.
+        No manual duplicate handling needed - database constraint enforces uniqueness.
+        """
+        if not self.db or not self.analytics_service:
             return DailyReport(
                 date=report_date,
                 total_picks=0,
@@ -67,12 +74,12 @@ class Auditor(BaseAgent):
                 pushes=0
             )
         
-        session = self.db.get_session()
         try:
-            # Get picks from the review date (yesterday's bets)
-            picks = session.query(PickModel).filter(
-                func.date(PickModel.created_at) == review_date
-            ).all()
+            # Get results from analytics service
+            results = self.analytics_service.get_results_for_date(review_date)
+            
+            picks = results.get('picks', [])
+            bet_map = results.get('bet_map', {})
             
             if not picks:
                 self.log_info(f"No picks found for {review_date}")
@@ -102,75 +109,79 @@ class Auditor(BaseAgent):
             confidence_analysis = {'high': {'wins': 0, 'losses': 0}, 'medium': {'wins': 0, 'losses': 0}, 'low': {'wins': 0, 'losses': 0}}
             ev_analysis = {'winners': [], 'losers': []}
             
-            for pick_model in picks:
-                total_wagered += pick_model.stake_amount
-                bet = session.query(BetModel).filter_by(pick_id=pick_model.id).first()
-                
-                # Track bet type performance
-                bet_type = pick_model.bet_type.value
-                bet_type_performance[bet_type]['wagered'] += pick_model.stake_amount
-                
-                if bet:
-                    if bet.result == BetResult.WIN:
-                        wins += 1
-                        total_payout += bet.payout
-                        bet_type_performance[bet_type]['wins'] += 1
-                        bet_type_performance[bet_type]['payout'] += bet.payout
-                        winning_picks.append({
-                            'pick': pick_model,
-                            'bet': bet,
+            session = self.db.get_session()
+            try:
+                for pick_model in picks:
+                    total_wagered += pick_model.stake_amount
+                    bet = bet_map.get(pick_model.id)
+                    
+                    # Track bet type performance
+                    bet_type = pick_model.bet_type.value
+                    bet_type_performance[bet_type]['wagered'] += pick_model.stake_amount
+                    
+                    if bet:
+                        if bet.result == BetResult.WIN:
+                            wins += 1
+                            total_payout += bet.payout
+                            bet_type_performance[bet_type]['wins'] += 1
+                            bet_type_performance[bet_type]['payout'] += bet.payout
+                            winning_picks.append({
+                                'pick': pick_model,
+                                'bet': bet,
+                                'profit': bet.profit_loss
+                            })
+                            ev_analysis['winners'].append({
+                                'expected': pick_model.expected_value,
+                                'realized': bet.profit_loss / pick_model.stake_amount if pick_model.stake_amount > 0 else 0
+                            })
+                        elif bet.result == BetResult.LOSS:
+                            losses += 1
+                            bet_type_performance[bet_type]['losses'] += 1
+                            losing_picks.append({
+                                'pick': pick_model,
+                                'bet': bet,
+                                'loss': abs(bet.profit_loss)
+                            })
+                            ev_analysis['losers'].append({
+                                'expected': pick_model.expected_value,
+                                'realized': bet.profit_loss / pick_model.stake_amount if pick_model.stake_amount > 0 else 0
+                            })
+                        elif bet.result == BetResult.PUSH:
+                            pushes += 1
+                            total_payout += pick_model.stake_amount
+                            bet_type_performance[bet_type]['pushes'] += 1
+                            bet_type_performance[bet_type]['payout'] += pick_model.stake_amount
+                    
+                    # Confidence analysis
+                    if pick_model.confidence >= 0.7:
+                        conf_level = 'high'
+                    elif pick_model.confidence >= 0.5:
+                        conf_level = 'medium'
+                    else:
+                        conf_level = 'low'
+                    
+                    if bet:
+                        if bet.result == BetResult.WIN:
+                            confidence_analysis[conf_level]['wins'] += 1
+                        elif bet.result == BetResult.LOSS:
+                            confidence_analysis[conf_level]['losses'] += 1
+                    
+                    # Track parlay results
+                    if pick_model.bet_type == BetType.PARLAY and bet:
+                        parlay_results.append({
+                            'legs': len(pick_model.parlay_legs) if pick_model.parlay_legs else 0,
+                            'result': bet.result.value,
                             'profit': bet.profit_loss
                         })
-                        ev_analysis['winners'].append({
-                            'expected': pick_model.expected_value,
-                            'realized': bet.profit_loss / pick_model.stake_amount if pick_model.stake_amount > 0 else 0
-                        })
-                    elif bet.result == BetResult.LOSS:
-                        losses += 1
-                        bet_type_performance[bet_type]['losses'] += 1
-                        losing_picks.append({
-                            'pick': pick_model,
-                            'bet': bet,
-                            'loss': abs(bet.profit_loss)
-                        })
-                        ev_analysis['losers'].append({
-                            'expected': pick_model.expected_value,
-                            'realized': bet.profit_loss / pick_model.stake_amount if pick_model.stake_amount > 0 else 0
-                        })
-                    elif bet.result == BetResult.PUSH:
-                        pushes += 1
-                        total_payout += pick_model.stake_amount
-                        bet_type_performance[bet_type]['pushes'] += 1
-                        bet_type_performance[bet_type]['payout'] += pick_model.stake_amount
                 
-                # Confidence analysis
-                if pick_model.confidence >= 0.7:
-                    conf_level = 'high'
-                elif pick_model.confidence >= 0.5:
-                    conf_level = 'medium'
-                else:
-                    conf_level = 'low'
-                
-                if bet:
-                    if bet.result == BetResult.WIN:
-                        confidence_analysis[conf_level]['wins'] += 1
-                    elif bet.result == BetResult.LOSS:
-                        confidence_analysis[conf_level]['losses'] += 1
-                
-                # Track parlay results
-                if pick_model.bet_type == BetType.PARLAY and bet:
-                    parlay_results.append({
-                        'legs': len(pick_model.parlay_legs) if pick_model.parlay_legs else 0,
-                        'result': bet.result.value,
-                        'profit': bet.profit_loss
-                    })
+                # Calculate additional metrics
+                accuracy_metrics = self._calculate_accuracy_metrics(picks, session)
+            finally:
+                session.close()
             
             profit_loss = total_payout - total_wagered
             win_rate = wins / total_picks if total_picks > 0 else 0.0
             roi = (profit_loss / total_wagered * 100) if total_wagered > 0 else 0.0
-            
-            # Calculate additional metrics
-            accuracy_metrics = self._calculate_accuracy_metrics(picks, session)
             
             # Generate insights
             insights = self._generate_insights(
@@ -214,8 +225,6 @@ class Auditor(BaseAgent):
                 insights={"error": str(e)},
                 recommendations=["Error occurred during review"]
             )
-        finally:
-            session.close()
     
     def calculate_daily_pl(self, target_date: date) -> DailyReport:
         """Calculate daily P&L"""

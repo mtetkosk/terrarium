@@ -17,13 +17,27 @@ logger = get_logger("data.storage")
 Base = declarative_base()
 
 
+class TeamModel(Base):
+    """Team database model"""
+    __tablename__ = 'teams'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    normalized_team_name = Column(String, nullable=False, unique=True)  # Canonical team name for matching
+    created_at = Column(DateTime, default=datetime.now)
+    
+    # Relationships
+    games_as_team1 = relationship("GameModel", foreign_keys="GameModel.team1_id", back_populates="team1_ref")
+    games_as_team2 = relationship("GameModel", foreign_keys="GameModel.team2_id", back_populates="team2_ref")
+    picks = relationship("PickModel", back_populates="team_ref")
+
+
 class GameModel(Base):
     """Game database model"""
     __tablename__ = 'games'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    team1 = Column(String, nullable=False)
-    team2 = Column(String, nullable=False)
+    team1_id = Column(Integer, ForeignKey('teams.id'), nullable=False)
+    team2_id = Column(Integer, ForeignKey('teams.id'), nullable=False)
     date = Column(Date, nullable=False)
     venue = Column(String, nullable=True)
     status = Column(SQLEnum(GameStatus), default=GameStatus.SCHEDULED)
@@ -31,6 +45,8 @@ class GameModel(Base):
     created_at = Column(DateTime, default=datetime.now)
     
     # Relationships
+    team1_ref = relationship("TeamModel", foreign_keys=[team1_id], back_populates="games_as_team1")
+    team2_ref = relationship("TeamModel", foreign_keys=[team2_id], back_populates="games_as_team2")
     betting_lines = relationship("BettingLineModel", back_populates="game")
     insights = relationship("GameInsightModel", back_populates="game", uselist=False)
     predictions = relationship("PredictionModel", back_populates="game")
@@ -97,15 +113,21 @@ class PredictionModel(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     game_id = Column(Integer, ForeignKey('games.id'), nullable=False)
+    prediction_date = Column(Date, nullable=False)
     model_type = Column(String, nullable=False)
     predicted_spread = Column(Float, nullable=False)
     predicted_total = Column(Float, nullable=True)
     win_probability_team1 = Column(Float, nullable=False)
     win_probability_team2 = Column(Float, nullable=False)
-    ev_estimate = Column(Float, nullable=False)
+    ev_estimate = Column(Float, nullable=True)
     confidence_score = Column(Float, nullable=False)
     mispricing_detected = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
+    
+    # Unique constraint: only one prediction per game_id per date
+    __table_args__ = (
+        UniqueConstraint('game_id', 'prediction_date', name='uq_predictions_game_date'),
+    )
     
     # Relationships
     game = relationship("GameModel", back_populates="predictions")
@@ -128,10 +150,20 @@ class PickModel(Base):
     book = Column(String, nullable=False)
     parlay_legs = Column(JSON, nullable=True)  # List of pick IDs for parlays
     selection_text = Column(String, nullable=True)  # Original selection text from Picker
+    team_id = Column(Integer, ForeignKey('teams.id'), nullable=True)  # Team ID for spread/moneyline bets (null for totals)
     best_bet = Column(Boolean, default=False)  # True if this is a "best bet" (reviewed by President)
+    
+    # Relationships
+    team_ref = relationship("TeamModel", back_populates="picks")
     favorite = Column(Boolean, default=False)  # Deprecated: use best_bet instead. Kept for backwards compatibility
     confidence_score = Column(Integer, default=5)  # 1-10 confidence score
     created_at = Column(DateTime, default=datetime.now)
+    pick_date = Column(Date, nullable=True)  # Date of the pick (for unique constraint)
+    
+    # Unique constraint: only one pick per game_id per date
+    __table_args__ = (
+        UniqueConstraint('game_id', 'pick_date', name='uq_picks_game_date'),
+    )
     
     # Relationships
     game = relationship("GameModel", back_populates="picks")
@@ -430,6 +462,71 @@ class Database:
                     logger.info("✅ Added 'selection_text' column to picks table")
                 except Exception as e:
                     logger.warning(f"Could not add 'selection_text' column: {e}")
+            
+            # Add pick_date column if missing and migrate existing data
+            if 'pick_date' not in existing_columns:
+                try:
+                    with self.engine.connect() as conn:
+                        # Add pick_date column
+                        conn.execute(text("ALTER TABLE picks ADD COLUMN pick_date DATE"))
+                        # Populate pick_date from created_at for existing records
+                        conn.execute(text("UPDATE picks SET pick_date = DATE(created_at) WHERE pick_date IS NULL"))
+                        conn.commit()
+                    logger.info("Added 'pick_date' column to picks table")
+                except Exception as e:
+                    logger.warning(f"Could not add 'pick_date' column: {e}")
+            
+            # Add prediction_date column to predictions table if missing
+            if 'predictions' in table_names:
+                existing_columns = [col['name'] for col in inspector.get_columns('predictions')]
+                
+                if 'prediction_date' not in existing_columns:
+                    try:
+                        with self.engine.connect() as conn:
+                            conn.execute(text("ALTER TABLE predictions ADD COLUMN prediction_date DATE"))
+                            conn.execute(text("UPDATE predictions SET prediction_date = DATE(created_at) WHERE prediction_date IS NULL"))
+                            conn.commit()
+                        logger.info("Added 'prediction_date' column to predictions table")
+                    except Exception as e:
+                        logger.warning(f"Could not add 'prediction_date' column: {e}")
+                
+                # Add unique constraint on predictions if it doesn't exist
+                try:
+                    with self.engine.connect() as conn:
+                        inspector = inspect(self.engine)
+                        indexes = inspector.get_indexes('predictions')
+                        constraint_exists = any(idx.get('name') == 'uq_predictions_game_date' for idx in indexes)
+                        
+                        if not constraint_exists:
+                            conn.execute(text("""
+                                CREATE UNIQUE INDEX IF NOT EXISTS uq_predictions_game_date 
+                                ON predictions(game_id, prediction_date)
+                                WHERE prediction_date IS NOT NULL
+                            """))
+                            conn.commit()
+                            logger.info("Added unique constraint on predictions (game_id, prediction_date)")
+                except Exception as e:
+                    logger.warning(f"Could not add unique constraint on predictions: {e}")
+            
+            # Add unique constraint on picks if it doesn't exist
+            try:
+                with self.engine.connect() as conn:
+                    # Check if constraint already exists
+                    inspector = inspect(self.engine)
+                    indexes = inspector.get_indexes('picks')
+                    constraint_exists = any(idx.get('name') == 'uq_picks_game_date' for idx in indexes)
+                    
+                    if not constraint_exists:
+                        # SQLite doesn't support adding unique constraints directly, so we use a unique index
+                        conn.execute(text("""
+                            CREATE UNIQUE INDEX IF NOT EXISTS uq_picks_game_date 
+                            ON picks(game_id, pick_date)
+                            WHERE pick_date IS NOT NULL
+                        """))
+                        conn.commit()
+                        logger.info("Added unique constraint on picks (game_id, pick_date)")
+            except Exception as e:
+                logger.warning(f"Could not add unique constraint on picks: {e}")
 
 
 # Global database instance
