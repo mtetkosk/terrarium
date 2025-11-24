@@ -104,14 +104,21 @@ class DataConverter:
             
         Returns:
             Odds as integer (negative for favorites, positive for underdogs)
-            Defaults to -110 if odds are unavailable
+            Defaults to -110 if odds are unavailable (standard market odds)
+            
+        Note:
+            Defaulting to -110 may hide data quality issues. Consider investigating
+            why odds are unavailable if this warning appears frequently.
         """
         odds_str_original = str(odds_str).strip()
         odds_str_lower = odds_str_original.lower()
         
         # Handle unavailable/missing odds
         if not odds_str_original or odds_str_lower in ["market_unavailable", "unavailable", "n/a", "na", "none", ""]:
-            logger.warning(f"Odds unavailable ('{odds_str_original}'), defaulting to -110")
+            logger.warning(
+                f"Odds unavailable ('{odds_str_original}'), defaulting to -110. "
+                f"This may indicate a data quality issue - investigate missing odds data."
+            )
             return -110
         
         try:
@@ -122,7 +129,10 @@ class DataConverter:
                 odds = -odds
             return odds
         except (ValueError, AttributeError) as e:
-            logger.warning(f"Could not parse odds '{odds_str_original}', defaulting to -110: {e}")
+            logger.warning(
+                f"Could not parse odds '{odds_str_original}', defaulting to -110: {e}. "
+                f"This may indicate a data quality issue."
+            )
             return -110
     
     @staticmethod
@@ -178,6 +188,22 @@ class DataConverter:
                 if not line and selection_text:
                     line = DataConverter.extract_line_from_selection(selection_text)
                 
+                # Extract team_name/team_id from pick data (for spread/moneyline bets)
+                # Picker should provide "team_name" field, or we can extract from "selection"
+                # We'll look up the team_id later when saving to database
+                team_name = pick_data.get("team_name")
+                if not team_name and selection_text and bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
+                    # Try to extract team name from selection text (e.g., "Team A +3.5" -> "Team A")
+                    import re
+                    # Remove the line part (e.g., "+3.5", "-7.5", "Over 160.5")
+                    line_pattern = r'\s*([+-]?(?:over|under)\s*)?[+-]?\d+\.?\d*'
+                    team_name = re.sub(line_pattern, '', selection_text, flags=re.IGNORECASE).strip()
+                    if not team_name:
+                        team_name = None
+                
+                # team_id will be looked up when saving to database (based on team_name)
+                team_id = None
+                
                 # Combine justification into rationale
                 justification = pick_data.get("justification", [])
                 if isinstance(justification, list):
@@ -192,7 +218,16 @@ class DataConverter:
                 if not best_bet and favorite:
                     best_bet = True
                 
-                confidence_score = pick_data.get("confidence_score", 5)
+                # Get confidence_score if provided, otherwise derive from confidence (0.0-1.0)
+                confidence_score = pick_data.get("confidence_score")
+                if confidence_score is None:
+                    # Derive confidence_score (1-10) from confidence (0.0-1.0)
+                    confidence_value = pick_data.get("confidence", 0.5)
+                    # Convert 0.0-1.0 to 1-10 scale
+                    # 0.0 -> 1, 0.5 -> 5, 1.0 -> 10
+                    confidence_score = max(1, min(10, int(round(confidence_value * 10))))
+                    if confidence_value == 0.0:
+                        confidence_score = 1
                 # Ensure confidence_score is between 1-10
                 confidence_score = max(1, min(10, int(confidence_score)))
                 
@@ -206,6 +241,8 @@ class DataConverter:
                     expected_value=float(pick_data.get("edge_estimate", 0.0)),
                     book=pick_data.get("book", "draftkings"),
                     selection_text=selection_text,
+                    team_name=team_name,  # Keep for backwards compatibility
+                    team_id=team_id,  # Will be set when saving to database
                     best_bet=best_bet,
                     favorite=favorite,  # Keep for backwards compatibility
                     confidence_score=confidence_score,

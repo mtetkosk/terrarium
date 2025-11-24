@@ -9,10 +9,11 @@ from pathlib import Path
 from src.agents.base import BaseAgent
 from src.data.models import BetResult, BetType, GameStatus
 from src.data.storage import Database, BetModel, PickModel, GameModel
+from src.data.analytics import AnalyticsService
 from src.data.scrapers.games_scraper import GamesScraper
 from sqlalchemy import func
 from src.utils.logging import get_logger
-from src.utils.team_normalizer import normalize_team_name
+from src.utils.team_normalizer import normalize_team_name, get_team_name_variations
 
 logger = get_logger("agents.results_processor")
 
@@ -23,6 +24,7 @@ class ResultsProcessor(BaseAgent):
     def __init__(self, db: Optional[Database] = None, llm_client=None):
         """Initialize Results Processor agent"""
         super().__init__("ResultsProcessor", db, llm_client)
+        self.analytics_service = AnalyticsService(db) if db else None
         self.games_scraper = GamesScraper()
         self.cache_dir = Path("data/cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +77,8 @@ class ResultsProcessor(BaseAgent):
                     for pick in picks:
                         try:
                             pick_ids.append(pick.id)
-                        except Exception:
+                        except Exception as e:
+                            self.logger.debug(f"Could not extract ID from pick object: {e}")
                             continue
                     
                     all_settled = True
@@ -98,12 +101,32 @@ class ResultsProcessor(BaseAgent):
         self.log_info(f"Fetching game results for {yesterday}")
         games_with_results = self._fetch_game_results(yesterday)
         
-        # Get bets from yesterday
+        # Save results to database
         session = self.db.get_session()
         try:
-            picks = session.query(PickModel).filter(
-                func.date(PickModel.created_at) == yesterday
-            ).all()
+            saved_count = 0
+            for game_id, result_data in games_with_results.items():
+                game = session.query(GameModel).filter_by(id=game_id).first()
+                if game and result_data.get("result"):
+                    # Only update if result doesn't exist or is different
+                    if not game.result or game.result != result_data["result"]:
+                        game.result = result_data["result"]
+                        game.status = GameStatus.FINAL
+                        saved_count += 1
+            if saved_count > 0:
+                session.commit()
+                self.log_info(f"Saved {saved_count} game results to database")
+        except Exception as e:
+            self.log_error(f"Error saving game results to database: {e}")
+            session.rollback()
+        
+        # Get bets from yesterday using analytics service
+        try:
+            if not self.analytics_service:
+                self.log_error("Analytics service not available")
+                picks = []
+            else:
+                picks = self.analytics_service.get_picks_for_date(yesterday)
             
             if not picks:
                 self.log_info(f"No bets found for {yesterday}")
@@ -158,85 +181,210 @@ class ResultsProcessor(BaseAgent):
             session.close()
     
     def _fetch_game_results(self, game_date: date) -> Dict[int, Dict[str, Any]]:
-        """Fetch game results from ESPN API and match with database games"""
-        games = self.games_scraper.scrape_games(game_date)
+        """Fetch game results from ESPN API and match with database games by game ID"""
+        # Get all game IDs from the database for this date
+        session = self.db.get_session()
         results = {}
         
-        self.log_info(f"Fetched {len(games)} games from ESPN for {game_date}")
-        
-        # Also check database for saved games
-        session = self.db.get_session()
-        db_game_map = {}
         try:
-            # Use with_entities to select only the columns we need
-            # This returns tuples instead of ORM objects, avoiding detached instance errors
-            db_games = session.query(
-                GameModel.id,
-                GameModel.team1,
-                GameModel.team2
-            ).filter(
-                func.date(GameModel.date) == game_date
-            ).all()
+            # Query database games directly by date and get their IDs
+            # Use team references if available, otherwise fall back to old columns
+            try:
+                db_games = session.query(
+                    GameModel.id,
+                    GameModel.team1_id,
+                    GameModel.team2_id,
+                    GameModel.result
+                ).filter(
+                    func.date(GameModel.date) == game_date
+                ).all()
+                # Convert team IDs to names for backwards compatibility
+                from src.data.storage import TeamModel
+                team_map = {}
+                for game_id, team1_id, team2_id, result in db_games:
+                    if team1_id and team1_id not in team_map:
+                        team = session.query(TeamModel).filter_by(id=team1_id).first()
+                        if team:
+                            team_map[team1_id] = team.normalized_team_name
+                    if team2_id and team2_id not in team_map:
+                        team = session.query(TeamModel).filter_by(id=team2_id).first()
+                        if team:
+                            team_map[team2_id] = team.normalized_team_name
+                
+                # Convert to format expected by rest of code
+                db_games = [
+                    (game_id, team_map.get(team1_id, ''), team_map.get(team2_id, ''), result)
+                    for game_id, team1_id, team2_id, result in db_games
+                ]
+            except Exception:
+                # Fallback to old schema
+                db_games = session.query(
+                    GameModel.id,
+                    GameModel.team1,
+                    GameModel.team2,
+                    GameModel.result
+                ).filter(
+                    func.date(GameModel.date) == game_date
+                ).all()
             
             self.log_info(f"Found {len(db_games)} games in database for {game_date}")
             
-            # Create a map of team names to game IDs for matching
-            # Use normalized team names for better matching across sources
-            # Try both orderings (team1/team2 and team2/team1) since order might differ
-            # db_games is now a list of tuples (id, team1, team2), not ORM objects
-            for game_id, team1, team2 in db_games:
-                # Use normalized names for keys
-                norm1 = normalize_team_name(team1, for_matching=True)
-                norm2 = normalize_team_name(team2, for_matching=True)
-                key1 = (norm1, norm2)
-                key2 = (norm2, norm1)
-                db_game_map[key1] = game_id
-                db_game_map[key2] = game_id  # Also map reverse order
+            # For each database game, check if it has a result or fetch from scraper
+            # Use game_id directly - no team name matching needed
+            game_ids = [game_id for game_id, _, _, _ in db_games]
+            
+            # Fetch results from scraper (for games that don't have results yet)
+            scraped_games = self.games_scraper.scrape_games(game_date)
+            self.log_info(f"Fetched {len(scraped_games)} games from ESPN for {game_date}")
+            
+            # Create a map of game IDs to database game info
+            db_game_info = {}
+            for game_id, team1, team2, result in db_games:
+                db_game_info[game_id] = {
+                    "game_id": game_id,
+                    "team1": team1,
+                    "team2": team2,
+                    "existing_result": result
+                }
+            
+            # Match scraped games to database games by game_id
+            # Since scraped games don't have database IDs, we need to match by team names
+            # But we'll prioritize using existing database results when available
+            scraped_results_by_teams = {}
+            for scraped_game in scraped_games:
+                if scraped_game.status == GameStatus.FINAL and scraped_game.result:
+                    # Create a key from team names for matching
+                    key = (scraped_game.team1, scraped_game.team2)
+                    scraped_results_by_teams[key] = scraped_game.result
+                    # Also try reverse order
+                    key_reverse = (scraped_game.team2, scraped_game.team1)
+                    scraped_results_by_teams[key_reverse] = scraped_game.result
+            
+            # For each database game, use existing result or match with scraped result
+            matched_count = 0
+            for game_id, team1, team2, existing_result in db_games:
+                if existing_result:
+                    # Already have result in database, use it
+                    results[game_id] = {
+                        "game_id": game_id,
+                        "team1": team1,
+                        "team2": team2,
+                        "status": "final",
+                        "result": existing_result
+                    }
+                    matched_count += 1
+                else:
+                    # Try to find scraped result by team names
+                    key = (team1, team2)
+                    key_reverse = (team2, team1)
+                    scraped_result = scraped_results_by_teams.get(key) or scraped_results_by_teams.get(key_reverse)
+                    
+                    if scraped_result:
+                        results[game_id] = {
+                            "game_id": game_id,
+                            "team1": team1,
+                            "team2": team2,
+                            "status": "final",
+                            "result": scraped_result
+                        }
+                        matched_count += 1
+            
+            self.log_info(f"Matched {matched_count} games with results out of {len(db_games)} database games")
+            
         finally:
             session.close()
         
-        # Now process games and match with database (db_game_map is a regular dict, doesn't need session)
-        final_games = 0
-        matched_games = 0
-        
-        for game in games:
-            if game.status == GameStatus.FINAL:
-                final_games += 1
-                if game.result:
-                    # Try to match with database game
-                    game_id = game.id
-                    if not game_id:
-                        # Try to find in database by team names (try both orders)
-                        # Use normalized names for matching
-                        norm1 = normalize_team_name(game.team1, for_matching=True)
-                        norm2 = normalize_team_name(game.team2, for_matching=True)
-                        key1 = (norm1, norm2)
-                        key2 = (norm2, norm1)
-                        game_id = db_game_map.get(key1) or db_game_map.get(key2)
-                    
-                    if game_id:
-                        matched_games += 1
-                        results[game_id] = {
-                            "game_id": game_id,
-                            "team1": game.team1,
-                            "team2": game.team2,
-                            "status": game.status.value,
-                            "result": game.result  # Contains final scores
-                        }
-                    else:
-                        self.log_debug(f"Could not match game: {game.team1} vs {game.team2}")
-                else:
-                    self.log_debug(f"Game {game.team1} vs {game.team2} is FINAL but has no result data")
-        
-        self.log_info(f"Found {final_games} final games, matched {matched_games} to database, {len(results)} with results")
-        
         return results
+    
+    def _determine_bet_result_from_team_id(
+        self,
+        pick_game_id: int,
+        pick_bet_type,
+        pick_line: float,
+        pick_team_id: Optional[int],
+        game_result: Dict[str, Any],
+        session
+    ) -> Optional[BetResult]:
+        """Determine bet result using team_id (simpler and more reliable)"""
+        if not pick_team_id:
+            return None  # Can't determine without team_id
+        
+        result_data = game_result.get("result")
+        if not result_data:
+            return None
+        
+        # Convert scores to integers
+        def safe_int(value, default=0):
+            if isinstance(value, int):
+                return value
+            if isinstance(value, (float, str)):
+                try:
+                    return int(float(str(value)))
+                except (ValueError, TypeError):
+                    return default
+            return default
+        
+        home_score = safe_int(result_data.get("home_score", 0), 0)
+        away_score = safe_int(result_data.get("away_score", 0), 0)
+        home_team_id = result_data.get("home_team_id")  # May not be in result yet
+        away_team_id = result_data.get("away_team_id")  # May not be in result yet
+        
+        # Get game to determine which team is home/away
+        from src.data.storage import GameModel, TeamModel
+        game = session.query(GameModel).filter_by(id=pick_game_id).first()
+        if not game:
+            return None
+        
+        # Determine if pick_team_id is home or away
+        pick_team_is_home = (game.team1_id == pick_team_id)
+        pick_team_is_away = (game.team2_id == pick_team_id)
+        
+        if not pick_team_is_home and not pick_team_is_away:
+            # Team ID doesn't match game teams - fall back to old method
+            return None
+        
+        # Calculate result based on bet type
+        if pick_bet_type == BetType.SPREAD:
+            if pick_team_is_home:
+                # Home team spread
+                margin = home_score - away_score
+                line_negated = -pick_line
+                if abs(margin - line_negated) < 0.01:
+                    return BetResult.PUSH
+                elif margin > line_negated:
+                    return BetResult.WIN
+                else:
+                    return BetResult.LOSS
+            elif pick_team_is_away:
+                # Away team spread
+                margin = away_score - home_score
+                line_negated = -pick_line
+                if abs(margin - line_negated) < 0.01:
+                    return BetResult.PUSH
+                elif margin > line_negated:
+                    return BetResult.WIN
+                else:
+                    return BetResult.LOSS
+        
+        elif pick_bet_type == BetType.MONEYLINE:
+            if pick_team_is_home and home_score > away_score:
+                return BetResult.WIN
+            elif pick_team_is_away and away_score > home_score:
+                return BetResult.WIN
+            elif home_score == away_score:
+                return BetResult.PUSH
+            else:
+                return BetResult.LOSS
+        
+        # For totals, team_id is null, so this method won't be called
+        return None
     
     def _settle_bets(self, picks: List[PickModel], games_with_results: Dict[int, Dict[str, Any]], session, pick_date: date) -> int:
         """Settle bets based on game results"""
         settled_count = 0
         no_bet_count = 0
         already_settled_count = 0
+        re_settled_count = 0
         no_game_result_count = 0
         no_bet_result_count = 0
         
@@ -268,13 +416,15 @@ class ResultsProcessor(BaseAgent):
                 PickModel.line,
                 PickModel.odds,
                 PickModel.stake_amount,
-                PickModel.rationale
+                PickModel.rationale,
+                PickModel.selection_text,
+                PickModel.team_id
             ).filter(
                 func.date(PickModel.created_at) == pick_date
             ).all()
             
             picks_data = []
-            for pick_id, game_id, bet_type, line, odds, stake_amount, rationale in picks_query:
+            for pick_id, game_id, bet_type, line, odds, stake_amount, rationale, selection_text, team_id in picks_query:
                 picks_data.append({
                     "id": pick_id,
                     "game_id": game_id,
@@ -282,7 +432,9 @@ class ResultsProcessor(BaseAgent):
                     "line": line or 0.0,
                     "odds": odds,
                     "stake_amount": stake_amount or 0.0,
-                    "rationale": rationale or ""
+                    "rationale": rationale or "",
+                    "selection_text": selection_text or "",
+                    "team_id": team_id
                 })
         else:
             # We successfully extracted IDs, now query by ID to get fresh data
@@ -293,11 +445,13 @@ class ResultsProcessor(BaseAgent):
                 PickModel.line,
                 PickModel.odds,
                 PickModel.stake_amount,
-                PickModel.rationale
+                PickModel.rationale,
+                PickModel.selection_text,
+                PickModel.team_id
             ).filter(PickModel.id.in_(pick_ids)).all()
             
             picks_data = []
-            for pick_id, game_id, bet_type, line, odds, stake_amount, rationale in picks_query:
+            for pick_id, game_id, bet_type, line, odds, stake_amount, rationale, selection_text, team_id in picks_query:
                 picks_data.append({
                     "id": pick_id,
                     "game_id": game_id,
@@ -305,7 +459,9 @@ class ResultsProcessor(BaseAgent):
                     "line": line or 0.0,
                     "odds": odds,
                     "stake_amount": stake_amount or 0.0,
-                    "rationale": rationale or ""
+                    "rationale": rationale or "",
+                    "selection_text": selection_text or "",
+                    "team_id": team_id
                 })
         
         # Now process picks using extracted data (no longer need pick objects)
@@ -317,16 +473,24 @@ class ResultsProcessor(BaseAgent):
             pick_odds = pick_data["odds"]
             pick_stake_amount = pick_data["stake_amount"]
             pick_rationale = pick_data["rationale"]
+            pick_selection_text = pick_data.get("selection_text", "")
             
-            # Skip if already settled
+            # Get or create bet record for this pick
             bet = session.query(BetModel).filter_by(pick_id=pick_id).first()
             if not bet:
-                no_bet_count += 1
-                continue
+                # Create bet record for picks that don't have one yet
+                # This allows us to track all picks, not just "placed" ones
+                bet = BetModel(
+                    pick_id=pick_id,
+                    placed_at=datetime.now(),
+                    result=BetResult.PENDING
+                )
+                session.add(bet)
+                session.flush()  # Flush to get the bet ID
             
-            if bet.result != BetResult.PENDING:
-                already_settled_count += 1
-                continue  # Already settled
+            # Allow re-settlement if bet was previously settled (in case of logic fixes)
+            # This allows fixing incorrectly settled bets when logic is updated
+            was_already_settled = bet.result != BetResult.PENDING
             
             # Get game result
             game_result = games_with_results.get(pick_game_id)
@@ -336,10 +500,19 @@ class ResultsProcessor(BaseAgent):
                 continue
             
             # Determine bet result based on pick and game result
-            # Pass extracted attributes to avoid detached instance errors
-            bet_result = self._determine_bet_result_from_attrs(
-                pick_game_id, pick_bet_type, pick_line, pick_rationale, game_result, session
+            # Use team_id directly if available (much simpler!)
+            pick_team_id = pick_data.get("team_id")
+            bet_result = self._determine_bet_result_from_team_id(
+                pick_game_id, pick_bet_type, pick_line, pick_team_id, game_result, session
             )
+            
+            # Fall back to old method if team_id not available (backwards compatibility)
+            if not bet_result:
+                team_identifier = pick_selection_text if pick_selection_text else pick_rationale
+                bet_result = self._determine_bet_result_from_attrs(
+                    pick_game_id, pick_bet_type, pick_line, team_identifier, game_result, session, 
+                    use_selection_text=bool(pick_selection_text)
+                )
             
             if not bet_result:
                 no_bet_result_count += 1
@@ -357,20 +530,25 @@ class ResultsProcessor(BaseAgent):
             bet.profit_loss = profit_loss
             bet.settled_at = datetime.now()
             
-            settled_count += 1
+            if was_already_settled:
+                re_settled_count += 1
+            else:
+                settled_count += 1
+            
             # Reconstruct selection text for logging
             bet_type_str = pick_bet_type.value if hasattr(pick_bet_type, 'value') else str(pick_bet_type)
             selection_desc = f"{bet_type_str} {pick_line:+.1f}"
+            action = "Re-settled" if was_already_settled else "Settled"
             self.log_info(
-                f"Settled bet: {selection_desc} - {bet_result.value} "
+                f"{action} bet: {selection_desc} - {bet_result.value} "
                 f"(P&L: ${profit_loss:.2f})"
             )
         
         # Log summary
         self.log_info(
-            f"Settlement summary: {settled_count} settled, "
+            f"Settlement summary: {settled_count} newly settled, "
+            f"{re_settled_count} re-settled, "
             f"{no_bet_count} no bet record, "
-            f"{already_settled_count} already settled, "
             f"{no_game_result_count} no game result, "
             f"{no_bet_result_count} could not determine result"
         )
@@ -385,7 +563,8 @@ class ResultsProcessor(BaseAgent):
         pick_line: float, 
         pick_rationale: str, 
         game_result: Dict[str, Any], 
-        session
+        session,
+        use_selection_text: bool = False
     ) -> Optional[BetResult]:
         """Determine if a bet won, lost, or pushed based on game result (using extracted attributes)"""
         result_data = game_result.get("result")
@@ -424,61 +603,283 @@ class ResultsProcessor(BaseAgent):
                 return None
             
             # Extract game attributes while session is active
-            game_home_team = game.team1
-            game_away_team = game.team2
+            # Use team references if available, otherwise fall back to old team1/team2 columns
+            if hasattr(game, 'team1_ref') and game.team1_ref:
+                game_home_team = game.team1_ref.normalized_team_name
+            else:
+                game_home_team = getattr(game, 'team1', '')
+            
+            if hasattr(game, 'team2_ref') and game.team2_ref:
+                game_away_team = game.team2_ref.normalized_team_name
+            else:
+                game_away_team = getattr(game, 'team2', '')
         except Exception as e:
             self.log_error(f"Error accessing game attributes: {e}")
             return None
         
         # Determine which team the pick is for by checking rationale
         # The rationale should mention the team name
+        # Use normalized team names for better matching
         rationale_lower = pick_rationale.lower()
+        
+        # Normalize team names for matching
+        norm_home_team = normalize_team_name(home_team, for_matching=True)
+        norm_away_team = normalize_team_name(away_team, for_matching=True)
+        norm_game_home_team = normalize_team_name(game_home_team, for_matching=True)
+        norm_game_away_team = normalize_team_name(game_away_team, for_matching=True)
+        
+        # Also get team name variations for more flexible matching
+        home_variations = get_team_name_variations(home_team) + get_team_name_variations(game_home_team)
+        away_variations = get_team_name_variations(away_team) + get_team_name_variations(game_away_team)
         
         pick_team = None
         if bet_type == BetType.SPREAD or bet_type == BetType.MONEYLINE:
-            # Check if rationale mentions home or away team
-            # Try to match with both the result team names and game team names
-            if (home_team.lower() in rationale_lower or 
-                game_home_team.lower() in rationale_lower):
-                pick_team = "home"
-            elif (away_team.lower() in rationale_lower or 
-                  game_away_team.lower() in rationale_lower):
-                pick_team = "away"
-            else:
-                # Fallback: use line sign for spread bets
-                # Negative line typically means home team favored
-                if bet_type == BetType.SPREAD:
-                    if line < 0:
+            # If we have selection_text, extract team name directly from it
+            # Format is typically "Team Name +X.X" or "Team Name -X.X"
+            if use_selection_text and pick_rationale:
+                import re
+                # Extract team name from selection_text (everything before the line)
+                # Pattern: team name followed by optional space and then +/- followed by number
+                line_pattern = r'([+-]?\d+\.?\d*)'
+                match = re.search(line_pattern, pick_rationale)
+                if match:
+                    # Get text before the line number - this should be the team name
+                    line_start = match.start()
+                    team_name_from_selection = pick_rationale[:line_start].strip()
+                    
+                    # Normalize and match against home/away teams
+                    norm_selection_team = normalize_team_name(team_name_from_selection, for_matching=True)
+                    
+                    # Check if it matches home or away team
+                    if (norm_selection_team == norm_home_team or norm_selection_team == norm_game_home_team or
+                        norm_selection_team in norm_home_team or norm_home_team in norm_selection_team):
                         pick_team = "home"
-                    elif line > 0:
+                        self.logger.debug(f"Team determined as HOME from selection_text: {team_name_from_selection}")
+                    elif (norm_selection_team == norm_away_team or norm_selection_team == norm_game_away_team or
+                          norm_selection_team in norm_away_team or norm_away_team in norm_selection_team):
                         pick_team = "away"
+                        self.logger.debug(f"Team determined as AWAY from selection_text: {team_name_from_selection}")
+            
+            # Helper function for team matching
+            def check_team_match(norm_team_name, rationale_text):
+                """Check if team name matches rationale (exact or all words present)"""
+                if norm_team_name in rationale_text:
+                    return True
+                # Check if all significant words appear (for cases like "nicholls colonels" where words appear separately)
+                words = norm_team_name.split()
+                skip_words = {'univ', 'university', 'of', 'the', 'st', 'state', 'univ'}
+                significant_words = [w for w in words if w not in skip_words and len(w) > 2]
+                if len(significant_words) >= 2:
+                    # Check if all significant words appear in rationale
+                    all_words_present = all(word in rationale_text for word in significant_words)
+                    if all_words_present:
+                        return True
+                return False
+            
+            # Initialize match flags
+            home_match = False
+            away_match = False
+            
+            # If we couldn't determine from selection_text, fall back to rationale parsing
+            if not pick_team:
+                # Check if rationale mentions home or away team using normalized names
+                # Check both exact normalized names and variations
+                
+                # Check normalized names first (most reliable)
+                # Also check if all significant words from the normalized name appear in rationale
+                if check_team_match(norm_home_team, rationale_lower) or check_team_match(norm_game_home_team, rationale_lower):
+                    home_match = True
+                if check_team_match(norm_away_team, rationale_lower) or check_team_match(norm_game_away_team, rationale_lower):
+                    away_match = True
+            
+            # Check for common abbreviations (e.g., "LIU" for "Long Island University")
+            # Extract first letters of each word to form potential abbreviations
+            # Also check for abbreviations that skip common words like "univ", "university", "of"
+            def get_abbreviations(team_name_normalized):
+                """Get possible abbreviations from a normalized team name"""
+                abbrevs = set()
+                words = team_name_normalized.split()
+                # Full abbreviation (all words)
+                if words:
+                    abbrevs.add(''.join([w[0] for w in words if len(w) > 0]))
+                # Abbreviation skipping common words (univ, university, of, the)
+                skip_words = {'univ', 'university', 'of', 'the', 'st', 'state'}
+                significant_words = [w for w in words if w not in skip_words]
+                if len(significant_words) >= 2:
+                    abbrevs.add(''.join([w[0] for w in significant_words if len(w) > 0]))
+                # Also check for patterns like "Long Island" -> "LI"
+                if len(words) >= 2:
+                    abbrevs.add(''.join([w[0] for w in words[:3] if len(w) > 0]))  # First 3 words
+                return abbrevs
+            
+            if not home_match:
+                home_abbrevs = get_abbreviations(norm_home_team) | get_abbreviations(norm_game_home_team)
+                for abbrev in home_abbrevs:
+                    if len(abbrev) >= 2 and abbrev.lower() in rationale_lower:
+                        home_match = True
+                        break
+            if not away_match:
+                away_abbrevs = get_abbreviations(norm_away_team) | get_abbreviations(norm_game_away_team)
+                for abbrev in away_abbrevs:
+                    if len(abbrev) >= 2 and abbrev.lower() in rationale_lower:
+                        away_match = True
+                        break
+            
+            # If no normalized match, check variations (but skip very short/common words)
+            # Check both teams' variations and find the best match
+            if not home_match and not away_match:
+                best_home_match = None
+                best_away_match = None
+                
+                # Check home team variations - find the longest match
+                for variation in home_variations:
+                    if variation and len(variation) > 3:  # Skip very short variations that are too common
+                        if variation.lower() in rationale_lower:
+                            if best_home_match is None or len(variation) > len(best_home_match):
+                                best_home_match = variation
+                
+                # Check away team variations - find the longest match
+                for variation in away_variations:
+                    if variation and len(variation) > 3:  # Skip very short variations that are too common
+                        if variation.lower() in rationale_lower:
+                            if best_away_match is None or len(variation) > len(best_away_match):
+                                best_away_match = variation
+                
+                # Use the best match - prefer longer/more specific matches
+                if best_home_match and best_away_match:
+                    # Both matched - use the longer/more specific one
+                    # If same length, prefer the one that's more team-specific
+                    # (check if full normalized team name appears, or prefer away if equal)
+                    if len(best_home_match) > len(best_away_match):
+                        home_match = True
+                    elif len(best_away_match) > len(best_home_match):
+                        away_match = True
+                    else:
+                        # Same length - check if full normalized names appear
+                        if norm_away_team in rationale_lower or norm_game_away_team in rationale_lower:
+                            away_match = True
+                        elif norm_home_team in rationale_lower or norm_game_home_team in rationale_lower:
+                            home_match = True
+                        else:
+                            # Still tied - this is ambiguous, prefer neither
+                            # (will fall through to return None)
+                            pass
+                elif best_home_match:
+                    home_match = True
+                elif best_away_match:
+                    away_match = True
+            
+            # Determine team based on matches
+            if home_match and away_match:
+                # Both teams mentioned - try to disambiguate by checking which team is mentioned with the spread
+                # Look for patterns like "Team +X" or "Team -X" or "Team X" where X is the line
+                line_str = f"{abs(line):.1f}".rstrip('0').rstrip('.')
+                
+                # Get significant words from team names for matching
+                def get_significant_words(team_name):
+                    words = team_name.split()
+                    skip_words = {'univ', 'university', 'of', 'the', 'st', 'state', 'univ'}
+                    return [w for w in words if w not in skip_words and len(w) > 2]
+                
+                home_sig_words = get_significant_words(norm_home_team) + get_significant_words(norm_game_home_team)
+                away_sig_words = get_significant_words(norm_away_team) + get_significant_words(norm_game_away_team)
+                
+                # Check if any significant word from home team appears with the spread line
+                home_with_line = False
+                for word in set(home_sig_words):
+                    if (f"{word} {line_str}" in rationale_lower or 
+                        f"{word} +{line_str}" in rationale_lower or
+                        f"{word} -{line_str}" in rationale_lower):
+                        home_with_line = True
+                        break
+                
+                # Check if any significant word from away team appears with the spread line
+                away_with_line = False
+                for word in set(away_sig_words):
+                    if (f"{word} {line_str}" in rationale_lower or 
+                        f"{word} +{line_str}" in rationale_lower or
+                        f"{word} -{line_str}" in rationale_lower):
+                        away_with_line = True
+                        break
+                
+                if away_with_line and not home_with_line:
+                    pick_team = "away"
+                    self.logger.debug(f"Both teams matched, but away team mentioned with spread line, determined as AWAY")
+                elif home_with_line and not away_with_line:
+                    pick_team = "home"
+                    self.logger.debug(f"Both teams matched, but home team mentioned with spread line, determined as HOME")
+                else:
+                    # Still ambiguous, return None
+                    self.logger.debug(f"Both teams matched in rationale, cannot determine pick team")
+                    pick_team = None
+            elif home_match:
+                pick_team = "home"
+                self.logger.debug(f"Team determined as HOME via name matching")
+            elif away_match:
+                pick_team = "away"
+                self.logger.debug(f"Team determined as AWAY via name matching")
+            else:
+                # No match found - cannot determine team
+                self.logger.debug(f"No team name found in rationale, cannot determine pick team")
+                pick_team = None
         
         # If we couldn't determine which team, return None
         if not pick_team and bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
+            self.logger.debug(f"Could not determine pick team for bet_type={bet_type}, rationale={pick_rationale[:100]}")
             return None
+        
+        # Debug logging for team determination
+        if bet_type == BetType.SPREAD:
+            self.logger.debug(f"Spread bet: pick_team={pick_team}, line={line}, rationale={pick_rationale[:100]}")
         
         # Calculate result based on bet type
         if bet_type == BetType.SPREAD:
             if pick_team == "home":
-                # Home team spread: home needs to win by more than |line|
-                # Line is negative for home team (e.g., -7.5 means home favored by 7.5)
+                # Home team spread: home needs to cover the spread
+                # For home team with -7.5: home must win by more than 7.5 (margin > 7.5)
+                # For home team with +7.5: home gets 7.5 points, wins if they lose by 7 or less (margin > -7.5)
+                # Formula: home wins if (home_score + line) > away_score
+                # Which simplifies to: home_score - away_score > -line
+                # Or: margin > -line (where margin = home_score - away_score)
                 margin = home_score - away_score
-                if margin > abs(line):
-                    return BetResult.WIN
-                elif margin < abs(line):
-                    return BetResult.LOSS
-                else:
+                line_negated = -line
+                if abs(margin - line_negated) < 0.01:  # Floating point comparison with tolerance
+                    self.logger.debug(f"Home spread PUSH: margin={margin}, line={line}, -line={line_negated}")
                     return BetResult.PUSH
+                elif margin > line_negated:
+                    self.logger.debug(f"Home spread WIN: margin={margin}, line={line}, -line={line_negated}, check: {margin} > {line_negated} = True")
+                    return BetResult.WIN
+                else:
+                    self.logger.debug(f"Home spread LOSS: margin={margin}, line={line}, -line={line_negated}, check: {margin} > {line_negated} = False")
+                    return BetResult.LOSS
             elif pick_team == "away":
-                # Away team spread: away needs to lose by less than line (or win)
-                # Line is positive for away team (e.g., +7.5 means away getting 7.5 points)
+                # Away team spread: away needs to cover the spread
+                # For away team with +7.5: away gets 7.5 points, wins if they lose by 7 or less (margin >= -7)
+                # For away team with -1.5: away must win by more than 1.5 (margin > 1.5)
+                # The line is stored as positive for underdogs (+7.5 stored as 7.5) and negative for favorites
+                # Formula: away wins if (away_score + line) > home_score
+                # Which simplifies to: away_score - home_score > -line
+                # Or: margin > -line (where margin = away_score - home_score)
                 margin = away_score - home_score
-                if margin > line:
-                    return BetResult.WIN
-                elif margin < line:
-                    return BetResult.LOSS
-                else:
+                # For positive lines (underdog): line > 0, so -line < 0
+                #   Example: line = 7.5, margin = -2, check: -2 > -7.5 → TRUE → WIN ✓
+                #   Example: line = 7.5, margin = -8, check: -8 > -7.5 → FALSE → LOSS ✓
+                # For negative lines (favorite): line < 0, so -line > 0  
+                #   Example: line = -1.5, margin = 2, check: 2 > 1.5 → TRUE → WIN ✓
+                #   Example: line = -1.5, margin = 1, check: 1 > 1.5 → FALSE → LOSS ✓
+                # Check for exact equality first (for whole number lines that can push)
+                # Use a small tolerance for floating point comparison
+                line_negated = -line
+                if abs(margin - line_negated) < 0.01:  # Floating point comparison with tolerance
+                    self.logger.debug(f"Away spread PUSH: margin={margin}, line={line}, -line={line_negated}")
                     return BetResult.PUSH
+                elif margin > line_negated:
+                    self.logger.debug(f"Away spread WIN: margin={margin}, line={line}, -line={line_negated}, check: {margin} > {line_negated} = True")
+                    return BetResult.WIN
+                else:
+                    # margin < -line
+                    self.logger.debug(f"Away spread LOSS: margin={margin}, line={line}, -line={line_negated}, check: {margin} > {line_negated} = False")
+                    return BetResult.LOSS
         
         elif bet_type == BetType.TOTAL:
             # Total: Over/Under

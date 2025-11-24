@@ -163,7 +163,17 @@ class LLMClient:
                     parsed = json.loads(content)
                     return parsed
                 except json.JSONDecodeError as e:
-                    # Log the error with context
+                    # If response_format was used, structured output guarantees valid JSON
+                    # Invalid JSON here is a serious error - fail fast
+                    if response_format:
+                        self.logger.error(
+                            f"JSON parsing error despite response_format. "
+                            f"This should not happen with structured output. Error: {e}"
+                        )
+                        self.logger.debug(f"Response content (first 1000 chars): {content[:1000]}")
+                        raise ValueError(f"Invalid JSON from structured output: {e}")
+                    
+                    # Without response_format, try repair strategies
                     self.logger.warning(f"JSON parsing error: {e}")
                     self.logger.debug(f"Response content (first 500 chars): {content[:500]}")
                     
@@ -196,7 +206,6 @@ class LLMClient:
                     
                     # Last resort: try to find JSON object in the content
                     try:
-                        # Look for first { and last }
                         first_brace = content.find('{')
                         last_brace = content.rfind('}')
                         if first_brace >= 0 and last_brace > first_brace:
@@ -350,9 +359,7 @@ def get_llm_client(agent_name: Optional[str] = None) -> LLMClient:
         model = config.get_agent_model(agent_name)
         logger.debug(f"🤖 LLM Client for '{agent_name}': using model '{model}'")
     else:
-        # Get default model
-        llm_config = config.get_llm_config()
-        model = llm_config.get('model', 'gpt-4o-mini')
+        model = config.get('llm.model', 'gpt-4o-mini')
         logger.debug(f"🤖 LLM Client (default): using model '{model}'")
     
     return LLMClient(model=model)

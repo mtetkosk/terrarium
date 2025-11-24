@@ -32,8 +32,6 @@ def run_daily(target_date: date = None, test_limit: Optional[int] = None, force_
     import os
     if debug:
         os.environ['DEBUG'] = 'true'
-        from src.utils.config import config
-        # Set log level to DEBUG if debug mode is enabled
         logger.setLevel(logging.DEBUG)
         for handler in logger.handlers:
             handler.setLevel(logging.DEBUG)
@@ -49,9 +47,8 @@ def run_daily(target_date: date = None, test_limit: Optional[int] = None, force_
 
 def setup_scheduler():
     """Set up daily scheduler"""
-    scheduler_config = config.get_scheduler_config()
-    run_time = scheduler_config.get('run_time', '09:00')
-    timezone_str = scheduler_config.get('timezone', 'America/New_York')
+    run_time = config.get('scheduler.run_time', '09:00')
+    timezone_str = config.get('scheduler.timezone', 'America/New_York')
     
     hour, minute = map(int, run_time.split(':'))
     timezone = pytz.timezone(timezone_str)

@@ -87,6 +87,13 @@ Select 3-5 "Best Bets" using the **Sorter Algorithm**:
 2. Sort by `Confidence_Score` (Desc).
 3. Select the top 5 (fewer if board is weak).
 
+**CRITICAL: EXECUTIVE RATIONALE RULES**
+- The `executive_rationale` field in the analysis section is used in email communications and should focus on the betting logic and value proposition.
+- **DO NOT include unit sizing information** (e.g., "1.5u", "Aggressive at 2.0u", "capped at 0.75u", "Max Strike", etc.) in the `executive_rationale`.
+- **DO NOT mention unit allocation decisions** (e.g., "upgrading to 2.0u", "classify as Aggressive", "tag as Best Bet", etc.) in the `executive_rationale`.
+- Focus on: model edge, confidence, risk factors, value proposition, and betting logic.
+- Unit sizing is already captured in the `allocation.units` and `allocation.unit_type` fields - do not repeat it in the rationale.
+
 **PHASE 4: THE "UPSET PROTOCOL" (Underdog of the Day)**
 You MUST select exactly ONE "Underdog of the Day" to win outright (Moneyline).
 *Selection Hierarchy (Check in order):*
@@ -124,7 +131,7 @@ You MUST select exactly ONE "Underdog of the Day" to win outright (Moneyline).
         "analysis": {
           "model_signal": "Edge +6.5pts",
           "risk_factors": "None - Full Health",
-          "executive_rationale": "Model/Picker align. Significant edge (>6pts). Upgrading to 2.0u."
+          "executive_rationale": "Model/Picker align. Significant edge (>6pts). Strong value play."
         }
       }
     ]
@@ -390,6 +397,9 @@ Compare the "Edge" (Model Projection vs. Market Line) for Spread, Total, and Mon
 2. ALL picks must align with the Modeler's directional bias (e.g., if model says Team A wins, do not pick Team B ML).
 3. DO NOT select picks with extreme odds (e.g., worse than -500).
 
+### FEEDBACK:
+1. Teams ranked very low in kenpom rank (> 300) can sometimes be unreliable. Be cautious with them.
+
 Output format (JSON):
 {
   "candidate_picks": [
@@ -481,23 +491,23 @@ Your goal is continuous improvement, not assigning blame.
 """
 
 EMAIL_GENERATOR_RECAP_SYSTEM_PROMPT = """You are a sports betting analyst writing a daily recap email. 
-Write an engaging, concise recap of yesterday's betting results. Include:
-- Overall performance summary (wins/losses, accuracy only - do NOT mention units, P&L, or profit/loss)
-- Notable games and outcomes - when discussing a game, ALWAYS include:
+Write an engaging, concise recap of yesterday's betting results. Focus ONLY on the highlights.
+
+CRITICAL FORMAT REQUIREMENTS:
+- Output EXACTLY 2-4 bullet points maximum
+- Each bullet should be a single highlight (highest scoring game, closest game, biggest upset, notable prediction result, etc.)
+- When discussing a game, ALWAYS include:
   * The FULL matchup with BOTH team names (e.g., "Marshall vs. Wright State" or "Purdue vs. Memphis")
   * What we predicted 
   * What actually happened (e.g., "but instead Marshall won by 8" or "Marshall lost by 3")
-- Key highlights and superlatives (highest scoring game, closest game, biggest upset, etc.)
-- Brief analysis of what went well and what didn't
-- For the key highlights and superlatives section, don't repeat the same game multiple times. Find a few different examples to talk about.
+- Don't repeat the same game multiple times - find different examples for each bullet
+- Be very casual and real, like how guys sitting at a bar would talk about the games from the previous day
 
 CRITICAL RULES:
 - ALWAYS use the full matchup format "Team A vs. Team B" - NEVER use "[opponent]" or "unknown opponent"
 - If you don't know both team names from the provided data, omit that game from the recap entirely
 - When mentioning a notable game, you MUST include both team names, what we predicted, AND what actually happened
-
-This should be a short concise recap of yesterday's betting results. 2-3 bullets max. No fluff. 
-You can be very casual like 'man we sucked yesterday'. Be real like how guys sitting at a bar would talk about the games from the previous day.
-Do NOT mention units, profit, loss, P&L, or dollar amounts."""
+- Do NOT mention units, profit, loss, P&L, dollar amounts, wins, losses, or accuracy percentages
+- Keep it to highlights only - no overall performance summary, no analysis of what went well/badly"""
 
 

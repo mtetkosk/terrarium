@@ -149,7 +149,8 @@ class Modeler(BaseAgent):
             cached_time = datetime.fromisoformat(cache_entry.get('timestamp', ''))
             age = datetime.now() - cached_time
             return age < self.cache_ttl
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Invalid cache timestamp format: {e}")
             return False
     
     def _get_cached_predictions(self, researcher_output: Dict[str, Any], target_date: Optional[date]) -> Optional[Dict[str, Any]]:
@@ -294,8 +295,15 @@ class Modeler(BaseAgent):
             all_betting_lines.extend(lines_by_game[game_id])
         
         for game in games:
-            game_id_str = str(game.get('game_id', ''))
-            if not game_id_str or game_id_str not in processed_game_ids:
+            game_id = game.get('game_id')
+            if game_id is None:
+                continue
+            try:
+                game_id_str = str(int(game_id))
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid game_id type: {game_id} (type: {type(game_id)})")
+                continue
+            if game_id_str not in processed_game_ids:
                 # Create fallback entry with minimal predictions
                 fallback_model = self._create_fallback_model(game, all_betting_lines)
                 all_game_models.append(fallback_model)
@@ -424,21 +432,25 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
                     self.log_warning(f"Missing game_ids in batch: {sorted(missing_ids)}")
             
             # CRITICAL: Cap confidence at 0.3 (3/10) for games without advanced stats
-            # Create map with both string and int keys for game_id matching
+            # Normalize game_id to int for consistent matching
             game_data_map = {}
             for g in batch_games:
                 game_id = g.get('game_id')
                 if game_id is not None:
-                    game_data_map[str(game_id)] = g
                     try:
-                        game_data_map[int(game_id)] = g
+                        game_id_int = int(game_id)
+                        game_data_map[game_id_int] = g
                     except (ValueError, TypeError):
-                        pass
+                        logger.warning(f"Invalid game_id type: {game_id} (type: {type(game_id)})")
             
             for model in game_models:
                 game_id = model.get('game_id')
-                # Try both string and int versions of game_id
-                game_data = game_data_map.get(str(game_id)) or game_data_map.get(game_id) or {}
+                try:
+                    game_id_int = int(game_id) if game_id is not None else None
+                    game_data = game_data_map.get(game_id_int, {}) if game_id_int is not None else {}
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid game_id in model response: {game_id} (type: {type(game_id)})")
+                    game_data = {}
                 
                 if not has_advanced_stats(game_data):
                     # Cap all model_confidence values at 0.3
@@ -503,10 +515,22 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
         
         This ensures the game is still passed to the next agent, marked as having unavailable data
         """
-        game_id_str = str(game.get('game_id', ''))
+        game_id = game.get('game_id')
+        if game_id is None:
+            logger.warning("game_id is None in fallback model, cannot create fallback")
+            return {}
         
-        # Get betting lines for this game if available
-        game_lines = [l for l in betting_lines if str(l.get('game_id', '')) == game_id_str]
+        try:
+            game_id_int = int(game_id)
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid game_id type in fallback model: {game_id} (type: {type(game_id)})")
+            return {}
+        
+        # Get betting lines for this game if available (normalize to int for comparison)
+        game_lines = [
+            l for l in betting_lines 
+            if l.get('game_id') is not None and int(l.get('game_id')) == game_id_int
+        ]
         
         # Create minimal predictions with very low confidence
         predictions = {}
@@ -552,7 +576,7 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
                 predicted_score = {"away_score": total / 2, "home_score": total / 2}
         
         return {
-            "game_id": game_id_str,
+            "game_id": str(game_id_int) if game_id_int is not None else str(game_id),
             "league": game.get('league', 'UNKNOWN'),
             "predictions": predictions,
             "predicted_score": predicted_score,

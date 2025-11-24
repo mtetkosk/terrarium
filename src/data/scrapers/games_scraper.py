@@ -18,7 +18,7 @@ class GamesScraper:
     
     def __init__(self):
         """Initialize games scraper"""
-        self.config = config.get_scraping_config()
+        self.config = config.get('scraping', {})
         self.source = self.config.get('games_source', 'espn')
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'

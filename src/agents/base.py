@@ -46,7 +46,7 @@ class BaseAgent(ABC):
         self.db = db
         self.logger = get_logger(f"agents.{name}")
         self.interaction_logger = AgentInteractionLogger(self.logger)
-        self.config = config.get_agents_config().get(name.lower(), {})
+        self.config = config.get(f'agents.{name.lower()}', {})
         # Get agent-specific LLM client if not provided
         self.llm_client = llm_client or get_llm_client(agent_name=name)
         self.system_prompt = self._get_system_prompt()
