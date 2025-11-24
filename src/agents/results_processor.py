@@ -217,15 +217,34 @@ class ResultsProcessor(BaseAgent):
                     for game_id, team1_id, team2_id, result in db_games
                 ]
             except Exception:
-                # Fallback to old schema
+                # Fallback: query with team relationships
+                from src.data.storage import TeamModel
                 db_games = session.query(
                     GameModel.id,
-                    GameModel.team1,
-                    GameModel.team2,
+                    GameModel.team1_id,
+                    GameModel.team2_id,
                     GameModel.result
                 ).filter(
                     func.date(GameModel.date) == game_date
                 ).all()
+                
+                # Convert team IDs to names
+                team_map = {}
+                for game_id, team1_id, team2_id, result in db_games:
+                    if team1_id and team1_id not in team_map:
+                        team = session.query(TeamModel).filter_by(id=team1_id).first()
+                        if team:
+                            team_map[team1_id] = team.normalized_team_name
+                    if team2_id and team2_id not in team_map:
+                        team = session.query(TeamModel).filter_by(id=team2_id).first()
+                        if team:
+                            team_map[team2_id] = team.normalized_team_name
+                
+                # Convert to format expected by rest of code
+                db_games = [
+                    (game_id, team_map.get(team1_id, ''), team_map.get(team2_id, ''), result)
+                    for game_id, team1_id, team2_id, result in db_games
+                ]
             
             self.log_info(f"Found {len(db_games)} games in database for {game_date}")
             
@@ -262,7 +281,7 @@ class ResultsProcessor(BaseAgent):
             
             # For each database game, use existing result or match with scraped result
             matched_count = 0
-            for game_id, team1, team2, existing_result in db_games:
+            for game_id, team1, team2, existing_result, _ in db_games:
                 if existing_result:
                     # Already have result in database, use it
                     results[game_id] = {

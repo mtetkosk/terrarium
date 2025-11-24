@@ -190,7 +190,8 @@ def normalize_team_name_for_lookup(team_name: str) -> str:
         ' dolphins', ' stags', ' roadrunners', ' delta devils', ' colonels',
         ' bears', ' mavericks', ' spiders', ' runnin\' bulldogs', ' nittany lions',
         ' friars', ' anteaters', ' panthers', ' peacocks', ' river hawks',
-        ' sharks', ' fighting illini', ' midshipmen', ' hoyas', ' seahawks'
+        ' sharks', ' fighting illini', ' midshipmen', ' hoyas', ' seahawks',
+        ' seawolves'
     ]
     
     for suffix in suffixes:
