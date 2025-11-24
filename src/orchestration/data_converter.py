@@ -171,9 +171,12 @@ class DataConverter:
         
         for pick_data in candidate_picks:
             try:
-                # Extract game_id
+                # Extract game_id (required field - must be valid)
                 game_id_str = str(pick_data.get("game_id", ""))
-                game_id = DataConverter.parse_game_id(game_id_str, games) or 0
+                game_id = DataConverter.parse_game_id(game_id_str, games)
+                if not game_id or game_id == 0:
+                    logger.error(f"Invalid or missing game_id for pick: {pick_data}")
+                    raise ValueError(f"Pick is missing required game_id field. game_id_str={game_id_str}")
                 
                 # Parse bet type
                 bet_type = DataConverter.parse_bet_type(pick_data.get("bet_type", ""))
@@ -204,12 +207,17 @@ class DataConverter:
                 # team_id will be looked up when saving to database (based on team_name)
                 team_id = None
                 
-                # Combine justification into rationale
+                # Combine justification into rationale (required field)
                 justification = pick_data.get("justification", [])
                 if isinstance(justification, list):
-                    rationale = " | ".join(justification)
+                    rationale = " | ".join(justification) if justification else pick_data.get("notes", "")
                 else:
-                    rationale = str(justification) or pick_data.get("notes", "")
+                    rationale = str(justification) if justification else pick_data.get("notes", "")
+                
+                # Validate rationale is provided (required NOT NULL field)
+                if not rationale or not rationale.strip():
+                    logger.error(f"Pick for game_id={game_id} has empty rationale! justification={justification}, notes={pick_data.get('notes')}")
+                    raise ValueError(f"Pick for game_id={game_id} is missing required rationale field")
                 
                 # Parse best_bet flag (preferred) and favorite flag (backwards compatibility)
                 best_bet = pick_data.get("best_bet", False)

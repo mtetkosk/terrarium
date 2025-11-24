@@ -275,7 +275,7 @@ class WebBrowser:
     
     def fetch_url(self, url: str, max_length: int = 5000) -> Optional[str]:
         """
-        Fetch and extract text content from a URL
+        Fetch and extract text content from a URL, focusing on main content
         
         Args:
             url: URL to fetch
@@ -302,23 +302,95 @@ class WebBrowser:
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Remove script and style elements
-            for script in soup(["script", "style"]):
-                script.decompose()
+            # Remove unwanted elements first
+            for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]):
+                element.decompose()
             
-            # Get text
-            text = soup.get_text()
+            # Try to find main content area (common patterns)
+            main_content = None
+            content_selectors = [
+                'article',
+                'main',
+                '[role="main"]',
+                '.article-content',
+                '.post-content',
+                '.entry-content',
+                '.content',
+                '.main-content',
+                '#content',
+                '#main-content',
+                '.story-body',
+                '.article-body'
+            ]
             
-            # Clean up whitespace
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = ' '.join(chunk for chunk in chunks if chunk)
+            for selector in content_selectors:
+                main_content = soup.select_one(selector)
+                if main_content:
+                    break
+            
+            # If no main content found, try to remove common noise and use body
+            if not main_content:
+                # Remove common navigation/ad elements
+                for element in soup.find_all(['nav', 'header', 'footer', 'aside', 'form', 'button']):
+                    element.decompose()
+                main_content = soup.find('body') or soup
+            
+            # Get text from main content
+            if main_content:
+                text = main_content.get_text(separator=' ', strip=True)
+            else:
+                text = soup.get_text(separator=' ', strip=True)
+            
+            # Filter out common noise patterns
+            noise_patterns = [
+                r'cookie',
+                r'accept.*cookie',
+                r'subscribe',
+                r'sign up',
+                r'newsletter',
+                r'follow us',
+                r'share on',
+                r'click here',
+                r'read more',
+                r'continue reading',
+                r'advertisement',
+                r'advert',
+                r'privacy policy',
+                r'terms of service',
+                r'remember me',
+                r'forgot password',
+                r'log in',
+                r'sign in',
+                r'create account',
+            ]
+            
+            # Split into sentences/lines and filter
+            lines = text.split('. ')
+            filtered_lines = []
+            for line in lines:
+                line_lower = line.lower()
+                # Skip lines that are mostly noise
+                if any(re.search(pattern, line_lower) for pattern in noise_patterns):
+                    continue
+                # Skip very short lines (likely navigation items)
+                if len(line.strip()) < 10:
+                    continue
+                # Skip lines that are mostly punctuation/special chars
+                if len(re.sub(r'[^\w\s]', '', line)) < len(line) * 0.3:
+                    continue
+                filtered_lines.append(line)
+            
+            text = '. '.join(filtered_lines)
+            
+            # Clean up excessive whitespace
+            text = re.sub(r'\s+', ' ', text)
+            text = text.strip()
             
             # Limit length
             if len(text) > max_length:
                 text = text[:max_length] + "..."
             
-            self.logger.debug(f"Fetched {len(text)} chars from {url}")
+            self.logger.debug(f"Fetched {len(text)} chars from {url} (filtered from {len(soup.get_text())} raw chars)")
             return text
             
         except Exception as e:
@@ -401,20 +473,20 @@ class WebBrowser:
                 other_urls.append(result)
         
         # Process KenPom/Torvik URLs first with more content
-        for result in kenpom_torvik_urls[:2]:
-            content = self.fetch_url(result['url'], max_length=5000)  # More content for KenPom/Torvik
+        for result in kenpom_torvik_urls[:1]:  # Reduced from 2 to 1 result
+            content = self.fetch_url(result['url'], max_length=3000)  # Reduced from 5000 to 3000
             if content:
                 stats_info.append({
                     'source': result['title'],
                     'url': result['url'],
                     'snippet': result['snippet'],
-                    'content': content[:2000],  # Reduced from 3000 to 2000 chars (still more than regular content)
+                    'content': content[:1000],  # Reduced from 2000 to 1000 chars
                     'is_advanced_stats': True
                 })
         
         # Then process other URLs
-        for result in other_urls[:2]:
-            content = self.fetch_url(result['url'], max_length=2000)
+        for result in other_urls[:1]:  # Reduced from 2 to 1 result
+            content = self.fetch_url(result['url'], max_length=1500)  # Reduced from 2000 to 1500
             if content:
                 stats_info.append({
                     'source': result['title'],
@@ -547,18 +619,18 @@ class WebBrowser:
                     kenpom_torvik_results.append((result, is_kenpom, is_torvik))
             
             # Process KenPom/Torvik pages with full content extraction
-            for result, is_kenpom, is_torvik in kenpom_torvik_results[:3]:  # Top 3 results
+            for result, is_kenpom, is_torvik in kenpom_torvik_results[:1]:  # Reduced from 3 to 1 result
                 url = result['url']
                 self.logger.info(f"Fetching advanced stats from {'KenPom' if is_kenpom else 'Torvik'}: {url}")
                 
-                # Fetch more content for KenPom/Torvik pages (they contain detailed stats)
-                content = self.fetch_url(url, max_length=8000)
+                # Fetch content for KenPom/Torvik pages (reduced size to save tokens)
+                content = self.fetch_url(url, max_length=3000)  # Reduced from 8000 to 3000
                 if content:
                     advanced_stats_info.append({
                         'source': result['title'],
                         'url': url,
                         'snippet': result['snippet'],
-                        'content': content,  # Full content for better extraction
+                        'content': content[:1500],  # Limit to 1500 chars (reduced from full content)
                         'is_kenpom': is_kenpom,
                         'is_torvik': is_torvik,
                         'is_advanced_stats': True
@@ -573,16 +645,16 @@ class WebBrowser:
                     f"{team_name} {sport} advanced metrics"
                 ]
                 
-                for query in fallback_queries[:2]:
-                    results = self.search_web(query, max_results=3)
+                for query in fallback_queries[:1]:  # Reduced from 2 to 1 query
+                    results = self.search_web(query, max_results=2)  # Reduced from 3 to 2
                     for result in results[:1]:
-                        content = self.fetch_url(result['url'], max_length=3000)
+                        content = self.fetch_url(result['url'], max_length=2000)  # Reduced from 3000 to 2000
                         if content and any(keyword in content.lower() for keyword in ['adjusted', 'efficiency', 'adj', 'kenpom', 'torvik']):
                             advanced_stats_info.append({
                                 'source': result['title'],
                                 'url': result['url'],
                                 'snippet': result['snippet'],
-                                'content': content[:2000],
+                                'content': content[:1000],  # Reduced from 2000 to 1000
                                 'is_kenpom': False,
                                 'is_torvik': False,
                                 'is_advanced_stats': True
@@ -678,22 +750,74 @@ class WebBrowser:
         
         # Fetch and extract content from prediction articles
         prediction_articles = []
-        for result in all_results[:5]:  # Check top 5 results
+        for result in all_results[:3]:  # Reduced from 5 to 3 results to save tokens
             url = result.get('url', '')
-            content = self.fetch_url(url, max_length=3000)
-            if content:
-                content_lower = content.lower()
+            # Fetch more content initially to find the prediction section
+            full_content = self.fetch_url(url, max_length=3000)
+            if full_content:
+                content_lower = full_content.lower()
                 
                 # Check if content looks like a prediction article
                 prediction_keywords = ['prediction', 'pick', 'pick:', 'predicted', 'forecast', 
                                      'winner', 'spread', 'total', 'over/under', 'betting', 
                                      'expert', 'analysis', 'preview', 'odds', 'line']
                 if any(keyword in content_lower for keyword in prediction_keywords):
+                    # Extract the most relevant portion - look for prediction/pick sections
+                    # Try to find sentences/paragraphs that contain prediction keywords
+                    sentences = full_content.split('. ')
+                    relevant_sentences = []
+                    keyword_sentences = []
+                    
+                    # First pass: collect sentences with prediction keywords (high priority)
+                    for sentence in sentences:
+                        sentence_lower = sentence.lower()
+                        if any(keyword in sentence_lower for keyword in prediction_keywords):
+                            keyword_sentences.append(sentence)
+                    
+                    # Second pass: collect context sentences (near keyword sentences or with numbers/team names)
+                    for i, sentence in enumerate(sentences):
+                        sentence_lower = sentence.lower()
+                        # Keep if it has prediction keywords
+                        if any(keyword in sentence_lower for keyword in prediction_keywords):
+                            if sentence not in keyword_sentences:
+                                keyword_sentences.append(sentence)
+                        # Keep if it has numbers (likely scores, stats, odds)
+                        elif re.search(r'\d+', sentence):
+                            relevant_sentences.append(sentence)
+                        # Keep if it mentions teams/game context
+                        elif any(word in sentence_lower for word in ['team', 'game', 'matchup', 'vs', 'versus', 'win', 'lose']):
+                            relevant_sentences.append(sentence)
+                        # Keep sentences immediately before/after keyword sentences (context)
+                        elif keyword_sentences and i > 0:
+                            prev_sentence = sentences[i-1] if i > 0 else None
+                            next_sentence = sentences[i+1] if i < len(sentences)-1 else None
+                            if (prev_sentence and prev_sentence in keyword_sentences) or \
+                               (next_sentence and next_sentence in keyword_sentences):
+                                relevant_sentences.append(sentence)
+                    
+                    # Combine: keyword sentences first, then relevant context
+                    all_relevant = keyword_sentences + relevant_sentences
+                    
+                    # If we found relevant sentences, use them; otherwise use first portion
+                    if all_relevant:
+                        # Take up to 12 sentences (increased from 8 to preserve more context)
+                        content = '. '.join(all_relevant[:12])
+                        if len(content) > 1000:
+                            # Try to keep complete sentences
+                            last_period = content[:1000].rfind('. ')
+                            if last_period > 800:  # Only truncate at sentence boundary if reasonable
+                                content = content[:last_period+1] + "..."
+                            else:
+                                content = content[:1000] + "..."
+                    else:
+                        # Fallback: use first portion of content
+                        content = full_content[:1000]
+                    
                     article_data = {
                         'source': result['title'],
                         'url': url,
                         'snippet': result['snippet'],
-                        'content': content[:1500],  # Reduced from 2000 to 1500 chars to reduce token usage
+                        'content': content,
                         'game_date': game_date.isoformat() if game_date else None  # Include game date for reference
                     }
                     prediction_articles.append(article_data)

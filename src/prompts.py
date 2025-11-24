@@ -329,6 +329,14 @@ You must use your internal reasoning capabilities to simulate the game or perfor
    - `Projected_Total` MUST equal `Home_Score + Away_Score`.
    - *Self-Correction:* If your calculated margin is -4 but your scores are 70-73 (margin -3), you must align them before outputting.
 
+**4. Expected Value Calculation (REQUIRED):**
+   - You MUST calculate and provide `ev_estimate` for each game.
+   - EV = (win_probability × payout_multiplier) - (loss_probability × stake)
+   - For standard -110 odds: payout_multiplier = 100/110 + 1 = 1.909
+   - Use the best betting opportunity (highest EV) from available market edges.
+   - If no market edges available, calculate EV using model win probabilities and standard -110 odds.
+   - EV should be expressed per unit stake (e.g., 0.15 means +15% expected return per unit).
+
 ### OUTPUT FORMAT (JSON)
 Return a JSON object with a `game_models` list.
 
@@ -351,7 +359,8 @@ Return a JSON object with a `game_models` list.
       "market_analysis": {
         "should_bet": false, 
         "edge_notes": "Model favors Away team by 4, Market has Home -2. 6pt value."
-      }
+      },
+      "ev_estimate": 0.15
     }
   ]
 }

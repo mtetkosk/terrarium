@@ -5,8 +5,9 @@ from datetime import date
 from pathlib import Path
 import sys
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 from src.utils.email_generator import EmailGenerator
 from src.data.storage import Database

@@ -19,6 +19,8 @@ from src.agents.president import President
 from src.agents.auditor import Auditor
 from src.agents.results_processor import ResultsProcessor
 from src.orchestration.data_converter import DataConverter
+from src.orchestration.prediction_persistence import PredictionPersistenceService
+from src.orchestration.persistence_service import PersistenceService
 from src.utils.logging import get_logger
 from src.utils.reporting import ReportGenerator
 from src.utils.google_sheets import GoogleSheetsService
@@ -50,6 +52,10 @@ class Coordinator:
         self.report_generator = ReportGenerator(self.db)
         self.analytics_service = AnalyticsService(self.db)
         self.google_sheets_service = GoogleSheetsService(self.db)
+        
+        # Initialize persistence services
+        self.persistence_service = PersistenceService(self.db)
+        self.prediction_persistence_service = PredictionPersistenceService(self.db)
     
     def run_daily_workflow(self, target_date: Optional[date] = None, max_revisions: int = 2, test_limit: Optional[int] = None, force_refresh: bool = False, single_game_id: Optional[int] = None) -> CardReview:
         """Run the daily betting workflow with revision support
@@ -132,7 +138,7 @@ class Coordinator:
             predictions = self._step_model(insights, lines, target_date, force_refresh)
             
             # Get historical performance data for learning
-            historical_performance = self._get_historical_performance(target_date)
+            historical_performance = self.analytics_service.get_historical_performance(target_date)
             
             # Step 5: Picker selects picks (one per game)
             picks, candidate_picks = self._step_pick(predictions, insights, lines, games, target_date, historical_performance)
@@ -234,7 +240,7 @@ class Coordinator:
         
         self.researcher.interaction_logger.log_agent_start("GamesScraper", f"Scraping games for {target_date}")
         games = self.games_scraper.scrape_games(target_date)
-        games = self._save_games(games)
+        games = self.persistence_service.save_games(games)
         
         # Filter to single game if specified
         if single_game_id is not None:
@@ -278,7 +284,7 @@ class Coordinator:
         """Step 2: Scrape betting lines"""
         self.researcher.interaction_logger.log_agent_start("LinesScraper", f"Scraping lines for {len(games)} games")
         lines = self.lines_scraper.scrape_lines(games)
-        lines = self._save_lines(lines, games)
+        lines = self.persistence_service.save_lines(lines, games)
         self.researcher.interaction_logger.log_agent_complete("LinesScraper", f"Found {len(lines)} betting lines")
         
         # Save odds analytics (will be updated after home/away is determined)
@@ -427,97 +433,11 @@ class Coordinator:
         self.modeler.interaction_logger.log_handoff("Researcher", "Modeler", "GameInsights", len(insights_games))
         predictions = self.modeler.process(insights, betting_lines=lines, target_date=target_date, force_refresh=force_refresh)
         
-        # Save PredictionModel records and prediction analytics
-        session = self.db.get_session()
-        try:
-            from src.data.storage import PredictionModel
-            from datetime import datetime
-            
-            # Get all games that were modeled
-            game_models = predictions.get("game_models", [])
-            for game_model in game_models:
-                game_id_str = game_model.get("game_id")
-                if not game_id_str:
-                    continue
-                
-                try:
-                    game_id = int(game_id_str)
-                except (ValueError, TypeError):
-                    continue
-                
-                # Extract prediction data from modeler output
-                pred_data = game_model.get("predictions", {})
-                scores = pred_data.get("scores", {})
-                away_score = scores.get("away")
-                home_score = scores.get("home")
-                margin = pred_data.get("margin")
-                total = pred_data.get("total")
-                win_probs = pred_data.get("win_probs", {})
-                confidence = pred_data.get("confidence", 0.5)
-                
-                # Handle total: it can be a float or a dict with 'projected_total' key
-                if total is not None:
-                    if isinstance(total, dict):
-                        total = total.get("projected_total")
-                    elif not isinstance(total, (int, float)):
-                        total = None
-                
-                # Calculate spread and total if not directly provided
-                if margin is None and away_score is not None and home_score is not None:
-                    margin = home_score - away_score
-                if total is None and away_score is not None and home_score is not None:
-                    total = away_score + home_score
-                
-                # Get win probabilities
-                win_prob_team1 = win_probs.get("home", 0.5)
-                win_prob_team2 = win_probs.get("away", 0.5)
-                
-                # Use merge() for upsert - will update if exists, create if not
-                # Merge requires the unique constraint keys (game_id, prediction_date)
-                
-                # Validate margin is available (required field)
-                if margin is None:
-                    logger.warning(
-                        f"Missing predicted margin for game_id={game_id}. "
-                        f"This may indicate a model failure or data quality issue."
-                    )
-                    margin = 0.0  # Default only for data quality issues
-                
-                prediction_model = PredictionModel(
-                    game_id=game_id,
-                    prediction_date=target_date,
-                    model_type="modeler",
-                    predicted_spread=float(margin),
-                    predicted_total=float(total) if total is not None else None,
-                    win_probability_team1=float(win_prob_team1),
-                    win_probability_team2=float(win_prob_team2),
-                    ev_estimate=None,  # Nullable - will be calculated when needed
-                    confidence_score=float(confidence),
-                    mispricing_detected=False,
-                    created_at=datetime.now()
-                )
-                merged_pred = session.merge(prediction_model)
-                # merge() returns the merged instance, which is automatically tracked
-                
-                # Now save to analytics (which reads from PredictionModel)
-                try:
-                    self.analytics_service.save_prediction_analytics(
-                        game_id=game_id,
-                        game_date=target_date
-                    )
-                except Exception as e:
-                    logger.debug(f"Could not save prediction analytics for game_id={game_id}: {e}")
-            
-            session.commit()
-            logger.info(f"Saved {len(game_models)} PredictionModel records")
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error saving predictions: {e}", exc_info=True)
-        finally:
-            session.close()
+        # Save predictions using persistence service
+        game_models = predictions.get("game_models", [])
+        self.prediction_persistence_service.save_predictions(predictions, target_date)
         
         # CRITICAL VALIDATION: Ensure all games from Researcher are modeled
-        game_models = predictions.get("game_models", [])
         if len(game_models) != len(insights_games):
             logger.error(
                 f"CRITICAL: Game count mismatch in Modeler! "
@@ -616,16 +536,16 @@ class Coordinator:
         
         # Save all picks to database
         for pick in picks:
-            self._save_pick(pick)
+            self.persistence_service.save_pick(pick)
             if pick.id:
-                self._update_pick_stakes(pick)
+                self.persistence_service.update_pick_stakes(pick)
         
         if review.approved:
             # All picks are approved, but only best bets are placed
             best_bet_picks = [p for p in picks if p.best_bet]
             
             logger.info(f"💰 Placing {len(best_bet_picks)} best bet bets")
-            self._place_bets(best_bet_picks)
+            self.persistence_service.place_bets(best_bet_picks)
         else:
             logger.warning("❌ Card not approved - no bets placed")
         
@@ -644,112 +564,6 @@ class Coordinator:
             output_dir="data/reports/president"
         )
         logger.info(f"📝 President's report saved to {report_path}")
-    
-    def _get_historical_performance(self, target_date: date, days_back: int = 7) -> Optional[Dict[str, Any]]:
-        """Get historical performance data from recent days for learning
-        
-        Args:
-            target_date: Current date
-            days_back: Number of days to look back (default: 7)
-            
-        Returns:
-            Dictionary with historical performance summary or None if no data
-        """
-        if not self.db:
-            return None
-        
-        session = self.db.get_session()
-        try:
-            from src.data.storage import DailyReportModel, PickModel, BetModel
-            from sqlalchemy import func
-            from src.data.models import BetResult
-            
-            # Get daily reports from recent days
-            start_date = target_date - timedelta(days=days_back)
-            daily_reports = session.query(DailyReportModel).filter(
-                DailyReportModel.date >= start_date,
-                DailyReportModel.date < target_date
-            ).order_by(DailyReportModel.date.desc()).all()
-            
-            if not daily_reports:
-                return None
-            
-            # Aggregate performance metrics
-            total_picks = sum(r.total_picks for r in daily_reports)
-            total_wins = sum(r.wins for r in daily_reports)
-            total_losses = sum(r.losses for r in daily_reports)
-            total_pushes = sum(r.pushes for r in daily_reports)
-            total_wagered = sum(r.total_wagered for r in daily_reports)
-            total_profit = sum(r.profit_loss for r in daily_reports)
-            
-            # Calculate win rate and ROI
-            win_rate = (total_wins / total_picks * 100) if total_picks > 0 else 0.0
-            roi = (total_profit / total_wagered * 100) if total_wagered > 0 else 0.0
-            
-            # Get bet type performance
-            bet_type_performance = {}
-            for report in daily_reports:
-                if report.accuracy_metrics:
-                    metrics = report.accuracy_metrics
-                    if isinstance(metrics, dict) and 'bet_type_performance' in metrics:
-                        for bet_type, perf in metrics['bet_type_performance'].items():
-                            if bet_type not in bet_type_performance:
-                                bet_type_performance[bet_type] = {'wins': 0, 'losses': 0, 'wagered': 0.0, 'profit': 0.0}
-                            bet_type_performance[bet_type]['wins'] += perf.get('wins', 0)
-                            bet_type_performance[bet_type]['losses'] += perf.get('losses', 0)
-                            bet_type_performance[bet_type]['wagered'] += perf.get('wagered', 0.0)
-                            bet_type_performance[bet_type]['profit'] += perf.get('payout', 0.0) - perf.get('wagered', 0.0)
-            
-            # Get recent recommendations from daily reports
-            recent_recommendations = []
-            for report in daily_reports[:3]:  # Last 3 days
-                if report.recommendations:
-                    if isinstance(report.recommendations, list):
-                        recent_recommendations.extend(report.recommendations)
-                    elif isinstance(report.recommendations, str):
-                        recent_recommendations.append(report.recommendations)
-            
-            # Get insights from recent reports
-            recent_insights = []
-            for report in daily_reports[:3]:
-                if report.insights:
-                    if isinstance(report.insights, dict):
-                        recent_insights.append(report.insights)
-                    elif isinstance(report.insights, str):
-                        recent_insights.append({"note": report.insights})
-            
-            return {
-                "period": f"{start_date} to {target_date - timedelta(days=1)}",
-                "days_reviewed": len(daily_reports),
-                "total_picks": total_picks,
-                "wins": total_wins,
-                "losses": total_losses,
-                "pushes": total_pushes,
-                "win_rate": round(win_rate, 2),
-                "total_wagered": round(total_wagered, 2),
-                "total_profit": round(total_profit, 2),
-                "roi": round(roi, 2),
-                "bet_type_performance": bet_type_performance,
-                "recent_recommendations": recent_recommendations[:10],  # Limit to 10 most recent
-                "recent_insights": recent_insights,
-                "daily_summaries": [
-                    {
-                        "date": r.date.isoformat(),
-                        "picks": r.total_picks,
-                        "wins": r.wins,
-                        "losses": r.losses,
-                        "win_rate": round(r.win_rate * 100, 2) if r.win_rate else 0.0,
-                        "profit": round(r.profit_loss, 2),
-                        "roi": round(r.roi, 2) if r.roi else 0.0
-                    }
-                    for r in daily_reports[:7]  # Last 7 days
-                ]
-            }
-        except Exception as e:
-            logger.error(f"Error fetching historical performance: {e}", exc_info=True)
-            return None
-        finally:
-            session.close()
     
     def _step_audit(self, target_date: date) -> None:
         """Step 10: Generate daily report (review previous day's results)"""
@@ -783,263 +597,6 @@ class Coordinator:
             logger.info(f"📄 Daily report saved to {report_path}")
         else:
             logger.info(f"No picks to review for {previous_date}")
-    
-    def _save_games(self, games: List[Game]) -> List[Game]:
-        """Save games to database and return with IDs"""
-        if not self.db:
-            return games
-        
-        session = self.db.get_session()
-        try:
-            from src.data.storage import TeamModel
-            from src.utils.team_normalizer import normalize_team_name
-            
-            saved_games = []
-            for game in games:
-                # Get or create team IDs
-                # Normalize team names for lookup
-                norm_team1 = normalize_team_name(game.team1, for_matching=True)
-                norm_team2 = normalize_team_name(game.team2, for_matching=True)
-                
-                # Get or create team1
-                team1_model = session.query(TeamModel).filter_by(normalized_team_name=norm_team1).first()
-                if not team1_model:
-                    team1_model = TeamModel(normalized_team_name=norm_team1)
-                    session.add(team1_model)
-                    session.flush()
-                
-                # Get or create team2
-                team2_model = session.query(TeamModel).filter_by(normalized_team_name=norm_team2).first()
-                if not team2_model:
-                    team2_model = TeamModel(normalized_team_name=norm_team2)
-                    session.add(team2_model)
-                    session.flush()
-                
-                # Check if game exists by team_ids and date
-                existing = session.query(GameModel).filter_by(
-                    team1_id=team1_model.id,
-                    team2_id=team2_model.id,
-                    date=game.date
-                ).first()
-                
-                if existing:
-                    # Get team names from relationships for Game dataclass
-                    team1_name = existing.team1_ref.normalized_team_name if existing.team1_ref else game.team1
-                    team2_name = existing.team2_ref.normalized_team_name if existing.team2_ref else game.team2
-                    
-                    saved_games.append(Game(
-                        id=existing.id,
-                        team1=team1_name,
-                        team2=team2_name,
-                        team1_id=existing.team1_id,
-                        team2_id=existing.team2_id,
-                        date=existing.date,
-                        venue=existing.venue,
-                        status=existing.status,
-                        result=existing.result
-                    ))
-                else:
-                    # Create new game - only use team1_id and team2_id
-                    game_model = GameModel(
-                        team1_id=team1_model.id,
-                        team2_id=team2_model.id,
-                        date=game.date,
-                        venue=game.venue,
-                        status=game.status,
-                        result=game.result
-                    )
-                    session.add(game_model)
-                    session.flush()
-                    
-                    saved_games.append(Game(
-                        id=game_model.id,
-                        team1=game.team1,  # Keep for Game dataclass (in-memory use)
-                        team2=game.team2,  # Keep for Game dataclass (in-memory use)
-                        team1_id=game_model.team1_id,
-                        team2_id=game_model.team2_id,
-                        date=game_model.date,
-                        venue=game_model.venue,
-                        status=game_model.status,
-                        result=game_model.result
-                    ))
-            
-            session.commit()
-            return saved_games
-            
-        except Exception as e:
-            logger.error(f"Error saving games: {e}", exc_info=True)
-            session.rollback()
-            return games
-        finally:
-            session.close()
-    
-    def _save_lines(self, lines: List[BettingLine], games: List[Game]) -> List[BettingLine]:
-        """Save betting lines to database"""
-        if not self.db:
-            return lines
-        
-        session = self.db.get_session()
-        try:
-            for line in lines:
-                line_model = BettingLineModel(
-                    game_id=line.game_id,
-                    book=line.book,
-                    bet_type=line.bet_type,
-                    line=line.line,
-                    odds=line.odds,
-                    team=line.team,
-                    timestamp=line.timestamp
-                )
-                session.add(line_model)
-            
-            session.commit()
-            return lines
-            
-        except Exception as e:
-            logger.error(f"Error saving lines: {e}")
-            session.rollback()
-            return lines
-        finally:
-            session.close()
-    
-    def _update_pick_stakes(self, pick: Pick) -> None:
-        """Update pick stakes in database"""
-        if not self.db or not pick.id:
-            return
-        
-        session = self.db.get_session()
-        try:
-            pick_model = session.query(PickModel).filter_by(id=pick.id).first()
-            if pick_model:
-                pick_model.stake_units = pick.stake_units
-                pick_model.stake_amount = pick.stake_amount
-                session.commit()
-        except Exception as e:
-            logger.error(f"Error updating pick stakes: {e}")
-            session.rollback()
-        finally:
-            session.close()
-    
-    def _save_pick(self, pick: Pick) -> None:
-        """Save pick to database using upsert pattern.
-        
-        CRITICAL: Database unique constraint on (game_id, pick_date) ensures only one pick per game per day.
-        This method updates existing pick or creates new one. No manual duplicate handling needed.
-        """
-        if not self.db:
-            return
-        
-        session = self.db.get_session()
-        try:
-            # Validate critical fields before saving
-            if not pick.game_id:
-                logger.error(f"Cannot save pick: missing game_id. Pick data: {pick}")
-                return
-            
-            if not pick.selection_text and pick.bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
-                logger.warning(
-                    f"Pick for game_id={pick.game_id} missing selection_text! "
-                    f"This is critical for identifying which team we're betting on. "
-                    f"Rationale: {pick.rationale[:100] if pick.rationale else 'None'}"
-                )
-            
-            from datetime import date as date_type
-            
-            # Get the date for this pick (use today if not set)
-            pick_date = pick.created_at.date() if pick.created_at else date_type.today()
-            
-            # Get or create team_id if this is a spread/moneyline bet
-            team_id = pick.team_id
-            if not team_id and pick.team_name and pick.bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
-                # Look up team by normalized name
-                from src.utils.team_normalizer import normalize_team_name
-                from src.data.storage import TeamModel
-                normalized_name = normalize_team_name(pick.team_name, for_matching=True)
-                team = session.query(TeamModel).filter_by(normalized_team_name=normalized_name).first()
-                if not team:
-                    # Create new team
-                    team = TeamModel(normalized_team_name=normalized_name)
-                    session.add(team)
-                    session.flush()
-                team_id = team.id
-            
-            # Use merge() for upsert - will update if exists, create if not
-            # Merge requires the unique constraint keys (game_id, pick_date)
-            pick_model = PickModel(
-                game_id=pick.game_id,
-                bet_type=pick.bet_type,
-                line=pick.line,
-                odds=pick.odds,
-                stake_units=pick.stake_units,
-                stake_amount=pick.stake_amount,
-                rationale=pick.rationale,
-                confidence=pick.confidence,
-                expected_value=pick.expected_value,
-                book=pick.book,
-                parlay_legs=pick.parlay_legs,
-                selection_text=pick.selection_text,
-                team_id=team_id,
-                best_bet=pick.best_bet,
-                confidence_score=pick.confidence_score,
-                favorite=pick.favorite,
-                pick_date=pick_date,
-                created_at=pick.created_at if pick.created_at else datetime.now()
-            )
-            merged_pick = session.merge(pick_model)
-            session.commit()
-            pick.id = merged_pick.id
-            
-            logger.info(
-                f"Upserted pick for game_id={pick.game_id} on {pick_date}: bet_type={pick.bet_type.value}, "
-                f"selection_text='{pick.selection_text}', best_bet={pick.best_bet}"
-            )
-        except Exception as e:
-            logger.error(f"Error saving pick: {e}", exc_info=True)
-            session.rollback()
-            raise
-        finally:
-            session.close()
-    
-    def _place_bets(self, picks: List[Pick]) -> List[Bet]:
-        """Place bets (simulation mode)"""
-        if not self.db:
-            return []
-        
-        session = self.db.get_session()
-        bets = []
-        
-        try:
-            for pick in picks:
-                if not pick.id:
-                    continue
-                
-                # Create bet record
-                bet_model = BetModel(
-                    pick_id=pick.id,
-                    placed_at=datetime.now(),
-                    result=BetResult.PENDING
-                )
-                session.add(bet_model)
-                session.flush()
-                
-                bet = Bet(
-                    id=bet_model.id,
-                    pick_id=bet_model.pick_id,
-                    placed_at=bet_model.placed_at,
-                    result=bet_model.result
-                )
-                bets.append(bet)
-            
-            session.commit()
-            logger.info(f"Placed {len(bets)} bets")
-            
-        except Exception as e:
-            logger.error(f"Error placing bets: {e}")
-            session.rollback()
-        finally:
-            session.close()
-        
-        return bets
     
     def _reset_all_agent_token_usage(self) -> None:
         """Reset token usage tracking for all agents"""

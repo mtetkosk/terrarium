@@ -448,8 +448,8 @@ class Researcher(BaseAgent):
                 
                 # Then add tool result messages
                 # Truncate large tool results to avoid token limit issues
-                # gpt-4o-mini has 128K context window, so we can allow larger results
-                MAX_TOOL_RESULT_SIZE = 25000  # Max characters per tool result (increased for gpt-4o-mini)
+                # Reduced limits to keep prompts smaller and more efficient
+                MAX_TOOL_RESULT_SIZE = 8000  # Max characters per tool result (reduced from 12000)
                 for tool_call in response["tool_calls"]:
                     call_id = tool_call.get("id", "")
                     result = tool_results.get(call_id, {"error": "No result"})
@@ -471,14 +471,14 @@ class Researcher(BaseAgent):
                             
                             # Keep top items and truncate content within each
                             truncated = []
-                            for item in prioritized[:10]:  # Keep top 10 items (increased from 3)
+                            for item in prioritized[:5]:  # Reduced from 10 to 5 items to save tokens
                                 if isinstance(item, dict):
                                     truncated_item = item.copy()
-                                    # Less aggressive truncation for gpt-4o-mini
+                                    # More aggressive truncation to reduce token usage
                                     if 'content' in truncated_item and isinstance(truncated_item['content'], str):
-                                        # Allow up to 5000 chars per content field (increased from 1000)
-                                        if len(truncated_item['content']) > 5000:
-                                            truncated_item['content'] = truncated_item['content'][:5000] + "... [truncated]"
+                                        # Reduced from 5000 to 2000 chars per content field
+                                        if len(truncated_item['content']) > 2000:
+                                            truncated_item['content'] = truncated_item['content'][:2000] + "... [truncated]"
                                     truncated.append(truncated_item)
                                 else:
                                     truncated.append(item)
@@ -490,18 +490,18 @@ class Researcher(BaseAgent):
                             })
                             result_str = json.dumps(truncated)
                         elif isinstance(result, dict):
-                            # For dicts, truncate large string values less aggressively
+                            # For dicts, truncate large string values more aggressively
                             truncated_result = {}
                             for key, value in result.items():
                                 if isinstance(value, str):
-                                    # Allow more content for gpt-4o-mini (5000 chars for content, 2000 for others)
-                                    max_len = 5000 if key == 'content' else 2000
+                                    # Reduced limits: 2000 chars for content, 1000 for others
+                                    max_len = 2000 if key == 'content' else 1000
                                     if len(value) > max_len:
                                         truncated_result[key] = value[:max_len] + "... [truncated]"
                                     else:
                                         truncated_result[key] = value
-                                elif isinstance(value, list) and len(value) > 10:
-                                    truncated_result[key] = value[:10] + ["... [truncated]"]
+                                elif isinstance(value, list) and len(value) > 5:  # Reduced from 10 to 5
+                                    truncated_result[key] = value[:5] + ["... [truncated]"]
                                 else:
                                     truncated_result[key] = value
                             truncated_result["_truncated"] = True
