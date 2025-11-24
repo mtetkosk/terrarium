@@ -791,29 +791,58 @@ class Coordinator:
         
         session = self.db.get_session()
         try:
+            from src.data.storage import TeamModel
+            from src.utils.team_normalizer import normalize_team_name
+            
             saved_games = []
             for game in games:
-                # Check if game exists
+                # Get or create team IDs
+                # Normalize team names for lookup
+                norm_team1 = normalize_team_name(game.team1, for_matching=True)
+                norm_team2 = normalize_team_name(game.team2, for_matching=True)
+                
+                # Get or create team1
+                team1_model = session.query(TeamModel).filter_by(normalized_team_name=norm_team1).first()
+                if not team1_model:
+                    team1_model = TeamModel(normalized_team_name=norm_team1)
+                    session.add(team1_model)
+                    session.flush()
+                
+                # Get or create team2
+                team2_model = session.query(TeamModel).filter_by(normalized_team_name=norm_team2).first()
+                if not team2_model:
+                    team2_model = TeamModel(normalized_team_name=norm_team2)
+                    session.add(team2_model)
+                    session.flush()
+                
+                # Check if game exists by team_ids and date
                 existing = session.query(GameModel).filter_by(
-                    team1=game.team1,
-                    team2=game.team2,
+                    team1_id=team1_model.id,
+                    team2_id=team2_model.id,
                     date=game.date
                 ).first()
                 
                 if existing:
+                    # Get team names from relationships for Game dataclass
+                    team1_name = existing.team1_ref.normalized_team_name if existing.team1_ref else game.team1
+                    team2_name = existing.team2_ref.normalized_team_name if existing.team2_ref else game.team2
+                    
                     saved_games.append(Game(
                         id=existing.id,
-                        team1=existing.team1,
-                        team2=existing.team2,
+                        team1=team1_name,
+                        team2=team2_name,
+                        team1_id=existing.team1_id,
+                        team2_id=existing.team2_id,
                         date=existing.date,
                         venue=existing.venue,
                         status=existing.status,
                         result=existing.result
                     ))
                 else:
+                    # Create new game - only use team1_id and team2_id
                     game_model = GameModel(
-                        team1=game.team1,
-                        team2=game.team2,
+                        team1_id=team1_model.id,
+                        team2_id=team2_model.id,
                         date=game.date,
                         venue=game.venue,
                         status=game.status,
@@ -821,10 +850,13 @@ class Coordinator:
                     )
                     session.add(game_model)
                     session.flush()
+                    
                     saved_games.append(Game(
                         id=game_model.id,
-                        team1=game_model.team1,
-                        team2=game_model.team2,
+                        team1=game.team1,  # Keep for Game dataclass (in-memory use)
+                        team2=game.team2,  # Keep for Game dataclass (in-memory use)
+                        team1_id=game_model.team1_id,
+                        team2_id=game_model.team2_id,
                         date=game_model.date,
                         venue=game_model.venue,
                         status=game_model.status,
@@ -835,7 +867,7 @@ class Coordinator:
             return saved_games
             
         except Exception as e:
-            logger.error(f"Error saving games: {e}")
+            logger.error(f"Error saving games: {e}", exc_info=True)
             session.rollback()
             return games
         finally:
