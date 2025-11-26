@@ -177,4 +177,23 @@ class TestRealWorldExamples:
         
         # The Odds API might use "North Carolina State" while ESPN uses "NC State"
         assert are_teams_matching("North Carolina State", "NC State") == True
+    
+    def test_unc_schools_dont_match_north_carolina(self):
+        """Test that UNC Greensboro, North Carolina Central, etc. do NOT match North Carolina"""
+        # UNC Greensboro should NOT match North Carolina
+        assert are_teams_matching("UNC Greensboro", "North Carolina") == False
+        assert are_teams_matching("unc greensboro", "north carolina") == False
+        assert normalize_team_name("UNC Greensboro", for_matching=True) == "unc greensboro"
+        assert normalize_team_name("unc greensboro", for_matching=True) == "unc greensboro"
+        
+        # North Carolina Central should NOT match North Carolina
+        assert are_teams_matching("North Carolina Central", "North Carolina") == False
+        assert are_teams_matching("north carolina central", "north carolina") == False
+        assert normalize_team_name("North Carolina Central", for_matching=True) == "north carolina central"
+        assert normalize_team_name("north carolina central", for_matching=True) == "north carolina central"
+        
+        # But North Carolina should still match itself and UNC
+        assert are_teams_matching("North Carolina", "UNC") == True
+        assert are_teams_matching("North Carolina", "North Carolina Tar Heels") == True
+        assert normalize_team_name("North Carolina Tar Heels", for_matching=True) == "north carolina"
 
