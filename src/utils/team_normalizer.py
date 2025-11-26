@@ -58,6 +58,34 @@ def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
     # Start with lowercase and strip whitespace
     normalized = team_name.lower().strip()
     
+    # CRITICAL: Check for specific UNC/NC school variations FIRST, before any processing
+    # This prevents UNC Greensboro, NC Central, etc. from being normalized to just "north carolina"
+    original_lower = normalized
+    
+    # Check for UNC Greensboro variations
+    if any(term in original_lower for term in ['unc greensboro', 'uncg', 'north carolina greensboro', 'nc greensboro']):
+        return 'unc greensboro'
+    
+    # Check for North Carolina Central variations
+    if any(term in original_lower for term in ['north carolina central', 'nccu', 'nc central', 'unc central']):
+        return 'north carolina central'
+    
+    # Check for NC A&T variations
+    if any(term in original_lower for term in ['north carolina a&t', 'north carolina a t', 'nc a&t', 'nc a t', 'ncat']):
+        return 'north carolina a&t'
+    
+    # Check for UNC Asheville variations
+    if any(term in original_lower for term in ['unc asheville', 'unca', 'north carolina asheville', 'nc asheville']):
+        return 'unc asheville'
+    
+    # Check for UNC Wilmington variations
+    if any(term in original_lower for term in ['unc wilmington', 'uncw', 'north carolina wilmington', 'nc wilmington']):
+        return 'unc wilmington'
+    
+    # Check for UNC Charlotte variations
+    if any(term in original_lower for term in ['unc charlotte', 'north carolina charlotte', 'nc charlotte']):
+        return 'unc charlotte'
+    
     # Remove parenthetical content like "(PA)", "(TN)", etc.
     normalized = re.sub(r'\s*\([^)]*\)', '', normalized)
     
@@ -91,12 +119,47 @@ def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
         normalized = 'penn st'
     
     # North Carolina variations
-    # Check for NC State first (more specific)
+    # CRITICAL: Re-check for specific UNC schools after normalization processing
+    # (in case they weren't caught in the early check)
+    if any(term in normalized for term in ['unc greensboro', 'nc greensboro']):
+        return 'unc greensboro'
+    if any(term in normalized for term in ['north carolina central', 'nc central', 'unc central']):
+        return 'north carolina central'
+    if any(term in normalized for term in ['north carolina a&t', 'north carolina a t', 'nc a&t', 'nc a t']):
+        return 'north carolina a&t'
+    if any(term in normalized for term in ['unc asheville', 'nc asheville']):
+        return 'unc asheville'
+    if any(term in normalized for term in ['unc wilmington', 'nc wilmington']):
+        return 'unc wilmington'
+    if any(term in normalized for term in ['unc charlotte', 'nc charlotte']):
+        return 'unc charlotte'
+    
+    # Check for NC State (must come before general "north carolina" check)
     if ('nc state' in normalized or 'nc st' in normalized or 
         'north carolina state' in normalized or 'north carolina st' in normalized):
         normalized = 'nc st'
-    elif normalized.startswith('north carolina') or normalized.startswith('unc ') or normalized == 'unc':
-        # "UNC" or "North Carolina" without state means North Carolina (not NC State)
+    # Only match the main "North Carolina" team if it doesn't contain any location identifiers
+    elif normalized == 'north carolina' or normalized == 'unc':
+        normalized = 'north carolina'
+    elif (normalized.startswith('unc ') and 
+          'greensboro' not in normalized and 
+          'central' not in normalized and
+          'asheville' not in normalized and 
+          'wilmington' not in normalized and 
+          'charlotte' not in normalized and
+          'a&t' not in normalized and 'a t' not in normalized):
+        # "UNC" followed by something that's not a location means main UNC (e.g., "UNC Tar Heels")
+        normalized = 'north carolina'
+    elif (normalized.startswith('north carolina ') and 
+          'state' not in normalized and 
+          'central' not in normalized and 
+          'north carolina a&t' not in normalized and 
+          'north carolina a t' not in normalized and 
+          'asheville' not in normalized and 
+          'wilmington' not in normalized and 
+          'charlotte' not in normalized and 
+          'greensboro' not in normalized):
+        # "North Carolina" followed by something that's not a location means main UNC (e.g., "North Carolina Tar Heels")
         normalized = 'north carolina'
     
     # Northwestern State vs Northwestern (CRITICAL: must distinguish these)
@@ -260,6 +323,23 @@ def are_teams_matching(team1: str, team2: str) -> bool:
        ('nc st' in norm2 and 'north carolina' in norm1 and 'nc st' not in norm1):
         return False
     
+    # UNC Greensboro vs North Carolina should NEVER match
+    if ('unc greensboro' in norm1 and 'north carolina' in norm2 and 'unc greensboro' not in norm2 and 'nc st' not in norm2) or \
+       ('unc greensboro' in norm2 and 'north carolina' in norm1 and 'unc greensboro' not in norm1 and 'nc st' not in norm1):
+        return False
+    
+    # North Carolina Central vs North Carolina should NEVER match
+    if ('north carolina central' in norm1 and 'north carolina' in norm2 and 'north carolina central' not in norm2 and 'nc st' not in norm2) or \
+       ('north carolina central' in norm2 and 'north carolina' in norm1 and 'north carolina central' not in norm1 and 'nc st' not in norm1):
+        return False
+    
+    # Other UNC schools vs North Carolina should NEVER match
+    unc_schools = ['unc asheville', 'unc wilmington', 'unc charlotte', 'north carolina a&t']
+    for unc_school in unc_schools:
+        if (unc_school in norm1 and 'north carolina' in norm2 and unc_school not in norm2 and 'nc st' not in norm2) or \
+           (unc_school in norm2 and 'north carolina' in norm1 and unc_school not in norm1 and 'nc st' not in norm1):
+            return False
+    
     # Substring match (one contains the other) - but only if not excluded above
     if norm1 in norm2 or norm2 in norm1:
         return True
@@ -280,6 +360,18 @@ def are_teams_matching(team1: str, team2: str) -> bool:
         if ('nc st' in norm1 and 'north carolina' in norm2 and 'nc st' not in norm2) or \
            ('nc st' in norm2 and 'north carolina' in norm1 and 'nc st' not in norm1):
             return False
+        if ('unc greensboro' in norm1 and 'north carolina' in norm2 and 'unc greensboro' not in norm2 and 'nc st' not in norm2) or \
+           ('unc greensboro' in norm2 and 'north carolina' in norm1 and 'unc greensboro' not in norm1 and 'nc st' not in norm1):
+            return False
+        if ('north carolina central' in norm1 and 'north carolina' in norm2 and 'north carolina central' not in norm2 and 'nc st' not in norm2) or \
+           ('north carolina central' in norm2 and 'north carolina' in norm1 and 'north carolina central' not in norm1 and 'nc st' not in norm1):
+            return False
+        # Check other UNC schools
+        unc_schools = ['unc asheville', 'unc wilmington', 'unc charlotte', 'north carolina a&t']
+        for unc_school in unc_schools:
+            if (unc_school in norm1 and 'north carolina' in norm2 and unc_school not in norm2 and 'nc st' not in norm2) or \
+               (unc_school in norm2 and 'north carolina' in norm1 and unc_school not in norm1 and 'nc st' not in norm1):
+                return False
         return True
     
     return False

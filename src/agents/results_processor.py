@@ -266,22 +266,31 @@ class ResultsProcessor(BaseAgent):
                     "existing_result": result
                 }
             
-            # Match scraped games to database games by game_id
-            # Since scraped games don't have database IDs, we need to match by team names
-            # But we'll prioritize using existing database results when available
-            scraped_results_by_teams = {}
+            # Match scraped games to database games by team names
+            # Normalize team names for matching since ESPN uses raw names and database uses normalized names
+            from src.utils.team_normalizer import normalize_team_name, are_teams_matching
+            
+            # Build a list of scraped games with normalized team names for matching
+            scraped_games_normalized = []
             for scraped_game in scraped_games:
                 if scraped_game.status == GameStatus.FINAL and scraped_game.result:
-                    # Create a key from team names for matching
-                    key = (scraped_game.team1, scraped_game.team2)
-                    scraped_results_by_teams[key] = scraped_game.result
-                    # Also try reverse order
-                    key_reverse = (scraped_game.team2, scraped_game.team1)
-                    scraped_results_by_teams[key_reverse] = scraped_game.result
+                    # Normalize team names for matching
+                    norm_team1 = normalize_team_name(scraped_game.team1, for_matching=True) if scraped_game.team1 else ""
+                    norm_team2 = normalize_team_name(scraped_game.team2, for_matching=True) if scraped_game.team2 else ""
+                    if norm_team1 and norm_team2:  # Only add if both team names are valid
+                        scraped_games_normalized.append({
+                            "team1": scraped_game.team1,  # Keep original for result data
+                            "team2": scraped_game.team2,  # Keep original for result data
+                            "norm_team1": norm_team1,
+                            "norm_team2": norm_team2,
+                            "result": scraped_game.result
+                        })
+            
+            self.log_info(f"Found {len(scraped_games_normalized)} final games from ESPN with results for matching")
             
             # For each database game, use existing result or match with scraped result
             matched_count = 0
-            for game_id, team1, team2, existing_result, _ in db_games:
+            for game_id, team1, team2, existing_result in db_games:
                 if existing_result:
                     # Already have result in database, use it
                     results[game_id] = {
@@ -293,10 +302,31 @@ class ResultsProcessor(BaseAgent):
                     }
                     matched_count += 1
                 else:
-                    # Try to find scraped result by team names
-                    key = (team1, team2)
-                    key_reverse = (team2, team1)
-                    scraped_result = scraped_results_by_teams.get(key) or scraped_results_by_teams.get(key_reverse)
+                    # Normalize database team names for matching
+                    # CRITICAL: Missing team names indicate a data integrity problem
+                    if not team1 or not team2:
+                        self.log_error(f"CRITICAL: Game {game_id} is missing team names! team1={team1}, team2={team2}. "
+                                     f"This indicates a database integrity issue and must be fixed. "
+                                     f"Cannot process results for this game.")
+                        continue
+                    
+                    norm_db_team1 = normalize_team_name(team1, for_matching=True)
+                    norm_db_team2 = normalize_team_name(team2, for_matching=True)
+                    
+                    # Try to find scraped result by matching team names (using normalized names)
+                    scraped_result = None
+                    matched_scraped = None
+                    for scraped in scraped_games_normalized:
+                        # Check if teams match (in either order)
+                        teams_match_forward = (are_teams_matching(norm_db_team1, scraped["norm_team1"]) and
+                                             are_teams_matching(norm_db_team2, scraped["norm_team2"]))
+                        teams_match_reverse = (are_teams_matching(norm_db_team1, scraped["norm_team2"]) and
+                                             are_teams_matching(norm_db_team2, scraped["norm_team1"]))
+                        
+                        if teams_match_forward or teams_match_reverse:
+                            scraped_result = scraped["result"]
+                            matched_scraped = scraped
+                            break
                     
                     if scraped_result:
                         results[game_id] = {
@@ -307,6 +337,9 @@ class ResultsProcessor(BaseAgent):
                             "result": scraped_result
                         }
                         matched_count += 1
+                        self.logger.debug(f"Matched game {game_id}: DB[{team1} vs {team2}] <-> ESPN[{matched_scraped['team1']} vs {matched_scraped['team2']}]")
+                    else:
+                        self.logger.debug(f"Could not match game {game_id}: DB[{team1} vs {team2}] (normalized: [{norm_db_team1} vs {norm_db_team2}])")
             
             self.log_info(f"Matched {matched_count} games with results out of {len(db_games)} database games")
             

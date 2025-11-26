@@ -16,11 +16,12 @@ from sqlalchemy import func
 from src.agents.results_processor import ResultsProcessor
 from src.data.analytics import AnalyticsService
 from src.data.models import BetResult, BetType
-from src.data.storage import BetModel, Database, GameModel, PickModel, GameInsightModel, PredictionModel, BettingLineModel
+from src.data.storage import BetModel, Database, GameModel, PickModel, GameInsightModel, PredictionModel, BettingLineModel, TeamModel
 from src.prompts import EMAIL_GENERATOR_RECAP_SYSTEM_PROMPT
 from src.utils.config import config
 from src.utils.llm import LLMClient
 from src.utils.logging import get_logger
+from src.utils.team_normalizer import normalize_team_name, are_teams_matching
 
 logger = get_logger("utils.email_generator")
 
@@ -40,6 +41,18 @@ class EmailGenerator:
         except Exception as e:
             logger.warning(f"Could not initialize LLM client: {e}. Recap generation will be disabled.")
             self.llm_client = None
+    
+    def _get_team_name(self, team_id: Optional[int], session) -> str:
+        """Get official team name from database using team_id"""
+        if not team_id or not session:
+            return "Team"
+        try:
+            team = session.query(TeamModel).filter_by(id=team_id).first()
+            if team:
+                return team.normalized_team_name
+        except Exception as e:
+            logger.debug(f"Error getting team name for team_id {team_id}: {e}")
+        return "Team"
     
     def generate_email(
         self,
@@ -271,14 +284,7 @@ class EmailGenerator:
         html_parts.append(f'<p style="font-size: 1.1em;">Hey {recipient_name}! 👋</p>')
         html_parts.append('<p style="color: #555; margin-top: -10px;">Ready for another day of action? Let\'s dive in.</p>')
         
-        # 1. Today's slate
-        slate_desc = self._generate_slate_description(today_games, target_date)
-        html_parts.append('<div class="section">')
-        html_parts.append('<h2><span class="emoji">📅</span> TODAY\'S SLATE</h2>')
-        html_parts.append(f'<p>{slate_desc}</p>')
-        html_parts.append('</div>')
-        
-        # 1.5. Best Games to Watch
+        # Best Games to Watch
         best_games = self._get_best_games_to_watch(target_date)
         if best_games:
             html_parts.append('<div class="section">')
@@ -391,10 +397,11 @@ class EmailGenerator:
             html_parts.append('</table>')
             html_parts.append('</div>')
         
-        # Footer
+        # Footer - generate sign-off using LLM
+        main_message, secondary_message = self._generate_sign_off(target_date)
         html_parts.append('<div class="footer">')
-        html_parts.append('<p style="font-size: 1.05em; margin-top: 30px;"><strong>Let\'s make it a great day! 🍀⚡</strong></p>')
-        html_parts.append('<p style="font-size: 0.9em; color: #888; margin-top: 10px;">Remember: bet responsibly and trust the process.</p>')
+        html_parts.append(f'<p style="font-size: 1.05em; margin-top: 30px;"><strong>{main_message}</strong></p>')
+        html_parts.append(f'<p style="font-size: 0.9em; color: #888; margin-top: 10px;">{secondary_message}</p>')
         html_parts.append(f'<p style="font-size: 0.85em; color: #999; margin-top: 15px;">Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>')
         html_parts.append('</div>')
         
@@ -419,14 +426,7 @@ class EmailGenerator:
         email_lines.append("Ready for another day of action? Let's dive in.")
         email_lines.append("")
         
-        # 1. Today's slate description
-        slate_desc = self._generate_slate_description(today_games, target_date)
-        email_lines.append("📅 TODAY'S SLATE")
-        email_lines.append("-" * 60)
-        email_lines.append(slate_desc)
-        email_lines.append("")
-        
-        # 1.5. Best Games to Watch
+        # Best Games to Watch
         best_games = self._get_best_games_to_watch(target_date)
         if best_games:
             email_lines.append("🎯 BEST GAMES TO WATCH")
@@ -535,10 +535,11 @@ class EmailGenerator:
             email_lines.append("=" * 80)
             email_lines.append("")
         
-        # Footer
+        # Footer - generate sign-off using LLM
+        main_message, secondary_message = self._generate_sign_off(target_date)
         email_lines.append("-" * 60)
-        email_lines.append("Let's make it a great day! 🍀⚡")
-        email_lines.append("Remember: bet responsibly and trust the process.")
+        email_lines.append(main_message)
+        email_lines.append(secondary_message)
         email_lines.append("")
         email_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
@@ -692,8 +693,9 @@ class EmailGenerator:
                         from src.data.storage import GameModel
                         game = session.query(GameModel).filter(GameModel.id == int(game_id)).first()
                         if game:
-                            team1_name = game.team1_ref.normalized_team_name if game.team1_ref else "Team 1"
-                            team2_name = game.team2_ref.normalized_team_name if game.team2_ref else "Team 2"
+                            # Get official team names from database using team_id
+                            team1_name = self._get_team_name(game.team1_id, session)
+                            team2_name = self._get_team_name(game.team2_id, session)
                             matchup = f"{team2_name} @ {team1_name}"
                             if game.venue:
                                 matchup += f" ({game.venue})"
@@ -759,9 +761,9 @@ class EmailGenerator:
                 if not game:
                     continue
                 
-                # Format matchup - use team references
-                team1_name = game.team1_ref.normalized_team_name if game.team1_ref else "Team 1"
-                team2_name = game.team2_ref.normalized_team_name if game.team2_ref else "Team 2"
+                # Format matchup - get official team names from database using team_id
+                team1_name = self._get_team_name(game.team1_id, session)
+                team2_name = self._get_team_name(game.team2_id, session)
                 matchup = f"{team2_name} @ {team1_name}"
                 if game.venue:
                     matchup += f" ({game.venue})"
@@ -769,15 +771,27 @@ class EmailGenerator:
                 # Format selection
                 selection = pick.selection_text or ""
                 if not selection:
-                    # Construct from bet type and line
+                    # Construct from bet type and line - use team_id to get official name
                     if pick.bet_type == BetType.SPREAD:
-                        selection = f"{team2_name if pick.line > 0 else team1_name} {pick.line:+.1f}"
+                        # Determine which team based on line and team_id
+                        if pick.team_id:
+                            pick_team_name = self._get_team_name(pick.team_id, session)
+                            selection = f"{pick_team_name} {pick.line:+.1f}"
+                        else:
+                            # Fallback to team1/team2 logic
+                            selection = f"{team2_name if pick.line > 0 else team1_name} {pick.line:+.1f}"
                     elif pick.bet_type == BetType.TOTAL:
                         rationale_lower = (pick.rationale or "").lower()
                         over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
                         selection = f"{over_under} {pick.line:.1f}"
                     elif pick.bet_type == BetType.MONEYLINE:
-                        selection = f"{team2_name if pick.line > 0 else team1_name} ML ({pick.odds:+d})"
+                        # Use team_id to get official name
+                        if pick.team_id:
+                            pick_team_name = self._get_team_name(pick.team_id, session)
+                            selection = f"{pick_team_name} ML ({pick.odds:+d})"
+                        else:
+                            # Fallback
+                            selection = f"{team2_name if pick.line > 0 else team1_name} ML ({pick.odds:+d})"
                 
                 # Format odds
                 odds_str = f"{pick.odds:+d}"
@@ -825,8 +839,9 @@ class EmailGenerator:
             
             game_list = []
             for game in games:
-                team1_name = game.team1_ref.normalized_team_name if game.team1_ref else "Team 1"
-                team2_name = game.team2_ref.normalized_team_name if game.team2_ref else "Team 2"
+                # Get official team names from database using team_id
+                team1_name = self._get_team_name(game.team1_id, session)
+                team2_name = self._get_team_name(game.team2_id, session)
                 game_list.append({
                     'id': game.id,
                     'team1': team1_name,
@@ -853,8 +868,9 @@ class EmailGenerator:
             
             game_list = []
             for game in games:
-                team1_name = game.team1_ref.normalized_team_name if game.team1_ref else "Team 1"
-                team2_name = game.team2_ref.normalized_team_name if game.team2_ref else "Team 2"
+                # Get official team names from database using team_id
+                team1_name = self._get_team_name(game.team1_id, session)
+                team2_name = self._get_team_name(game.team2_id, session)
                 game_data = {
                     'id': game.id,
                     'team1': team1_name,
@@ -942,8 +958,9 @@ class EmailGenerator:
                 game_result = game.result or {}
                 home_score = game_result.get('home_score', 0)
                 away_score = game_result.get('away_score', 0)
-                team1_name = game.team1_ref.normalized_team_name if game.team1_ref else "Team 1"
-                team2_name = game.team2_ref.normalized_team_name if game.team2_ref else "Team 2"
+                # Get official team names from database using team_id
+                team1_name = self._get_team_name(game.team1_id, session)
+                team2_name = self._get_team_name(game.team2_id, session)
                 home_team = game_result.get('home_team', team1_name)
                 away_team = game_result.get('away_team', team2_name)
                 
@@ -967,15 +984,27 @@ class EmailGenerator:
                 # Format selection
                 selection = pick.selection_text or ""
                 if not selection:
-                    # Try to construct from bet type and line
+                    # Try to construct from bet type and line - use team_id to get official name
                     if pick.bet_type == BetType.SPREAD:
-                        selection = f"{team2_name if pick.line > 0 else team1_name} {pick.line:+.1f}"
+                        # Determine which team based on line and team_id
+                        if pick.team_id:
+                            pick_team_name = self._get_team_name(pick.team_id, session)
+                            selection = f"{pick_team_name} {pick.line:+.1f}"
+                        else:
+                            # Fallback to team1/team2 logic
+                            selection = f"{team2_name if pick.line > 0 else team1_name} {pick.line:+.1f}"
                     elif pick.bet_type == BetType.TOTAL:
                         rationale_lower = (pick.rationale or "").lower()
                         over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
                         selection = f"{over_under} {pick.line:.1f}"
                     elif pick.bet_type == BetType.MONEYLINE:
-                        selection = f"{team2_name if pick.line > 0 else team1_name} ML ({pick.odds:+d})"
+                        # Use team_id to get official name
+                        if pick.team_id:
+                            pick_team_name = self._get_team_name(pick.team_id, session)
+                            selection = f"{pick_team_name} ML ({pick.odds:+d})"
+                        else:
+                            # Fallback
+                            selection = f"{team2_name if pick.line > 0 else team1_name} ML ({pick.odds:+d})"
                 
                 best_bets_data.append({
                     'matchup': f"{away_team} @ {home_team}",
@@ -1094,8 +1123,9 @@ class EmailGenerator:
                 game_result = game.result or {}
                 home_score = game_result.get('home_score', 0)
                 away_score = game_result.get('away_score', 0)
-                team1_name = game.team1_ref.normalized_team_name if game.team1_ref else "Team 1"
-                team2_name = game.team2_ref.normalized_team_name if game.team2_ref else "Team 2"
+                # Get official team names from database using team_id
+                team1_name = self._get_team_name(game.team1_id, session)
+                team2_name = self._get_team_name(game.team2_id, session)
                 home_team = game_result.get('home_team', team1_name)
                 away_team = game_result.get('away_team', team2_name)
                 
@@ -1119,15 +1149,27 @@ class EmailGenerator:
                 # Format selection
                 selection = pick.selection_text or ""
                 if not selection:
-                    # Try to construct from bet type and line
+                    # Try to construct from bet type and line - use team_id to get official name
                     if pick.bet_type == BetType.SPREAD:
-                        selection = f"{team2_name if pick.line > 0 else team1_name} {pick.line:+.1f}"
+                        # Determine which team based on line and team_id
+                        if pick.team_id:
+                            pick_team_name = self._get_team_name(pick.team_id, session)
+                            selection = f"{pick_team_name} {pick.line:+.1f}"
+                        else:
+                            # Fallback to team1/team2 logic
+                            selection = f"{team2_name if pick.line > 0 else team1_name} {pick.line:+.1f}"
                     elif pick.bet_type == BetType.TOTAL:
                         rationale_lower = (pick.rationale or "").lower()
                         over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
                         selection = f"{over_under} {pick.line:.1f}"
                     elif pick.bet_type == BetType.MONEYLINE:
-                        selection = f"{team2_name if pick.line > 0 else team1_name} ML ({pick.odds:+d})"
+                        # Use team_id to get official name
+                        if pick.team_id:
+                            pick_team_name = self._get_team_name(pick.team_id, session)
+                            selection = f"{pick_team_name} ML ({pick.odds:+d})"
+                        else:
+                            # Fallback
+                            selection = f"{team2_name if pick.line > 0 else team1_name} ML ({pick.odds:+d})"
                 
                 best_bets_data.append({
                     'matchup': f"{away_team} @ {home_team}",
@@ -1252,9 +1294,9 @@ class EmailGenerator:
             # Collect game data for LLM
             games_data = []
             for game in games:
-                # Get team names from references
-                team1_name = game.team1_ref.normalized_team_name if game.team1_ref else "Team 1"
-                team2_name = game.team2_ref.normalized_team_name if game.team2_ref else "Team 2"
+                # Get official team names from database using team_id
+                team1_name = self._get_team_name(game.team1_id, session)
+                team2_name = self._get_team_name(game.team2_id, session)
                 
                 # Get insights for rankings
                 insight = session.query(GameInsightModel).filter_by(game_id=game.id).first()
@@ -1694,9 +1736,7 @@ Create a brief, engaging summary that captures the key value proposition."""
         games: List[Dict[str, Any]],
         results: Dict[str, Any]
     ) -> Dict[str, str]:
-        """Generate superlatives for yesterday's games"""
-        superlatives = {}
-        
+        """Generate superlatives for yesterday's games using LLM"""
         # Filter games with results
         games_with_results = [
             g for g in games
@@ -1704,112 +1744,20 @@ Create a brief, engaging summary that captures the key value proposition."""
         ]
         
         if not games_with_results:
-            return superlatives
+            return {}
         
-        # Find highest scoring game
-        highest_total = 0
-        highest_game = None
+        if not self.llm_client:
+            # Fallback to empty if LLM not available
+            return {}
+        
+        # Build game results data for LLM
+        games_data = []
         for game in games_with_results:
             result = game.get('result', {})
             home_score = result.get('home_score', 0)
             away_score = result.get('away_score', 0)
-            # Convert scores to int for arithmetic
-            try:
-                home_score = int(home_score) if home_score else 0
-            except (ValueError, TypeError):
-                home_score = 0
-            try:
-                away_score = int(away_score) if away_score else 0
-            except (ValueError, TypeError):
-                away_score = 0
-            total = home_score + away_score
-            if total > highest_total:
-                highest_total = total
-                highest_game = game
-        
-        if highest_game:
-            result = highest_game['result']
-            home_team = result.get('home_team', highest_game['team1'])
-            away_team = result.get('away_team', highest_game['team2'])
-            home_score = result.get('home_score', 0)
-            away_score = result.get('away_score', 0)
-            superlatives['Highest Scoring Game'] = (
-                f"{away_team} {away_score} - {home_team} {home_score} "
-                f"({highest_total} total points)"
-            )
-        
-        # Find lowest scoring game
-        lowest_total = float('inf')
-        lowest_game = None
-        for game in games_with_results:
-            result = game.get('result', {})
-            home_score = result.get('home_score', 0)
-            away_score = result.get('away_score', 0)
-            # Convert scores to int for arithmetic
-            try:
-                home_score = int(home_score) if home_score else 0
-            except (ValueError, TypeError):
-                home_score = 0
-            try:
-                away_score = int(away_score) if away_score else 0
-            except (ValueError, TypeError):
-                away_score = 0
-            total = home_score + away_score
-            if total < lowest_total and total > 0:  # Exclude 0-0
-                lowest_total = total
-                lowest_game = game
-        
-        if lowest_game:
-            result = lowest_game['result']
-            home_team = result.get('home_team', lowest_game['team1'])
-            away_team = result.get('away_team', lowest_game['team2'])
-            home_score = result.get('home_score', 0)
-            away_score = result.get('away_score', 0)
-            superlatives['Lowest Scoring Game'] = (
-                f"{away_team} {away_score} - {home_team} {home_score} "
-                f"({lowest_total} total points)"
-            )
-        
-        # Find most exciting game (closest margin)
-        closest_margin = float('inf')
-        most_exciting = None
-        for game in games_with_results:
-            result = game.get('result', {})
-            home_score = result.get('home_score', 0)
-            away_score = result.get('away_score', 0)
-            # Convert scores to int for arithmetic
-            try:
-                home_score = int(home_score) if home_score else 0
-            except (ValueError, TypeError):
-                home_score = 0
-            try:
-                away_score = int(away_score) if away_score else 0
-            except (ValueError, TypeError):
-                away_score = 0
-            margin = abs(home_score - away_score)
-            if margin < closest_margin:
-                closest_margin = margin
-                most_exciting = game
-        
-        if most_exciting and closest_margin <= 5:
-            result = most_exciting['result']
-            home_team = result.get('home_team', most_exciting['team1'])
-            away_team = result.get('away_team', most_exciting['team2'])
-            home_score = result.get('home_score', 0)
-            away_score = result.get('away_score', 0)
-            superlatives['Most Exciting Game'] = (
-                f"{away_team} {away_score} - {home_team} {home_score} "
-                f"({closest_margin}-point margin)"
-            )
-        
-        # Find biggest underdog to win (from all games, not just our picks)
-        biggest_underdog_win = None
-        biggest_underdog_spread = 0
-        for game in games_with_results:
-            result = game.get('result', {})
-            home_score = result.get('home_score', 0)
-            away_score = result.get('away_score', 0)
-            # Convert scores to int for arithmetic
+            
+            # Convert scores to int
             try:
                 home_score = int(home_score) if home_score else 0
             except (ValueError, TypeError):
@@ -1819,180 +1767,113 @@ Create a brief, engaging summary that captures the key value proposition."""
             except (ValueError, TypeError):
                 away_score = 0
             
-            # Get betting lines to determine favorite/underdog
-            if not self.db:
-                continue
-            session = self.db.get_session()
-            try:
-                from src.data.storage import BettingLineModel
-                spread_lines = session.query(BettingLineModel).filter(
-                    BettingLineModel.game_id == game['id'],
-                    BettingLineModel.bet_type == BetType.SPREAD
-                ).order_by(BettingLineModel.timestamp.desc()).first()
-                
-                if spread_lines:
-                    # Positive line means underdog, negative means favorite
-                    # If away team won and had positive spread, they were underdog
-                    # If home team won and had negative spread, away was underdog
-                    spread = spread_lines.line
-                    if spread > 0:  # Away team is underdog
-                        if away_score > home_score:  # Underdog won
-                            if spread > biggest_underdog_spread:
-                                biggest_underdog_spread = spread
-                                biggest_underdog_win = {
-                                    'game': game,
-                                    'winner': result.get('away_team', game['team2']),
-                                    'loser': result.get('home_team', game['team1']),
-                                    'away_score': away_score,
-                                    'home_score': home_score,
-                                    'spread': spread
-                                }
-                    elif spread < 0:  # Home team is underdog (away is favorite)
-                        if home_score > away_score:  # Underdog won
-                            abs_spread = abs(spread)
-                            if abs_spread > biggest_underdog_spread:
-                                biggest_underdog_spread = abs_spread
-                                biggest_underdog_win = {
-                                    'game': game,
-                                    'winner': result.get('home_team', game['team1']),
-                                    'loser': result.get('away_team', game['team2']),
-                                    'away_score': away_score,
-                                    'home_score': home_score,
-                                    'spread': abs_spread
-                                }
-            except Exception as e:
-                logger.debug(f"Error checking underdog for game {game.get('id')}: {e}")
-            finally:
-                session.close()
-        
-        if biggest_underdog_win:
-            winner = biggest_underdog_win['winner']
-            loser = biggest_underdog_win['loser']
-            away_score = biggest_underdog_win['away_score']
-            home_score = biggest_underdog_win['home_score']
-            spread = biggest_underdog_win['spread']
-            superlatives['Biggest Underdog Win'] = (
-                f"{winner} (+{spread:.1f}) upset {loser} "
-                f"{away_score if winner == biggest_underdog_win['game']['team2'] else home_score}-"
-                f"{home_score if winner == biggest_underdog_win['game']['team2'] else away_score}"
-            )
-        
-        # Find biggest blowout
-        biggest_blowout = None
-        biggest_margin = 0
-        for game in games_with_results:
-            result = game.get('result', {})
-            home_score = result.get('home_score', 0)
-            away_score = result.get('away_score', 0)
-            # Convert scores to int for arithmetic
-            try:
-                home_score = int(home_score) if home_score else 0
-            except (ValueError, TypeError):
-                home_score = 0
-            try:
-                away_score = int(away_score) if away_score else 0
-            except (ValueError, TypeError):
-                away_score = 0
+            home_team = result.get('home_team', game.get('team1', 'Home'))
+            away_team = result.get('away_team', game.get('team2', 'Away'))
             
-            margin = abs(home_score - away_score)
-            if margin > biggest_margin:
-                biggest_margin = margin
-                winner = result.get('home_team', game['team1']) if home_score > away_score else result.get('away_team', game['team2'])
-                loser = result.get('away_team', game['team2']) if home_score > away_score else result.get('home_team', game['team1'])
-                biggest_blowout = {
-                    'game': game,
-                    'winner': winner,
-                    'loser': loser,
-                    'home_score': home_score,
-                    'away_score': away_score,
-                    'margin': margin
-                }
-        
-        if biggest_blowout and biggest_blowout['margin'] >= 15:  # Only show if margin is significant
-            winner = biggest_blowout['winner']
-            loser = biggest_blowout['loser']
-            away_score = biggest_blowout['away_score']
-            home_score = biggest_blowout['home_score']
-            margin = biggest_blowout['margin']
-            superlatives['Biggest Blowout'] = (
-                f"{winner} embarrassed {loser} "
-                f"{away_score if winner == biggest_blowout['game']['team2'] else home_score}-"
-                f"{home_score if winner == biggest_blowout['game']['team2'] else away_score} "
-                f"({margin}-point margin)"
-            )
-        
-        # Find favorite who crumbled (favorite that lost)
-        favorite_crumbled = None
-        for game in games_with_results:
-            picks = game.get('picks', [])
-            result = game.get('result', {})
-            home_score = result.get('home_score', 0)
-            away_score = result.get('away_score', 0)
-            
-            # Check if we had a favorite pick that lost
-            for pick in picks:
-                if pick.get('result') == 'loss':
-                    selection = pick.get('selection_text', '').lower()
-                    line = pick.get('line', 0)
+            # Get betting lines for this game to determine favorites/underdogs
+            spread_info = None
+            if self.db:
+                session = self.db.get_session()
+                try:
+                    from src.data.storage import BettingLineModel
+                    spread_lines = session.query(BettingLineModel).filter(
+                        BettingLineModel.game_id == game['id'],
+                        BettingLineModel.bet_type == BetType.SPREAD
+                    ).order_by(BettingLineModel.timestamp.desc()).all()
                     
-                    # Negative line suggests favorite
-                    if (pick.get('bet_type') == 'spread' and line < 0) or \
-                       (pick.get('bet_type') == 'moneyline' and '-' in selection):
-                        # This was a favorite pick that lost
-                        favorite_crumbled = {
-                            'game': game,
-                            'pick': pick
-                        }
-                        break
-                if favorite_crumbled:
-                    break
+                    if spread_lines:
+                        # Format spread info
+                        spreads = []
+                        for line in spread_lines[:2]:  # Get up to 2 lines (home and away)
+                            if line.team:
+                                spread_val = line.line
+                                if spread_val > 0:
+                                    spreads.append(f"{line.team} +{spread_val:.1f} (underdog)")
+                                else:
+                                    spreads.append(f"{line.team} {spread_val:.1f} (favorite)")
+                        if spreads:
+                            spread_info = " | ".join(spreads)
+                except Exception as e:
+                    logger.debug(f"Error getting spread info for game {game.get('id')}: {e}")
+                finally:
+                    session.close()
+            
+            games_data.append({
+                'matchup': f"{away_team} @ {home_team}",
+                'score': f"{away_team} {away_score} - {home_team} {home_score}",
+                'home_team': home_team,
+                'away_team': away_team,
+                'home_score': home_score,
+                'away_score': away_score,
+                'total': home_score + away_score,
+                'margin': abs(home_score - away_score),
+                'spread_info': spread_info
+            })
         
-        if favorite_crumbled:
-            game = favorite_crumbled['game']
-            result = game['result']
-            home_team = result.get('home_team', game['team1'])
-            away_team = result.get('away_team', game['team2'])
-            home_score = result.get('home_score', 0)
-            away_score = result.get('away_score', 0)
-            pick = favorite_crumbled['pick']
-            selection = pick.get('selection_text', 'Favorite')
-            superlatives['Favorite Who Crumbled'] = (
-                f"{selection} failed to cover. {away_team} {away_score} - {home_team} {home_score}"
+        # Format games for LLM
+        games_text = "\n".join([
+            f"{i+1}. {g['matchup']}: {g['score']} (Total: {g['total']} pts, Margin: {g['margin']} pts)"
+            + (f" | Spreads: {g['spread_info']}" if g.get('spread_info') else "")
+            for i, g in enumerate(games_data)
+        ])
+        
+        system_prompt = """You are a sports analyst identifying the most interesting highlights from yesterday's college basketball games.
+
+Your task: Analyze the game results and identify 2-4 of the most interesting highlights. Focus on:
+
+1. Biggest Underdog Win: The team that was the biggest underdog (largest positive spread) that won
+2. Biggest Blowout: The game with the largest margin of victory (only if margin ≥ 15 points)
+3. Highest or Lowest Scoring Game: Pick whichever is more interesting/notable (very high ≥170 or very low ≤100)
+4. Most Exciting Game: A close game with margin ≤ 5 points (only if there is one)
+
+For each highlight, write a concise, engaging description (max 80 characters) in the format:
+"Team Name (spread if underdog) description - Final Score"
+
+Output format (JSON):
+{
+  "highlights": [
+    {
+      "category": "Biggest Underdog Win" | "Biggest Blowout" | "Highest Scoring Game" | "Lowest Scoring Game" | "Most Exciting Game",
+      "description": "Your engaging description here"
+    },
+    ...
+  ]
+}"""
+        
+        user_prompt = f"""Analyze these game results from yesterday and identify 2-4 interesting highlights:
+
+{games_text}
+
+Return the highlights in JSON format."""
+        
+        try:
+            response = self.llm_client.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.7,
+                max_tokens=300,
+                parse_json=True
             )
-        
-        # Choose highest or lowest scoring game (whichever is more exciting)
-        if 'Highest Scoring Game' in superlatives and 'Lowest Scoring Game' in superlatives:
-            # Keep the one that's more interesting (usually highest, but if lowest is very low, that's interesting too)
-            if highest_total >= 160:  # High scoring is exciting
-                superlatives.pop('Lowest Scoring Game', None)
-            elif lowest_total <= 100:  # Very low scoring can be interesting
-                superlatives.pop('Highest Scoring Game', None)
+            
+            # Extract highlights
+            if isinstance(response, dict):
+                highlights = response.get('highlights', [])
             else:
-                # Default to highest scoring
-                superlatives.pop('Lowest Scoring Game', None)
-        
-        # Limit to 3-4 highlights (prioritize most interesting ones)
-        # Priority order: Biggest Underdog Win > Biggest Blowout > Highest/Lowest Scoring > Most Exciting
-        priority_order = [
-            'Biggest Underdog Win',
-            'Biggest Blowout',
-            'Highest Scoring Game',
-            'Lowest Scoring Game',
-            'Most Exciting Game',
-            'Favorite Who Crumbled'
-        ]
-        
-        limited_superlatives = {}
-        for key in priority_order:
-            if key in superlatives and len(limited_superlatives) < 4:
-                limited_superlatives[key] = superlatives[key]
-        
-        # If we still have room, add any remaining ones
-        for key, value in superlatives.items():
-            if key not in limited_superlatives and len(limited_superlatives) < 4:
-                limited_superlatives[key] = value
-        
-        return limited_superlatives
+                highlights = []
+            
+            # Convert to dictionary format
+            superlatives = {}
+            for highlight in highlights[:4]:  # Limit to 4
+                category = highlight.get('category', '')
+                description = highlight.get('description', '')
+                if category and description:
+                    superlatives[category] = description
+            
+            return superlatives
+            
+        except Exception as e:
+            logger.warning(f"Error generating LLM superlatives: {e}. Returning empty.")
+            return {}
     
     def _format_yesterday_performance(self, results: Dict[str, Any]) -> str:
         """Format yesterday's performance summary with engaging language"""
@@ -2509,6 +2390,60 @@ Write a compelling recap that highlights the key moments and performance. When d
         except Exception as e:
             logger.error(f"Error generating LLM recap: {e}")
             return None
+    
+    def _generate_sign_off(self, target_date: date) -> Tuple[str, str]:
+        """
+        Generate a motivational sign-off message for degenerate gamblers using LLM.
+        Returns a tuple of (main_message, secondary_message).
+        """
+        if not self.llm_client:
+            # Fallback to default message if LLM not available
+            return ("Time to print money! 💰🔥", "All gas, no brakes. Let's ride this wave to the bank! 🚀⚡")
+        
+        try:
+            system_prompt = """You are writing a daily motivational sign-off for a sports betting email newsletter targeting degenerate gamblers.
+            
+Your job: Generate TWO short, energetic lines that will motivate and pump up degenerate gamblers:
+1. First line: A main punchy statement (max 50 chars, bold and exciting)
+2. Second line: A follow-up motivational statement (max 80 chars)
+
+Requirements:
+- NO responsible gambling messages - these are degenerate gamblers who don't care about responsibility
+- Use gambling/casino/money emojis liberally (💰🔥🚀⚡🎰💸💎)
+- Make it exciting, confident, and action-oriented
+- Vary the message each time - don't repeat the same phrases
+- Keep it short and punchy
+- Examples of tone: "Let's get this bread!", "Time to print money!", "All gas no brakes!", "Let's ride!", "YOLO mode activated!"
+
+Output format (JSON):
+{
+  "main_message": "Your exciting main message here",
+  "secondary_message": "Your follow-up motivational message here"
+}"""
+
+            user_prompt = f"""Generate a unique motivational sign-off for today ({target_date.strftime('%B %d, %Y')}). 
+Make it exciting and different from previous days. These are degenerate gamblers ready to bet - pump them up!"""
+            
+            response = self.llm_client.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.9,
+                max_tokens=200,
+                parse_json=True
+            )
+            
+            # Extract messages
+            if isinstance(response, dict):
+                main = response.get('main_message', 'Time to print money! 💰🔥')
+                secondary = response.get('secondary_message', 'All gas, no brakes. Let\'s ride this wave to the bank! 🚀⚡')
+                return (main, secondary)
+            else:
+                logger.warning(f"Unexpected LLM response format for sign-off: {type(response)}")
+                return ("Time to print money! 💰🔥", "All gas, no brakes. Let's ride this wave to the bank! 🚀⚡")
+                
+        except Exception as e:
+            logger.error(f"Error generating LLM sign-off: {e}. Using fallback.")
+            return ("Time to print money! 💰🔥", "All gas, no brakes. Let's ride this wave to the bank! 🚀⚡")
     
     def _format_recap_as_html(self, recap_text: str) -> str:
         """Convert plain text recap to nicely formatted HTML"""

@@ -83,8 +83,27 @@ class GamesScraper:
                     venue = None
                     
                     for competitor in competitors:
-                        team_name = competitor.get('team', {}).get('displayName', '')
+                        team_info = competitor.get('team', {})
+                        team_name = team_info.get('displayName', '')
+                        # Try to get abbreviation or shortDisplayName for disambiguation
+                        team_abbrev = team_info.get('abbreviation', '') or team_info.get('shortDisplayName', '')
                         is_home = competitor.get('homeAway') == 'home'
+                        
+                        # For ambiguous team names, try to enhance with abbreviation if available
+                        # This helps distinguish "UNC" (North Carolina) from "NCAT" (North Carolina A&T)
+                        if team_name.lower() in ['north carolina', 'south carolina'] and team_abbrev:
+                            # Use abbreviation to help disambiguate
+                            # Common abbreviations: UNC = North Carolina, NCAT = NC A&T, SC = South Carolina, USCU = USC Upstate
+                            if team_abbrev.upper() in ['UNC', 'NORTH CAROLINA']:
+                                # This is definitely main North Carolina
+                                pass  # Keep as is
+                            elif team_abbrev.upper() in ['NCAT', 'NC A&T', 'NCAT&T']:
+                                team_name = 'North Carolina A&T'
+                            elif team_abbrev.upper() in ['SC', 'SOUTH CAROLINA', 'USC']:
+                                # Check opponent to see if this is main SC or Upstate
+                                pass  # Will handle in normalization
+                            elif team_abbrev.upper() in ['USCU', 'SCU', 'USC UPSTATE']:
+                                team_name = 'South Carolina Upstate'
                         
                         if is_home:
                             team1 = team_name
