@@ -136,25 +136,6 @@ class DataConverter:
             return -110
     
     @staticmethod
-    def extract_line_from_selection(selection: str) -> float:
-        """
-        Extract line value from selection string (e.g., "Team A +3.5", "Over 160.5")
-        
-        Args:
-            selection: Selection string that may contain a line value
-            
-        Returns:
-            Extracted line value or 0.0 if not found
-        """
-        if not selection:
-            return 0.0
-        
-        match = re.search(r'([+-]?\d+\.?\d*)', str(selection))
-        if match:
-            return float(match.group(1))
-        return 0.0
-    
-    @staticmethod
     def picks_from_json(candidate_picks: List[Dict[str, Any]], games: List[Game]) -> List[Pick]:
         """
         Convert JSON candidate picks from Picker to Pick objects
@@ -185,11 +166,17 @@ class DataConverter:
                 odds_str = str(pick_data.get("odds", "-110"))
                 odds = DataConverter.parse_odds(odds_str)
                 
-                # Parse line from selection or line field
+                # Get line from pick_data (required - should come from betting lines)
+                # Line will be looked up from betting line database when saving the pick
                 line = pick_data.get("line", 0.0)
                 selection_text = pick_data.get("selection", "")
-                if not line and selection_text:
-                    line = DataConverter.extract_line_from_selection(selection_text)
+                
+                # Require line to be provided - no fallback parsing from text
+                if not line:
+                    logger.warning(
+                        f"Pick for game_id={game_id} missing 'line' field. "
+                        f"Line will be looked up from betting line database when saving."
+                    )
                 
                 # Extract team_name/team_id from pick data (for spread/moneyline bets)
                 # Picker should provide "team_name" field, or we can extract from "selection"
@@ -197,7 +184,6 @@ class DataConverter:
                 team_name = pick_data.get("team_name")
                 if not team_name and selection_text and bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
                     # Try to extract team name from selection text (e.g., "Team A +3.5" -> "Team A")
-                    import re
                     # Remove the line part (e.g., "+3.5", "-7.5", "Over 160.5")
                     line_pattern = r'\s*([+-]?(?:over|under)\s*)?[+-]?\d+\.?\d*'
                     team_name = re.sub(line_pattern, '', selection_text, flags=re.IGNORECASE).strip()
@@ -219,12 +205,8 @@ class DataConverter:
                     logger.error(f"Pick for game_id={game_id} has empty rationale! justification={justification}, notes={pick_data.get('notes')}")
                     raise ValueError(f"Pick for game_id={game_id} is missing required rationale field")
                 
-                # Parse best_bet flag (preferred) and favorite flag (backwards compatibility)
+                # Parse best_bet flag
                 best_bet = pick_data.get("best_bet", False)
-                favorite = pick_data.get("favorite", False)  # Backwards compatibility
-                # If best_bet is not set but favorite is, use favorite for best_bet
-                if not best_bet and favorite:
-                    best_bet = True
                 
                 # Get confidence_score if provided, otherwise derive from confidence (0.0-1.0)
                 confidence_score = pick_data.get("confidence_score")
@@ -239,6 +221,11 @@ class DataConverter:
                 # Ensure confidence_score is between 1-10
                 confidence_score = max(1, min(10, int(confidence_score)))
                 
+                # Extract book field, defaulting to "draftkings" if missing, None, or empty
+                book_value = pick_data.get("book", "draftkings")
+                if not book_value or (isinstance(book_value, str) and not book_value.strip()):
+                    book_value = "draftkings"
+                
                 pick = Pick(
                     game_id=game_id,
                     bet_type=bet_type,
@@ -247,12 +234,11 @@ class DataConverter:
                     rationale=rationale,
                     confidence=float(pick_data.get("confidence", 0.5)),
                     expected_value=float(pick_data.get("edge_estimate", 0.0)),
-                    book=pick_data.get("book", "draftkings"),
+                    book=book_value,
                     selection_text=selection_text,
                     team_name=team_name,  # Keep for backwards compatibility
                     team_id=team_id,  # Will be set when saving to database
                     best_bet=best_bet,
-                    favorite=favorite,  # Keep for backwards compatibility
                     confidence_score=confidence_score,
                     parlay_legs=None  # Will be set later if parlay
                 )
@@ -308,11 +294,14 @@ class DataConverter:
         Returns:
             CardReview object
         """
-        # Create a map of picks by game_id and bet_type for matching
+        # Create a map of picks by (game_id, bet_type) for matching
+        # Only one pick per game per day, so game_id + bet_type is sufficient
         pick_map = {}
         for pick in picks:
-            key = (pick.game_id, pick.bet_type.value if hasattr(pick.bet_type, 'value') else str(pick.bet_type), pick.line)
-            pick_map[key] = pick
+            key = (pick.game_id, pick.bet_type.value if hasattr(pick.bet_type, 'value') else str(pick.bet_type))
+            # There should only be one pick per game, but if there are duplicates, keep the first one
+            if key not in pick_map:
+                pick_map[key] = pick
         
         # Extract approved pick IDs and update best_bet flags
         approved_pick_ids = []
@@ -322,17 +311,13 @@ class DataConverter:
             try:
                 game_id_str = str(approved_data.get("game_id", ""))
                 bet_type_str = approved_data.get("bet_type", "").lower()
-                selection = approved_data.get("selection", "")
                 best_bet = approved_data.get("best_bet", False)  # Get best_bet flag from President's response
                 
-                # Extract line from selection
-                line = DataConverter.extract_line_from_selection(selection)
-                
-                # Find matching pick
+                # Match pick by game_id and bet_type only (line is stored in pick, not parsed from text)
                 try:
                     game_id = int(game_id_str) if game_id_str and game_id_str.isdigit() else 0
                     bet_type = DataConverter.parse_bet_type(bet_type_str)
-                    key = (game_id, bet_type.value, line)
+                    key = (game_id, bet_type.value if hasattr(bet_type, 'value') else str(bet_type))
                     matched_pick = pick_map.get(key)
                     if matched_pick and matched_pick.id:
                         approved_pick_ids.append(matched_pick.id)
@@ -340,7 +325,8 @@ class DataConverter:
                         matched_pick.best_bet = best_bet
                         if best_bet:
                             best_bet_pick_ids.add(matched_pick.id)
-                except (ValueError, KeyError):
+                except (ValueError, KeyError) as e:
+                    logger.debug(f"Could not match approved pick: game_id={game_id_str}, bet_type={bet_type_str}, error={e}")
                     pass
             except Exception as e:
                 logger.error(f"Error matching approved pick: {e}")

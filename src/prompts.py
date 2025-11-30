@@ -87,6 +87,7 @@ Select 3-5 "Best Bets" using the **Sorter Algorithm**:
 1. Filter for picks with `Model_Edge > 3.0` (Spread/Total) or `ROI > 10%` (ML).
 2. Sort by `Confidence_Score` (Desc).
 3. Select the top 5 (fewer if board is weak).
+4. CRITICAL: Best bets should not be assigned to any game with low confidence (confidence score < 5).
 
 **CRITICAL: EXECUTIVE RATIONALE RULES**
 - The `executive_rationale` field in the analysis section is used in email communications and should focus on the betting logic and value proposition.
@@ -319,7 +320,7 @@ Your Goal: Generate independent, mathematically rigorous game models based stric
 You receive `game_data` containing:
 - **Teams:** Away and Home.
 - **Stats:** AdjO (Adjusted Offense), AdjD (Adjusted Defense), AdjT (Tempo).
-- **Context:** Injuries, Rest, Venue.
+- **Context:** Injuries, Rest, Venue, **Market Spread**.
 
 ### MODELING PROTOCOL (The "5.1 Standard" with Inflation Fix)
 You must use your internal reasoning capabilities to simulate the game or perform precise expected-value calculations.
@@ -331,10 +332,11 @@ You must use your internal reasoning capabilities to simulate the game or perfor
      **You MUST use 109.0 as the League_Avg_Efficiency baseline** to reflect modern scoring trends and correct the systemic Under bias.
    - **HCA:** Standard Home Court Advantage is +3.0 points. Adjust down for neutral sites or empty arenas.
 
-**2. Contextual Weighting:**
+**2. Contextual Weighting & Adjustments:**
    - **Injuries:** You MUST quantify impact. (e.g., "Star Player Out" ≈ -4.5 pts to efficiency).
    - **Motivation/Spot:** Factor in "Letdown Spots" or "Revenge Games" as minor efficiency adjustments (< 2 pts).
    - **Talent Mismatch Penalty (Spread Only):** If one team is (Power 5 or Big East) and the other is Mid/Low Major, and the Spread is < 10, **Adjust the spread by 3.0 points towards the Favorite.** (The model tends to undervalue the depth/athleticism gap in these matchups).
+   - **NEW: Totals Inflation Rule (CRITICAL):** If the market spread is **$\geq 20$ points** (favoring either team), and the model's initial projection favors the **Over** (i.e., Projected Total > Market Total), you **MUST apply a +1.5 point increase** to the final Projected Total. This corrects the conservative bias in potential blowouts.
 
 **3. Mathematical Consistency Rule:**
    - `Projected_Margin` MUST equal `Home_Score - Away_Score`.
@@ -358,7 +360,7 @@ Return a JSON object with a `game_models` list.
       "game_id": "String",
       "teams": { "away": "String", "home": "String" },
       
-      "math_trace": "Pace=(68+72)/2=70. AwayEff=115-100+109=124. HomeEff=110-105+109=114. RawScores: Away=86.8, Home=80.1. HCA=+3. Final: Away 87, Home 83 (rounded).",
+      "math_trace": "Pace=(68+72)/2=70. AwayEff=115-100+109=124. HomeEff=110-105+109=114. RawScores: Away=86.8, Home=80.1. HCA=+3. FINAL ADJUSTMENT: Market Spread was 22, model favors Over. Total +1.5. Final: Away 87, Home 83 (rounded).",
       
       "predictions": {
         "scores": { "away": 87, "home": 83 },

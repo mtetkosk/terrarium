@@ -1,7 +1,41 @@
 """Team name normalization utility for consistent team name matching across data sources"""
 
 import re
-from typing import List, Optional, Set, Dict
+from typing import List, Optional, Set, Dict, Tuple, Any
+from sqlalchemy.orm import Session
+
+# Mascot names to remove (longest first for compound names)
+MASCOT_NAMES = [
+    # Compound names first (longest)
+    'fighting illini', 'fighting irish', 'fighting hawks', 'runnin\' bulldogs',
+    'upstate spartans', 'gulf coast eagles', 'crimson tide', 'nittany lions',
+    'golden eagles', 'red raiders', 'blue devils', 'tar heels', 'rainbow warriors',
+    'sea warriors', 'black knights', 'purple eagles', 'screaming eagles',
+    'river hawks', 'skyhawks', 'firehawks', 'red dragons', 'red hawks',
+    'mountaineers', 'leathernecks', 'fighting bees', 'chanticleers',
+    # Single word mascots
+    'roadrunners', 'matadors', 'titans', 'buccaneers', 'yellow jackets', 
+    'crusaders', 'saints', 'redbirds', 'sycamores', 'bison', 'aztecs', 
+    'toreros', 'gators', 'cardinals', 'hilltoppers', 'bobcats', 'hokies', 
+    'explorers', 'delta devils', 'lobos', 'aggies', 'orange', 'trailblazers', 
+    'shockers', 'gamecocks', 'jackrabbits', 'coyotes', 'thunderbirds', 
+    'seahawks', 'gaels', 'islanders', 'boilermakers', 'bulldogs', 'wildcats', 
+    'tigers', 'eagles', 'hawks', 'owls', 'falcons', 'bears', 'lions', 
+    'panthers', 'warriors', 'knights', 'pirates', 'cavaliers', 'seminoles', 
+    'hurricanes', 'cardinal', 'crimson', 'longhorns', 'buckeyes', 
+    'wolverines', 'spartans', 'badgers', 'fgcu', 'jayhawks', 'hoosiers', 
+    'demons', 'lopes', 'mustangs', 'jaspers', 'razorbacks', 'quakers', 
+    'dragons', 'colonels', 'highlanders', 'keydets', 'rams', 'cowboys', 
+    'flyers', 'chanticleers', 'dolphins', 'stags', 'mavericks', 'spiders',
+    'friars', 'anteaters', 'peacocks', 'sharks', 'midshipmen', 'hoyas', 
+    'seawolves', 'jaguars', 'griffins', 'lakers'
+]
+
+# Special mappings
+SPECIAL_TEAM_MAPPINGS = {
+    'notre dame gators': 'notre dame (md)',
+    'notre dame fighting irish': 'notre dame',
+}
 
 # Mapping table for common team name mismatches
 # Maps normalized variations to the canonical KenPom name
@@ -31,6 +65,48 @@ TEAM_NAME_MAPPING: Dict[str, str] = {
     
     # Add more mappings as needed
 }
+
+
+def remove_mascot_from_team_name(team_name: str) -> str:
+    """
+    Remove mascot names from team name.
+    
+    This should be used when storing team names in the database to prevent
+    duplicate teams (e.g., "Princeton Tigers" vs "Princeton").
+    
+    Args:
+        team_name: The team name to clean
+        
+    Returns:
+        Team name with mascot removed
+    """
+    if not team_name:
+        return ""
+    
+    name_lower = team_name.lower()
+    
+    # Check special mappings first
+    for key, value in SPECIAL_TEAM_MAPPINGS.items():
+        if key in name_lower:
+            return value
+    
+    # Sort mascots by length (longest first) to handle compound names
+    sorted_mascots = sorted(MASCOT_NAMES, key=len, reverse=True)
+    
+    # Remove mascot names
+    cleaned_name = team_name
+    for mascot in sorted_mascots:
+        name_lower = cleaned_name.lower()
+        # Remove mascot if it appears at the end
+        if name_lower.endswith(' ' + mascot):
+            cleaned_name = cleaned_name[:-(len(mascot) + 1)].strip()
+        elif name_lower.endswith(mascot):
+            cleaned_name = cleaned_name[:-len(mascot)].strip()
+    
+    # Clean up any trailing spaces or dashes
+    cleaned_name = cleaned_name.strip().rstrip('-').strip()
+    
+    return cleaned_name
 
 
 def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
@@ -181,6 +257,18 @@ def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
     # Tennessee Tech variations
     if 'tennessee tech' in normalized or 'tn tech' in normalized:
         normalized = 'tennessee tech'
+    
+    # Appalachian State variations - normalize to "app st" for matching
+    if 'appalachian' in normalized and ('st' in normalized or 'state' in normalized):
+        # Handle "Appalachian State", "Appalachian St", "App State", "App St"
+        if normalized.startswith('appalachian'):
+            normalized = normalized.replace('appalachian', 'app')
+        # Remove "mountaineers" suffix if present
+        if normalized.endswith(' mountaineers'):
+            normalized = normalized[:-13].strip()
+        # Ensure it ends with "st" not "state"
+        normalized = normalized.replace(' state', ' st').replace('state', ' st')
+        normalized = ' '.join(normalized.split())  # Re-normalize whitespace
     
     # Handle hyphenated names (e.g., "Bethune-Cookman" might be "Bethune Cookman" in some sources)
     # Normalize hyphens to spaces for matching
@@ -461,3 +549,192 @@ def map_team_name_to_canonical(team_name: str) -> str:
     normalized = normalize_team_name_for_lookup(team_name)
     return TEAM_NAME_MAPPING.get(normalized, normalized)
 
+
+def determine_home_away_from_result(
+    team1_id: int,
+    team2_id: int,
+    result_data: Dict[str, Any],
+    session: Session
+) -> Optional[Tuple[bool, bool]]:
+    """
+    Determine which database team is home and which is away based on result data.
+    
+    This function matches the result's home_team/away_team names to the database teams
+    to determine the home/away mapping. This is more reliable than assuming team1=home.
+    
+    Args:
+        team1_id: Database team1_id
+        team2_id: Database team2_id
+        result_data: Result dictionary containing 'home_team', 'away_team', 'home_team_id', 'away_team_id'
+        session: Database session for querying TeamModel
+    
+    Returns:
+        Tuple of (team1_is_home: bool, team2_is_home: bool) if determined, None otherwise
+    """
+    from src.data.storage import TeamModel
+    
+    home_team_id = result_data.get('home_team_id')
+    away_team_id = result_data.get('away_team_id')
+    home_team_name = result_data.get('home_team', '')
+    away_team_name = result_data.get('away_team', '')
+    
+    # Get database team names
+    db_team1 = session.query(TeamModel).filter_by(id=team1_id).first()
+    db_team2 = session.query(TeamModel).filter_by(id=team2_id).first()
+    
+    if not db_team1 or not db_team2:
+        return None
+    
+    db_team1_name = db_team1.normalized_team_name
+    db_team2_name = db_team2.normalized_team_name
+    
+    # First try team IDs if available (most reliable)
+    if home_team_id:
+        if home_team_id == team1_id:
+            return (True, False)  # team1 is home, team2 is away
+        elif home_team_id == team2_id:
+            return (False, True)  # team2 is home, team1 is away
+    
+    if away_team_id:
+        if away_team_id == team1_id:
+            return (False, True)  # team1 is away, team2 is home
+        elif away_team_id == team2_id:
+            return (True, False)  # team2 is away, team1 is home
+    
+    # If IDs didn't work, try matching team names
+    if home_team_name or away_team_name:
+        norm_db_team1 = normalize_team_name(db_team1_name, for_matching=True)
+        norm_db_team2 = normalize_team_name(db_team2_name, for_matching=True)
+        
+        # Try matching home team name
+        if home_team_name:
+            norm_result_home = normalize_team_name(home_team_name, for_matching=True)
+            
+            if are_teams_matching(norm_result_home, norm_db_team1):
+                return (True, False)  # team1 is home, team2 is away
+            elif are_teams_matching(norm_result_home, norm_db_team2):
+                return (False, True)  # team2 is home, team1 is away
+        
+        # Try matching away team name
+        if away_team_name:
+            norm_result_away = normalize_team_name(away_team_name, for_matching=True)
+            
+            if are_teams_matching(norm_result_away, norm_db_team1):
+                return (False, True)  # team1 is away, team2 is home
+            elif are_teams_matching(norm_result_away, norm_db_team2):
+                return (True, False)  # team2 is away, team1 is home
+    
+    # Couldn't determine
+    return None
+
+
+def get_home_away_team_names(
+    team1_id: int,
+    team2_id: int,
+    result_data: Optional[Dict[str, Any]],
+    session: Session,
+    fallback_team1_is_home: bool = True
+) -> Tuple[str, str]:
+    """
+    Get home and away team names, determining home/away from result data if available.
+    
+    Args:
+        team1_id: Database team1_id
+        team2_id: Database team2_id
+        result_data: Optional result dictionary containing home/away team info
+        session: Database session for querying TeamModel
+        fallback_team1_is_home: If result_data is None or can't determine, assume team1=home
+    
+    Returns:
+        Tuple of (home_team_name: str, away_team_name: str)
+    """
+    from src.data.storage import TeamModel
+    
+    # Get database team names
+    db_team1 = session.query(TeamModel).filter_by(id=team1_id).first()
+    db_team2 = session.query(TeamModel).filter_by(id=team2_id).first()
+    
+    if not db_team1 or not db_team2:
+        return ('', '')
+    
+    db_team1_name = db_team1.normalized_team_name
+    db_team2_name = db_team2.normalized_team_name
+    
+    # Try to determine home/away from result data
+    if result_data:
+        home_away = determine_home_away_from_result(team1_id, team2_id, result_data, session)
+        if home_away is not None:
+            team1_is_home, team2_is_home = home_away
+            if team1_is_home:
+                return (db_team1_name, db_team2_name)
+            else:
+                return (db_team2_name, db_team1_name)
+    
+    # Fallback to assumption
+    if fallback_team1_is_home:
+        return (db_team1_name, db_team2_name)
+    else:
+        return (db_team2_name, db_team1_name)
+
+
+def get_home_away_scores(
+    team1_id: int,
+    team2_id: int,
+    result_data: Optional[Dict[str, Any]],
+    session: Session,
+    fallback_team1_is_home: bool = True
+) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Get home and away scores, properly mapped to the correct teams based on result data.
+    
+    This function ensures scores are correctly mapped even when database team order
+    doesn't match the result's home/away order.
+    
+    Args:
+        team1_id: Database team1_id
+        team2_id: Database team2_id
+        result_data: Result dictionary containing home/away team info and scores
+        session: Database session for querying TeamModel
+        fallback_team1_is_home: If can't determine, assume team1=home
+    
+    Returns:
+        Tuple of (home_score: int, away_score: int) relative to determined home/away teams,
+        or (None, None) if scores unavailable
+    """
+    if not result_data:
+        return (None, None)
+    
+    # Get scores from result data (these are relative to result's home/away teams)
+    result_home_score = result_data.get('home_score') or result_data.get('homeScore')
+    result_away_score = result_data.get('away_score') or result_data.get('awayScore')
+    
+    if result_home_score is None or result_away_score is None:
+        return (None, None)
+    
+    # Convert to int if needed
+    try:
+        result_home_score = int(float(result_home_score))
+        result_away_score = int(float(result_away_score))
+    except (ValueError, TypeError):
+        return (None, None)
+    
+    # Determine which database team is home/away
+    home_away = determine_home_away_from_result(team1_id, team2_id, result_data, session)
+    
+    if home_away is not None:
+        team1_is_home, team2_is_home = home_away
+        
+        # The result's home_score and away_score are already correctly mapped:
+        # - result_home_score is the score for the team that's home in the result
+        # - result_away_score is the score for the team that's away in the result
+        # Since we've determined which database team matches home/away in the result,
+        # the scores are already correct - we just return them
+        return (result_home_score, result_away_score)
+    
+    # Fallback: couldn't determine home/away from result
+    # Just return scores as-is (assuming they're already correctly ordered)
+    if fallback_team1_is_home:
+        return (result_home_score, result_away_score)
+    else:
+        # If we assume team2 is home, swap scores
+        return (result_away_score, result_home_score)

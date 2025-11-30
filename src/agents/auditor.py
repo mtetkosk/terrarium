@@ -8,7 +8,6 @@ from src.data.models import (
     Bet, Pick, DailyReport, AccuracyMetrics, BetResult, BetType
 )
 from src.data.storage import Database, BetModel, PickModel, DailyReportModel, GameModel
-from src.data.analytics import AnalyticsService
 from sqlalchemy import func
 from src.utils.logging import get_logger
 from collections import defaultdict
@@ -22,7 +21,6 @@ class Auditor(BaseAgent):
     def __init__(self, db: Optional[Database] = None):
         """Initialize Auditor agent"""
         super().__init__("Auditor", db)
-        self.analytics_service = AnalyticsService(db) if db else None
     
     def process(self, target_date: Optional[date] = None) -> DailyReport:
         """Review previous day's results and generate comprehensive report"""
@@ -65,7 +63,7 @@ class Auditor(BaseAgent):
         CRITICAL: Uses analytics service which ensures only latest pick per game_id.
         No manual duplicate handling needed - database constraint enforces uniqueness.
         """
-        if not self.db or not self.analytics_service:
+        if not self.db:
             return DailyReport(
                 date=report_date,
                 total_picks=0,
@@ -75,8 +73,8 @@ class Auditor(BaseAgent):
             )
         
         try:
-            # Get results from analytics service
-            results = self.analytics_service.get_results_for_date(review_date)
+            # Get results from database
+            results = self.db.get_results_for_date(review_date)
             
             picks = results.get('picks', [])
             bet_map = results.get('bet_map', {})

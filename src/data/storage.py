@@ -66,6 +66,11 @@ class BettingLineModel(Base):
     team = Column(String, nullable=True)  # Team name for spread/moneyline, "over"/"under" for totals
     timestamp = Column(DateTime, default=datetime.now)
     
+    # Unique constraint: one betting line per (game_id, book, bet_type, team) combination
+    __table_args__ = (
+        UniqueConstraint('game_id', 'book', 'bet_type', 'team', name='uq_betting_lines_game_book_type_team'),
+    )
+    
     # Relationships
     game = relationship("GameModel", back_populates="betting_lines")
 
@@ -277,96 +282,6 @@ class DailyReportModel(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
-class AnalyticsGameModel(Base):
-    """Analytics game database model"""
-    __tablename__ = 'analytics_games'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    game_id = Column(Integer, ForeignKey('games.id'), nullable=False)
-    date = Column(Date, nullable=False)
-    home_team = Column(String, nullable=False)
-    away_team = Column(String, nullable=False)
-    home_conference = Column(String, nullable=True)
-    away_conference = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    
-    # Unique constraint on game_id and date
-    __table_args__ = (
-        UniqueConstraint('game_id', 'date', name='uq_analytics_games_game_date'),
-    )
-    
-    # Relationships
-    game = relationship("GameModel")
-
-
-class AnalyticsOddsModel(Base):
-    """Analytics odds database model"""
-    __tablename__ = 'analytics_odds'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    game_id = Column(Integer, ForeignKey('games.id'), nullable=False)
-    date = Column(Date, nullable=False)
-    home_spread = Column(Float, nullable=True)
-    home_spread_odds = Column(Integer, nullable=True)
-    away_spread = Column(Float, nullable=True)
-    away_spread_odds = Column(Integer, nullable=True)
-    total = Column(Float, nullable=True)
-    over_odds = Column(Integer, nullable=True)
-    under_odds = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    
-    # Unique constraint on game_id and date
-    __table_args__ = (
-        UniqueConstraint('game_id', 'date', name='uq_analytics_odds_game_date'),
-    )
-    
-    # Relationships
-    game = relationship("GameModel")
-
-
-class AnalyticsPredictionModel(Base):
-    """Analytics prediction database model"""
-    __tablename__ = 'analytics_predictions'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    game_id = Column(Integer, ForeignKey('games.id'), nullable=False)
-    date = Column(Date, nullable=False)
-    home_projected_score = Column(Float, nullable=True)
-    away_projected_score = Column(Float, nullable=True)
-    projected_total = Column(Float, nullable=True)
-    projected_spread = Column(Float, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    
-    # Unique constraint on game_id and date
-    __table_args__ = (
-        UniqueConstraint('game_id', 'date', name='uq_analytics_predictions_game_date'),
-    )
-    
-    # Relationships
-    game = relationship("GameModel")
-
-
-class AnalyticsResultModel(Base):
-    """Analytics result database model"""
-    __tablename__ = 'analytics_results'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    game_id = Column(Integer, ForeignKey('games.id'), nullable=False)
-    date = Column(Date, nullable=False)
-    home_actual_score = Column(Integer, nullable=True)
-    away_actual_score = Column(Integer, nullable=True)
-    actual_total = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    
-    # Unique constraint on game_id and date
-    __table_args__ = (
-        UniqueConstraint('game_id', 'date', name='uq_analytics_results_game_date'),
-    )
-    
-    # Relationships
-    game = relationship("GameModel")
-
-
 class Database:
     """Database interface"""
     
@@ -527,6 +442,256 @@ class Database:
                         logger.info("Added unique constraint on picks (game_id, pick_date)")
             except Exception as e:
                 logger.warning(f"Could not add unique constraint on picks: {e}")
+
+
+    # Query helper methods (moved from AnalyticsService)
+    def get_picks_for_date(self, target_date: date) -> List['PickModel']:
+        """
+        Get all picks for a specific date.
+        
+        Args:
+            target_date: Date to get picks for
+            
+        Returns:
+            List of PickModel objects
+        """
+        session = self.get_session()
+        try:
+            from sqlalchemy import or_, func
+            # Query by pick_date, with fallback to DATE(created_at) for legacy records without pick_date
+            picks = session.query(PickModel).filter(
+                or_(
+                    PickModel.pick_date == target_date,
+                    func.date(PickModel.created_at) == target_date
+                )
+            ).order_by(PickModel.created_at.desc()).all()
+            
+            # Ensure pick_date is set for any legacy records without it
+            for pick in picks:
+                if not pick.pick_date:
+                    pick.pick_date = target_date
+                    session.commit()
+            
+            logger.debug(f"Retrieved {len(picks)} picks for {target_date}")
+            return picks
+        except Exception as e:
+            logger.error(f"Error getting picks for date {target_date}: {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+    
+    def get_results_for_date(self, target_date: date) -> Dict[str, Any]:
+        """
+        Get all bet results for picks made on a specific date.
+        
+        Args:
+            target_date: Date to get results for (date when picks were made)
+            
+        Returns:
+            Dictionary with:
+            - picks: List of PickModel objects
+            - bets: List of BetModel objects (matched by pick_id)
+            - stats: Dictionary with summary statistics
+        """
+        session = self.get_session()
+        try:
+            # Get picks for this date
+            picks = self.get_picks_for_date(target_date)
+            
+            if not picks:
+                return {
+                    'picks': [],
+                    'bets': [],
+                    'stats': {
+                        'total_picks': 0,
+                        'settled_bets': 0,
+                        'wins': 0,
+                        'losses': 0,
+                        'pushes': 0,
+                        'pending': 0
+                    }
+                }
+            
+            # Get bets for these picks
+            pick_ids = [p.id for p in picks if p.id]
+            bets = session.query(BetModel).filter(
+                BetModel.pick_id.in_(pick_ids)
+            ).all() if pick_ids else []
+            
+            # Create bet lookup
+            bet_map = {bet.pick_id: bet for bet in bets}
+            
+            # Calculate stats
+            stats = {
+                'total_picks': len(picks),
+                'settled_bets': len([b for b in bets if b.result != BetResult.PENDING]),
+                'wins': len([b for b in bets if b.result == BetResult.WIN]),
+                'losses': len([b for b in bets if b.result == BetResult.LOSS]),
+                'pushes': len([b for b in bets if b.result == BetResult.PUSH]),
+                'pending': len([b for b in bets if b.result == BetResult.PENDING])
+            }
+            
+            logger.debug(f"Retrieved {len(picks)} picks and {len(bets)} bets for {target_date}")
+            return {
+                'picks': picks,
+                'bets': bets,
+                'bet_map': bet_map,
+                'stats': stats
+            }
+        except Exception as e:
+            logger.error(f"Error getting results for date {target_date}: {e}", exc_info=True)
+            return {
+                'picks': [],
+                'bets': [],
+                'bet_map': {},
+                'stats': {
+                    'total_picks': 0,
+                    'settled_bets': 0,
+                    'wins': 0,
+                    'losses': 0,
+                    'pushes': 0,
+                    'pending': 0
+                }
+            }
+        finally:
+            session.close()
+    
+    def get_betting_lines_for_date(self, target_date: date) -> List['BettingLineModel']:
+        """
+        Get all betting lines for games on a specific date.
+        
+        Args:
+            target_date: Date to get betting lines for
+            
+        Returns:
+            List of BettingLineModel objects
+        """
+        session = self.get_session()
+        try:
+            # Get games for this date
+            games = session.query(GameModel).filter(
+                GameModel.date == target_date
+            ).all()
+            
+            if not games:
+                return []
+            
+            game_ids = [g.id for g in games]
+            
+            # Get betting lines for these games
+            lines = session.query(BettingLineModel).filter(
+                BettingLineModel.game_id.in_(game_ids)
+            ).all()
+            
+            logger.debug(f"Retrieved {len(lines)} betting lines for {target_date}")
+            return lines
+        except Exception as e:
+            logger.error(f"Error getting betting lines for date {target_date}: {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+    
+    def get_historical_performance(self, target_date: date, days_back: int = 7) -> Optional[Dict[str, Any]]:
+        """
+        Get historical performance data from recent days for learning.
+        
+        Args:
+            target_date: Current date
+            days_back: Number of days to look back (default: 7)
+            
+        Returns:
+            Dictionary with historical performance summary or None if no data
+        """
+        session = self.get_session()
+        try:
+            from datetime import timedelta
+            
+            # Get daily reports from recent days
+            start_date = target_date - timedelta(days=days_back)
+            daily_reports = session.query(DailyReportModel).filter(
+                DailyReportModel.date >= start_date,
+                DailyReportModel.date < target_date
+            ).order_by(DailyReportModel.date.desc()).all()
+            
+            if not daily_reports:
+                return None
+            
+            # Aggregate performance metrics
+            total_picks = sum(r.total_picks for r in daily_reports)
+            total_wins = sum(r.wins for r in daily_reports)
+            total_losses = sum(r.losses for r in daily_reports)
+            total_pushes = sum(r.pushes for r in daily_reports)
+            total_wagered = sum(r.total_wagered for r in daily_reports)
+            total_profit = sum(r.profit_loss for r in daily_reports)
+            
+            # Calculate win rate and ROI
+            win_rate = (total_wins / total_picks * 100) if total_picks > 0 else 0.0
+            roi = (total_profit / total_wagered * 100) if total_wagered > 0 else 0.0
+            
+            # Get bet type performance
+            bet_type_performance = {}
+            for report in daily_reports:
+                if report.accuracy_metrics:
+                    metrics = report.accuracy_metrics
+                    if isinstance(metrics, dict) and 'bet_type_performance' in metrics:
+                        for bet_type, perf in metrics['bet_type_performance'].items():
+                            if bet_type not in bet_type_performance:
+                                bet_type_performance[bet_type] = {'wins': 0, 'losses': 0, 'wagered': 0.0, 'profit': 0.0}
+                            bet_type_performance[bet_type]['wins'] += perf.get('wins', 0)
+                            bet_type_performance[bet_type]['losses'] += perf.get('losses', 0)
+                            bet_type_performance[bet_type]['wagered'] += perf.get('wagered', 0.0)
+                            bet_type_performance[bet_type]['profit'] += perf.get('payout', 0.0) - perf.get('wagered', 0.0)
+            
+            # Get recent recommendations from daily reports
+            recent_recommendations = []
+            for report in daily_reports[:3]:  # Last 3 days
+                if report.recommendations:
+                    if isinstance(report.recommendations, list):
+                        recent_recommendations.extend(report.recommendations)
+                    elif isinstance(report.recommendations, str):
+                        recent_recommendations.append(report.recommendations)
+            
+            # Get insights from recent reports
+            recent_insights = []
+            for report in daily_reports[:3]:
+                if report.insights:
+                    if isinstance(report.insights, dict):
+                        recent_insights.append(report.insights)
+                    elif isinstance(report.insights, str):
+                        recent_insights.append({"note": report.insights})
+            
+            return {
+                "period": f"{start_date} to {target_date - timedelta(days=1)}",
+                "days_reviewed": len(daily_reports),
+                "total_picks": total_picks,
+                "wins": total_wins,
+                "losses": total_losses,
+                "pushes": total_pushes,
+                "win_rate": round(win_rate, 2),
+                "total_wagered": round(total_wagered, 2),
+                "total_profit": round(total_profit, 2),
+                "roi": round(roi, 2),
+                "bet_type_performance": bet_type_performance,
+                "recent_recommendations": recent_recommendations[:10],  # Limit to 10 most recent
+                "recent_insights": recent_insights,
+                "daily_summaries": [
+                    {
+                        "date": r.date.isoformat(),
+                        "picks": r.total_picks,
+                        "wins": r.wins,
+                        "losses": r.losses,
+                        "win_rate": round(r.win_rate * 100, 2) if r.win_rate else 0.0,
+                        "profit": round(r.profit_loss, 2),
+                        "roi": round(r.roi, 2) if r.roi else 0.0
+                    }
+                    for r in daily_reports[:7]  # Last 7 days
+                ]
+            }
+        except Exception as e:
+            logger.error(f"Error fetching historical performance: {e}", exc_info=True)
+            return None
+        finally:
+            session.close()
 
 
 # Global database instance

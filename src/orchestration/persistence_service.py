@@ -8,7 +8,7 @@ from src.data.models import Game, Pick, Bet, BetType, BetResult
 from src.data.storage import (
     Database, GameModel, BettingLineModel, BetModel, PickModel, TeamModel
 )
-from src.utils.team_normalizer import normalize_team_name
+from src.utils.team_normalizer import normalize_team_name, remove_mascot_from_team_name
 from src.utils.logging import get_logger
 
 logger = get_logger("orchestration.persistence_service")
@@ -47,16 +47,20 @@ class PersistenceService:
     def _save_single_game(self, game: Game, session: Session) -> Optional[Game]:
         """Save a single game to database"""
         # Get or create team IDs
+        # First normalize, then remove mascots to prevent duplicates
         norm_team1 = normalize_team_name(game.team1, for_matching=True)
         norm_team2 = normalize_team_name(game.team2, for_matching=True)
+        cleaned_team1 = remove_mascot_from_team_name(norm_team1)
+        cleaned_team2 = remove_mascot_from_team_name(norm_team2)
         
         # CRITICAL: Handle ambiguous team names by validating against opponent
         # This prevents "North Carolina" from matching "North Carolina A&T" incorrectly
+        # Use cleaned names (without mascots) for team creation
         team1_model = self._get_or_create_team_with_disambiguation(
-            game.team1, norm_team1, game.team2, session
+            game.team1, cleaned_team1, game.team2, session
         )
         team2_model = self._get_or_create_team_with_disambiguation(
-            game.team2, norm_team2, game.team1, session
+            game.team2, cleaned_team2, game.team1, session
         )
         
         # Check if game exists by team_ids and date
@@ -108,29 +112,63 @@ class PersistenceService:
             )
     
     def save_lines(self, lines: List, games: List[Game]) -> List:
-        """Save betting lines to database"""
+        """Save betting lines to database using upsert pattern to prevent duplicates"""
         if not self.db:
             return lines
         
         session = self.db.get_session()
         try:
+            upserted_count = 0
+            created_count = 0
+            updated_count = 0
+            
             for line in lines:
-                line_model = BettingLineModel(
+                # Check if betting line already exists (upsert pattern)
+                # Unique key: (game_id, book, bet_type, team)
+                existing = session.query(BettingLineModel).filter_by(
                     game_id=line.game_id,
-                    book=line.book,
+                    book=line.book.lower() if line.book else None,
                     bet_type=line.bet_type,
-                    line=line.line,
-                    odds=line.odds,
-                    team=line.team,
-                    timestamp=line.timestamp
-                )
-                session.add(line_model)
+                    team=line.team
+                ).first()
+                
+                if existing:
+                    # Update existing record with latest line data
+                    existing.line = line.line
+                    existing.odds = line.odds
+                    existing.timestamp = line.timestamp
+                    updated_count += 1
+                    logger.debug(
+                        f"Updated betting line: game_id={line.game_id}, book={line.book}, "
+                        f"bet_type={line.bet_type.value}, team={line.team}, line={line.line}"
+                    )
+                else:
+                    # Create new record
+                    line_model = BettingLineModel(
+                        game_id=line.game_id,
+                        book=line.book.lower() if line.book else line.book,
+                        bet_type=line.bet_type,
+                        line=line.line,
+                        odds=line.odds,
+                        team=line.team,
+                        timestamp=line.timestamp
+                    )
+                    session.add(line_model)
+                    created_count += 1
+                    logger.debug(
+                        f"Created betting line: game_id={line.game_id}, book={line.book}, "
+                        f"bet_type={line.bet_type.value}, team={line.team}, line={line.line}"
+                    )
             
             session.commit()
+            upserted_count = created_count + updated_count
+            logger.info(
+                f"Upserted {upserted_count} betting lines: {created_count} created, {updated_count} updated"
+            )
             return lines
             
         except Exception as e:
-            logger.error(f"Error saving lines: {e}")
+            logger.error(f"Error saving lines: {e}", exc_info=True)
             session.rollback()
             return lines
         finally:
@@ -176,16 +214,123 @@ class PersistenceService:
             # Get the date for this pick (use today if not set)
             pick_date = pick.created_at.date() if pick.created_at else date.today()
             
+            # Get game model to validate team_id matches game teams
+            game_model = session.query(GameModel).filter_by(id=pick.game_id).first()
+            if not game_model:
+                logger.error(f"Cannot save pick: game_id={pick.game_id} not found in database")
+                raise ValueError(f"Game {pick.game_id} not found")
+            
             # Get or create team_id if this is a spread/moneyline bet
             team_id = pick.team_id
+            team_name_for_lookup = None
             if not team_id and pick.team_name and pick.bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
-                normalized_name = normalize_team_name(pick.team_name, for_matching=True)
-                team = session.query(TeamModel).filter_by(normalized_team_name=normalized_name).first()
-                if not team:
-                    team = TeamModel(normalized_team_name=normalized_name)
-                    session.add(team)
-                    session.flush()
-                team_id = team.id
+                # Try to match pick.team_name against game's teams first
+                normalized_pick_name = normalize_team_name(pick.team_name, for_matching=True)
+                game_team1 = session.query(TeamModel).filter_by(id=game_model.team1_id).first()
+                game_team2 = session.query(TeamModel).filter_by(id=game_model.team2_id).first()
+                
+                # Check if pick team name matches one of the game's teams
+                team_id_from_game = None
+                if game_team1:
+                    game_team1_norm = normalize_team_name(game_team1.normalized_team_name, for_matching=True)
+                    if (normalized_pick_name in game_team1_norm or game_team1_norm in normalized_pick_name or
+                        normalized_pick_name == game_team1_norm):
+                        team_id_from_game = game_model.team1_id
+                if not team_id_from_game and game_team2:
+                    game_team2_norm = normalize_team_name(game_team2.normalized_team_name, for_matching=True)
+                    if (normalized_pick_name in game_team2_norm or game_team2_norm in normalized_pick_name or
+                        normalized_pick_name == game_team2_norm):
+                        team_id_from_game = game_model.team2_id
+                
+                if team_id_from_game:
+                    # Use the game's team_id
+                    team_id = team_id_from_game
+                    team_name_for_lookup = pick.team_name
+                else:
+                    # Team name doesn't match game teams - this is an error
+                    logger.error(
+                        f"Cannot save pick for game_id={pick.game_id}: "
+                        f"team_name '{pick.team_name}' does not match either game team "
+                        f"(team1_id={game_model.team1_id}, team2_id={game_model.team2_id}). "
+                        f"This indicates a data integrity issue."
+                    )
+                    raise ValueError(
+                        f"Pick team_name '{pick.team_name}' does not match game teams. "
+                        f"Game teams: team1_id={game_model.team1_id}, team2_id={game_model.team2_id}"
+                    )
+            elif team_id:
+                # CRITICAL: Validate that team_id matches one of the game's teams
+                if pick.bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
+                    if team_id != game_model.team1_id and team_id != game_model.team2_id:
+                        pick_team = session.query(TeamModel).filter_by(id=team_id).first()
+                        game_team1 = session.query(TeamModel).filter_by(id=game_model.team1_id).first()
+                        game_team2 = session.query(TeamModel).filter_by(id=game_model.team2_id).first()
+                        logger.error(
+                            f"Cannot save pick for game_id={pick.game_id}: "
+                            f"team_id={team_id} ({pick_team.normalized_team_name if pick_team else 'Unknown'}) "
+                            f"does not match game teams "
+                            f"(team1_id={game_model.team1_id} ({game_team1.normalized_team_name if game_team1 else 'Unknown'}), "
+                            f"team2_id={game_model.team2_id} ({game_team2.normalized_team_name if game_team2 else 'Unknown'})). "
+                            f"This is a DATA INTEGRITY ERROR."
+                        )
+                        raise ValueError(
+                            f"Pick team_id={team_id} does not match game teams. "
+                            f"Game teams: team1_id={game_model.team1_id}, team2_id={game_model.team2_id}"
+                        )
+                
+                # Get team name for betting line lookup
+                team = session.query(TeamModel).filter_by(id=team_id).first()
+                if team:
+                    team_name_for_lookup = team.normalized_team_name
+            
+            # CRITICAL: Look up the betting line from the database to get the correct line value
+            # This ensures we use the actual line from the betting market, not parsed from text
+            betting_line = None
+            line_from_db = pick.line
+            odds_from_db = pick.odds
+            
+            if pick.game_id and pick.bet_type and pick.book:
+                # game_model already queried above
+                game_display = f"game_id={pick.game_id}"
+                if game_model:
+                    team1_name = game_model.team1_ref.normalized_team_name if game_model.team1_ref else "Unknown"
+                    team2_name = game_model.team2_ref.normalized_team_name if game_model.team2_ref else "Unknown"
+                    game_display = f"{team1_name} vs {team2_name} (game_id={pick.game_id})"
+                
+                # Build query for betting line lookup
+                line_query = session.query(BettingLineModel).filter(
+                    BettingLineModel.game_id == pick.game_id,
+                    BettingLineModel.bet_type == pick.bet_type,
+                    BettingLineModel.book == pick.book.lower()
+                )
+                
+                # For spread/moneyline, try to match by team
+                if pick.bet_type in [BetType.SPREAD, BetType.MONEYLINE] and team_name_for_lookup:
+                    from src.utils.team_normalizer import are_teams_matching
+                    # Try to find betting line by matching team name
+                    all_lines = line_query.all()
+                    for line in all_lines:
+                        if line.team and are_teams_matching(team_name_for_lookup, line.team):
+                            betting_line = line
+                            break
+                elif pick.bet_type == BetType.TOTAL:
+                    # For totals, any line from this book should work (they're all the same total)
+                    betting_line = line_query.first()
+                else:
+                    # Try to get first matching line
+                    betting_line = line_query.first()
+                
+                if betting_line:
+                    line_from_db = betting_line.line
+                    odds_from_db = betting_line.odds
+                    logger.debug(
+                        f"Found betting line for pick (game_id={pick.game_id}, bet_type={pick.bet_type}, "
+                        f"book={pick.book}): line={line_from_db}, odds={odds_from_db}"
+                    )
+                else:
+                    # No betting line found - skip saving this pick
+                    logger.warning(f"No betting line found for {game_display}, not making a pick")
+                    return
             
             # Check if pick already exists (upsert pattern)
             existing = session.query(PickModel).filter_by(
@@ -196,8 +341,8 @@ class PersistenceService:
             if existing:
                 # Update existing record
                 existing.bet_type = pick.bet_type
-                existing.line = pick.line
-                existing.odds = pick.odds
+                existing.line = line_from_db  # Use line from betting line database
+                existing.odds = odds_from_db  # Use odds from betting line database
                 existing.stake_units = pick.stake_units
                 existing.stake_amount = pick.stake_amount
                 existing.rationale = pick.rationale
@@ -209,15 +354,15 @@ class PersistenceService:
                 existing.team_id = team_id
                 existing.best_bet = pick.best_bet
                 existing.confidence_score = pick.confidence_score
-                existing.favorite = pick.favorite
+                # Note: favorite field is deprecated in favor of best_bet
                 pick.id = existing.id
             else:
                 # Create new record
                 pick_model = PickModel(
                     game_id=pick.game_id,
                     bet_type=pick.bet_type,
-                    line=pick.line,
-                    odds=pick.odds,
+                    line=line_from_db,  # Use line from betting line database
+                    odds=odds_from_db,  # Use odds from betting line database
                     stake_units=pick.stake_units,
                     stake_amount=pick.stake_amount,
                     rationale=pick.rationale,
@@ -229,7 +374,7 @@ class PersistenceService:
                     team_id=team_id,
                     best_bet=pick.best_bet,
                     confidence_score=pick.confidence_score,
-                    favorite=pick.favorite,
+                    # Note: favorite field is deprecated in favor of best_bet (defaults to False in schema)
                     pick_date=pick_date,
                     created_at=pick.created_at if pick.created_at else datetime.now()
                 )
@@ -325,7 +470,7 @@ class PersistenceService:
     def _get_or_create_team_with_disambiguation(
         self, 
         original_team_name: str, 
-        normalized_name: str, 
+        normalized_name: str,  # This should already have mascot removed
         opponent_name: str, 
         session: Session
     ) -> TeamModel:
@@ -352,6 +497,7 @@ class PersistenceService:
                 break
         
         # Standard lookup first
+        # normalized_name should already have mascot removed, so just do exact match
         team_model = session.query(TeamModel).filter_by(normalized_team_name=normalized_name).first()
         
         if needs_disambiguation and team_model:
@@ -412,6 +558,7 @@ class PersistenceService:
                         f"This might indicate a normalization issue."
                     )
             
+            # normalized_name should already have mascot removed, so use it directly
             team_model = TeamModel(normalized_team_name=normalized_name)
             session.add(team_model)
             session.flush()

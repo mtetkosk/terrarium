@@ -5,7 +5,6 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 
 from src.data.storage import Database, PredictionModel
-from src.data.analytics import AnalyticsService
 from src.utils.logging import get_logger
 
 logger = get_logger("orchestration.prediction_persistence")
@@ -17,7 +16,6 @@ class PredictionPersistenceService:
     def __init__(self, db: Database):
         """Initialize prediction persistence service"""
         self.db = db
-        self.analytics_service = AnalyticsService(db)
     
     def save_predictions(
         self,
@@ -198,12 +196,5 @@ class PredictionPersistenceService:
             )
             session.add(prediction_model)
         
-        # Save to analytics (which reads from PredictionModel)
-        try:
-            self.analytics_service.save_prediction_analytics(
-                game_id=game_id,
-                game_date=target_date
-            )
-        except Exception as e:
-            logger.debug(f"Could not save prediction analytics for game_id={game_id}: {e}")
+        # Predictions are now stored directly in PredictionModel - no need for separate analytics table
 
