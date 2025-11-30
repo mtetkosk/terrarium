@@ -9,8 +9,6 @@ from google.oauth2.service_account import Credentials
 from sqlalchemy import func
 
 from src.data.storage import Database, PickModel, BetModel, GameModel, PredictionModel, BetType, BetResult
-from src.data.analytics import AnalyticsService
-from src.data.analytics import AnalyticsPredictionModel, AnalyticsResultModel, AnalyticsGameModel
 from src.utils.logging import get_logger
 from src.utils.config import config
 
@@ -23,7 +21,6 @@ class GoogleSheetsService:
     def __init__(self, db: Optional[Database] = None):
         """Initialize Google Sheets service"""
         self.db = db or Database()
-        self.analytics_service = AnalyticsService(self.db)
         self.client = None
         self.api_key = None
         self.use_api_key = False
@@ -132,7 +129,7 @@ class GoogleSheetsService:
                 logger.warning(f"Error upserting rows for {target_date}: {e}. Proceeding with insert.")
             
             # Get picks for the date using analytics service
-            picks = self.analytics_service.get_picks_for_date(target_date)
+            picks = self.db.get_picks_for_date(target_date)
             
             if not picks:
                 logger.info(f"No picks found for {target_date}")
@@ -190,7 +187,7 @@ class GoogleSheetsService:
         """
         try:
             # Get picks for the date using analytics service
-            picks = self.analytics_service.get_picks_for_date(target_date)
+            picks = self.db.get_picks_for_date(target_date)
             
             if not picks:
                 logger.info(f"No picks found for {target_date}")
@@ -367,22 +364,6 @@ class GoogleSheetsService:
             # Analytics tables use game_date (when game was played), not pick creation date
             game_date = game.date
             
-            # Get analytics data using game_date
-            analytics_game = session.query(AnalyticsGameModel).filter_by(
-                game_id=pick.game_id,
-                date=game_date
-            ).first()
-            
-            analytics_prediction = session.query(AnalyticsPredictionModel).filter_by(
-                game_id=pick.game_id,
-                date=game_date
-            ).first()
-            
-            analytics_result = session.query(AnalyticsResultModel).filter_by(
-                game_id=pick.game_id,
-                date=game_date
-            ).first()
-            
             # Get bet result
             bet = session.query(BetModel).filter_by(pick_id=pick.id).first()
             win_loss = None
@@ -396,10 +377,15 @@ class GoogleSheetsService:
                 else:
                     win_loss = "Pending"
             
-            # Determine team name
-            # Use analytics_game if available, otherwise fall back to game model
-            home_team = analytics_game.home_team if analytics_game else game.team1
-            away_team = analytics_game.away_team if analytics_game else game.team2
+            # Determine team names - always use utility function with database game model
+            from src.utils.team_normalizer import get_home_away_team_names
+            home_team, away_team = get_home_away_team_names(
+                game.team1_id,
+                game.team2_id,
+                game.result,  # Use game.result if available, None otherwise
+                session,
+                fallback_team1_is_home=True  # Fallback: assume team1=home if can't determine
+            )
             
             # Build the "Bet" column - the full bet description
             bet_description = ""
@@ -588,37 +574,16 @@ class GoogleSheetsService:
                     elif "under" in rationale_lower:
                         team = "Under"
             
-            # Calculate projected value
-            # First try analytics_prediction, then fall back to PredictionModel
+            # Calculate projected value from PredictionModel
             projected = None
-            if analytics_prediction:
-                if pick.bet_type == BetType.SPREAD:
-                    # Projected spread for the team
-                    if team:
-                        if team == home_team:
-                            projected = analytics_prediction.projected_spread
-                        elif team == away_team:
-                            projected = -analytics_prediction.projected_spread
-                elif pick.bet_type == BetType.TOTAL:
-                    projected = analytics_prediction.projected_total
-                elif pick.bet_type == BetType.MONEYLINE:
-                    # For moneyline, we could show win probability or projected score
-                    if team:
-                        if team == home_team:
-                            projected = analytics_prediction.home_projected_score
-                        elif team == away_team:
-                            projected = analytics_prediction.away_projected_score
+            prediction = session.query(PredictionModel).filter_by(
+                game_id=pick.game_id
+            ).order_by(PredictionModel.created_at.desc()).first()
             
-            # Fallback: get from PredictionModel if analytics_prediction doesn't exist
-            if projected is None:
-                prediction = session.query(PredictionModel).filter_by(
-                    game_id=pick.game_id
-                ).order_by(PredictionModel.created_at.desc()).first()
-                
-                if not prediction:
-                    logger.debug(f"No PredictionModel found for game_id={pick.game_id}, pick_id={pick.id}")
-                
-                if prediction:
+            if not prediction:
+                logger.debug(f"No PredictionModel found for game_id={pick.game_id}, pick_id={pick.id}")
+            
+            if prediction:
                     if pick.bet_type == BetType.SPREAD:
                         # Projected spread for the team
                         if team:
@@ -645,72 +610,45 @@ class GoogleSheetsService:
                                 elif team == away_team:
                                     projected = away_projected
             
-            # Calculate actual value
-            # First try analytics_result, then fall back to GameModel.result
+            # Get mapped scores once - always use game.result for consistency
+            mapped_home_score = None
+            mapped_away_score = None
+            if game.result:
+                # Use utility to get correctly mapped scores (relative to our determined home/away teams)
+                from src.utils.team_normalizer import get_home_away_scores
+                mapped_home_score, mapped_away_score = get_home_away_scores(
+                    game.team1_id,
+                    game.team2_id,
+                    game.result,
+                    session,
+                    fallback_team1_is_home=True
+                )
+            
+            # Calculate actual value using mapped scores
             actual = None
-            if analytics_result:
+            if mapped_home_score is not None and mapped_away_score is not None:
                 if pick.bet_type == BetType.SPREAD:
                     # Actual spread
-                    if analytics_result.home_actual_score is not None and analytics_result.away_actual_score is not None:
-                        if team:
-                            if team == home_team:
-                                actual = float(analytics_result.home_actual_score - analytics_result.away_actual_score)
-                            elif team == away_team:
-                                actual = float(analytics_result.away_actual_score - analytics_result.home_actual_score)
+                    if team:
+                        if team == home_team:
+                            actual = float(mapped_home_score - mapped_away_score)
+                        elif team == away_team:
+                            actual = float(mapped_away_score - mapped_home_score)
+                    else:
+                        logger.debug(f"No team determined for spread bet, game_id={pick.game_id}, pick_id={pick.id}")
                 elif pick.bet_type == BetType.TOTAL:
-                    if analytics_result.actual_total is not None:
-                        actual = float(analytics_result.actual_total)
+                    actual = float(mapped_home_score + mapped_away_score)
                 elif pick.bet_type == BetType.MONEYLINE:
                     # For moneyline, show actual score
                     if team:
-                        if team == home_team and analytics_result.home_actual_score is not None:
-                            actual = float(analytics_result.home_actual_score)
-                        elif team == away_team and analytics_result.away_actual_score is not None:
-                            actual = float(analytics_result.away_actual_score)
-            
-            # Fallback: get from GameModel.result if analytics_result doesn't exist
-            if actual is None:
-                if not game.result:
-                    logger.debug(f"No game.result found for game_id={pick.game_id}, pick_id={pick.id}")
-                elif game.result:
-                    result_data = game.result
-                    home_score = result_data.get('home_score') or result_data.get('homeScore')
-                    away_score = result_data.get('away_score') or result_data.get('awayScore')
-                
-                    # Convert to int if they're strings
-                    try:
-                        if home_score is not None:
-                            home_score = int(float(home_score))
-                        if away_score is not None:
-                            away_score = int(float(away_score))
-                    except (ValueError, TypeError):
-                        logger.debug(f"Could not parse scores for game_id={pick.game_id}: home_score={result_data.get('home_score')}, away_score={result_data.get('away_score')}")
-                        home_score = None
-                        away_score = None
-                    
-                    if home_score is not None and away_score is not None:
-                        if pick.bet_type == BetType.SPREAD:
-                            # Actual spread
-                            if team:
-                                if team == home_team:
-                                    actual = float(home_score - away_score)
-                                elif team == away_team:
-                                    actual = float(away_score - home_score)
-                            else:
-                                logger.debug(f"No team determined for spread bet, game_id={pick.game_id}, pick_id={pick.id}")
-                        elif pick.bet_type == BetType.TOTAL:
-                            actual = float(home_score + away_score)
-                        elif pick.bet_type == BetType.MONEYLINE:
-                            # For moneyline, show actual score
-                            if team:
-                                if team == home_team:
-                                    actual = float(home_score)
-                                elif team == away_team:
-                                    actual = float(away_score)
-                            else:
-                                logger.debug(f"No team determined for moneyline bet, game_id={pick.game_id}, pick_id={pick.id}")
+                        if team == home_team:
+                            actual = float(mapped_home_score)
+                        elif team == away_team:
+                            actual = float(mapped_away_score)
                     else:
-                        logger.debug(f"Missing scores for game_id={pick.game_id}: home_score={home_score}, away_score={away_score}")
+                        logger.debug(f"No team determined for moneyline bet, game_id={pick.game_id}, pick_id={pick.id}")
+            elif game.result:
+                logger.debug(f"Could not get mapped scores for game_id={pick.game_id}, pick_id={pick.id}")
             
             # Format bet type
             bet_type_str = pick.bet_type.value if hasattr(pick.bet_type, 'value') else str(pick.bet_type)
@@ -735,35 +673,11 @@ class GoogleSheetsService:
                 else:
                     bet_description = f"Over {pick.line:.1f}"  # Default
             
-            # Get game result (scores) for display
+            # Format game result string - use the mapped scores we already calculated
             game_result = ""
-            home_score = None
-            away_score = None
-            
-            # Try analytics_result first
-            if analytics_result:
-                home_score = analytics_result.home_actual_score
-                away_score = analytics_result.away_actual_score
-            
-            # Fallback to game.result
-            if home_score is None or away_score is None:
-                if game.result:
-                    result_data = game.result
-                    home_score = result_data.get('home_score') or result_data.get('homeScore')
-                    away_score = result_data.get('away_score') or result_data.get('awayScore')
-                    # Convert to int if they're strings
-                    try:
-                        if home_score is not None:
-                            home_score = int(float(home_score))
-                        if away_score is not None:
-                            away_score = int(float(away_score))
-                    except (ValueError, TypeError):
-                        home_score = None
-                        away_score = None
-            
-            # Format game result as "Away Team Score - Home Team Score"
-            if home_score is not None and away_score is not None:
-                game_result = f"{away_team} {away_score} - {home_team} {home_score}"
+            if mapped_home_score is not None and mapped_away_score is not None:
+                # Format as "Away Team Score - Home Team Score"
+                game_result = f"{away_team} {mapped_away_score} - {home_team} {mapped_home_score}"
             
             # Build row
             row = [

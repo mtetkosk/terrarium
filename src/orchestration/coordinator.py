@@ -11,7 +11,6 @@ from src.data.models import (
 from src.data.scrapers.games_scraper import GamesScraper
 from src.data.scrapers.lines_scraper import LinesScraper
 from src.data.storage import Database, GameModel, BettingLineModel, BetModel, PickModel
-from src.data.analytics import AnalyticsService
 from src.agents.researcher import Researcher
 from src.agents.modeler import Modeler
 from src.agents.picker import Picker
@@ -50,7 +49,6 @@ class Coordinator:
         # Initialize utilities (create once, reuse throughout)
         self.data_converter = DataConverter()
         self.report_generator = ReportGenerator(self.db)
-        self.analytics_service = AnalyticsService(self.db)
         self.google_sheets_service = GoogleSheetsService(self.db)
         
         # Initialize persistence services
@@ -138,7 +136,7 @@ class Coordinator:
             predictions = self._step_model(insights, lines, target_date, force_refresh)
             
             # Get historical performance data for learning
-            historical_performance = self.analytics_service.get_historical_performance(target_date)
+            historical_performance = self.db.get_historical_performance(target_date)
             
             # Step 5: Picker selects picks (one per game)
             picks, candidate_picks = self._step_pick(predictions, insights, lines, games, target_date, historical_performance)
@@ -214,14 +212,8 @@ class Coordinator:
             # Extract IDs from tuples (with_entities returns tuples)
             game_ids = [game_id for (game_id,) in game_ids if game_id]
             
-            for game_id in game_ids:
-                try:
-                    self.analytics_service.save_result_analytics(
-                        game_id=game_id,
-                        game_date=yesterday
-                    )
-                except Exception as e:
-                    logger.debug(f"Could not save result analytics for game_id={game_id}: {e}")
+            # Result analytics are now stored directly in GameModel.result JSON - no need for separate analytics table
+            pass
         finally:
             session.close()
         
@@ -265,18 +257,8 @@ class Coordinator:
         if config.is_debug_mode():
             log_data_object(logger, "All games after scraping", games)
         
-        # Save initial game analytics (with team1/team2 as fallback)
-        for game in games:
-            if game.id:
-                # Use team1 as home, team2 as away initially (will be updated after researcher)
-                self.analytics_service.save_game_analytics(
-                    game_id=game.id,
-                    game_date=game.date,
-                    home_team=game.team1,
-                    away_team=game.team2,
-                    home_conference=None,
-                    away_conference=None
-                )
+        # Note: Home/away teams are now determined dynamically from GameModel using utility functions
+        # No need to save to AnalyticsGameModel anymore
         
         return games
     
@@ -288,16 +270,7 @@ class Coordinator:
         self.researcher.interaction_logger.log_agent_complete("LinesScraper", f"Found {len(lines)} betting lines")
         
         # Save odds analytics (will be updated after home/away is determined)
-        # Note: This will use team1/team2 initially, but odds aggregation happens after researcher
-        for game in games:
-            if game.id:
-                try:
-                    self.analytics_service.save_odds_analytics(
-                        game_id=game.id,
-                        game_date=game.date
-                    )
-                except Exception as e:
-                    logger.debug(f"Could not save odds analytics for game_id={game.id}: {e}")
+        # Odds are now stored directly in BettingLineModel - no need for separate analytics table
         
         return lines
     
@@ -343,15 +316,7 @@ class Coordinator:
         self._extract_and_save_home_away(insights, games, target_date)
         
         # Update odds analytics now that we have home/away information
-        for game in games:
-            if game.id:
-                try:
-                    self.analytics_service.save_odds_analytics(
-                        game_id=game.id,
-                        game_date=target_date
-                    )
-                except Exception as e:
-                    logger.debug(f"Could not update odds analytics for game_id={game.id}: {e}")
+        # Odds are now stored directly in BettingLineModel - no need for separate analytics table
         
         return insights
     
@@ -408,23 +373,9 @@ class Coordinator:
                 if isinstance(away_stats, dict):
                     away_conference = away_stats.get("conference")
             
-            # Fallback to team1/team2 if home/away not found
-            if not home_team or not away_team:
-                game = game_map.get(game_id)
-                if game:
-                    home_team = home_team or game.team1
-                    away_team = away_team or game.team2
-            
-            # Save to analytics
-            if home_team and away_team:
-                self.analytics_service.save_game_analytics(
-                    game_id=game_id,
-                    game_date=target_date,
-                    home_team=home_team,
-                    away_team=away_team,
-                    home_conference=home_conference,
-                    away_conference=away_conference
-                )
+            # Note: Home/away teams are now determined dynamically from GameModel using utility functions
+            # No need to save to AnalyticsGameModel anymore
+            # Conference information from researcher is still available in the insights but not stored separately
     
     def _step_model(self, insights: Dict[str, Any], lines: List[BettingLine], target_date: date, force_refresh: bool = False) -> Dict[str, Any]:
         """Step 4: Modeler generates predictions"""

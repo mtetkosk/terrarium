@@ -11,10 +11,9 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 
 from src.agents.results_processor import ResultsProcessor
-from src.data.analytics import AnalyticsService
 from src.data.models import BetResult, BetType
 from src.data.storage import BetModel, Database, GameModel, PickModel, GameInsightModel, PredictionModel, BettingLineModel, TeamModel
 from src.prompts import EMAIL_GENERATOR_RECAP_SYSTEM_PROMPT
@@ -33,7 +32,6 @@ class EmailGenerator:
         """Initialize email generator"""
         self.db = db
         self.results_processor = ResultsProcessor(db) if db else None
-        self.analytics_service = AnalyticsService(db) if db else None
         self.reports_dir = Path("data/reports")
         # Initialize LLM client for recap generation
         try:
@@ -53,6 +51,23 @@ class EmailGenerator:
         except Exception as e:
             logger.debug(f"Error getting team name for team_id {team_id}: {e}")
         return "Team"
+    
+    def _bucket_confidence_score(self, confidence_score: int) -> str:
+        """
+        Bucket confidence score into High, Medium, or Low
+        
+        Args:
+            confidence_score: Confidence score from 1-10
+            
+        Returns:
+            Bucketed confidence level: "High", "Medium", or "Low"
+        """
+        if confidence_score >= 7:
+            return "High"
+        elif confidence_score >= 5:
+            return "Medium"
+        else:
+            return "Low"
     
     def generate_email(
         self,
@@ -132,11 +147,13 @@ class EmailGenerator:
             background-color: #ffffff;
         }
         h2 {
-            color: #2c3e50;
+            color: #ffffff;
+            background-color: #2c3e50;
             border-bottom: 2px solid #3498db;
-            padding-bottom: 5px;
+            padding: 10px 15px;
             margin-top: 25px;
             margin-bottom: 15px;
+            border-radius: 4px;
         }
         .section {
             margin-bottom: 25px;
@@ -301,10 +318,12 @@ class EmailGenerator:
         
         # 2. Yesterday's betting performance
         if yesterday_results:
-            performance_text = self._format_yesterday_performance(yesterday_results)
+            performance_text = self._format_yesterday_performance(yesterday_results, target_date)
             if performance_text:
                 html_parts.append('<div class="section">')
                 html_parts.append('<h2><span class="emoji">📊</span> YESTERDAY\'S PERFORMANCE</h2>')
+                # Split performance text into summary and table
+                # The table is already included in performance_text from _format_yesterday_performance
                 html_parts.append(f'<div class="performance">{performance_text}</div>')
                 html_parts.append('</div>')
                 
@@ -371,6 +390,9 @@ class EmailGenerator:
                 confidence = pick_data.get('confidence_score', 5)
                 is_best_bet = pick_data.get('best_bet', False)
                 
+                # Bucket confidence score
+                confidence_bucket = self._bucket_confidence_score(confidence)
+                
                 # Highlight best bets with special styling
                 row_style = 'background-color: #fff9e6; border-left: 3px solid #f39c12;' if is_best_bet else ''
                 html_parts.append(f'<tr style="{row_style}">')
@@ -382,7 +404,7 @@ class EmailGenerator:
                     selection_display = selection
                 html_parts.append(f'<td class="selection-col">{selection_display}</td>')
                 html_parts.append(f'<td class="odds-col">{odds}</td>')
-                html_parts.append(f'<td class="confidence-col">{confidence}/10</td>')
+                html_parts.append(f'<td class="confidence-col">{confidence_bucket}</td>')
                 html_parts.append('</tr>')
                 
                 # Add rationale row for best bets
@@ -458,7 +480,7 @@ class EmailGenerator:
         
         # 2. Yesterday's betting performance
         if yesterday_results:
-            performance_text = self._format_yesterday_performance_plain(yesterday_results)
+            performance_text = self._format_yesterday_performance_plain(yesterday_results, target_date)
             if performance_text:
                 email_lines.append("📊 YESTERDAY'S PERFORMANCE")
                 email_lines.append("-" * 60)
@@ -519,13 +541,16 @@ class EmailGenerator:
                 confidence = pick_data.get('confidence_score', 5)
                 is_best_bet = pick_data.get('best_bet', False)
                 
+                # Bucket confidence score
+                confidence_bucket = self._bucket_confidence_score(confidence)
+                
                 # Truncate long matchups/selections for table format
                 matchup_short = (matchup[:38] + '..') if len(matchup) > 40 else matchup
                 selection_short = (selection[:28] + '..') if len(selection) > 30 else selection
                 if is_best_bet:
                     selection_short = f"{selection_short} ⭐ BEST BET"
                 
-                row = f"{i:<4} {matchup_short:<40} {selection_short:<30} {odds:<8} {confidence}/10"
+                row = f"{i:<4} {matchup_short:<40} {selection_short:<30} {odds:<8} {confidence_bucket:<6}"
                 email_lines.append(row)
                 
                 # Add rationale for best bets below the row
@@ -556,13 +581,9 @@ class EmailGenerator:
         """
         yesterday = target_date - timedelta(days=1)
         
-        if not self.analytics_service:
-            logger.warning("Analytics service not available - cannot get yesterday's results")
-            return None
-        
         try:
-            # Get results from analytics service (database-only)
-            results = self.analytics_service.get_results_for_date(yesterday)
+            # Get results from database
+            results = self.db.get_results_for_date(yesterday)
             
             if not results or not results.get('picks'):
                 return None
@@ -582,23 +603,10 @@ class EmailGenerator:
             for pick in picks:
                 bet = bet_map.get(pick.id)
                 if bet:
-                    if bet.result == BetResult.WIN:
-                        # Calculate payout: stake * (odds/100) for positive, stake * (100/abs(odds)) for negative
-                        if pick.odds > 0:
-                            payout_ratio = pick.odds / 100.0
-                        else:
-                            payout_ratio = 100.0 / abs(pick.odds)
-                        profit_loss_units += pick.stake_units * payout_ratio
-                        profit_loss_dollars += pick.stake_amount * payout_ratio
-                    elif bet.result == BetResult.PUSH:
-                        # Return stake
-                        profit_loss_units += pick.stake_units
-                        profit_loss_dollars += pick.stake_amount
-                    # Loss: nothing added (already wagered)
-            
-            # Net profit/loss
-            profit_loss_units -= total_wagered_units
-            profit_loss_dollars -= total_wagered_dollars
+                    # Calculate profit/loss using correct formula
+                    profit_units, profit_dollars = self._calculate_bet_profit_loss(pick, bet.result)
+                    profit_loss_units += profit_units
+                    profit_loss_dollars += profit_dollars
             
             # Only return results if there are actually settled bets
             settled_bets = stats.get('settled_bets', 0)
@@ -610,6 +618,49 @@ class EmailGenerator:
             if settled_bets == 0:
                 return None
             
+            # Include picks with confidence scores for confidence band breakdown
+            picks_with_confidence = []
+            for pick in picks:
+                bet = bet_map.get(pick.id)
+                if bet and bet.result != BetResult.PENDING:
+                    # Convert confidence (0.0-1.0) to confidence_score (1-10)
+                    confidence_value = pick.confidence or 0.5
+                    if confidence_value == 0.0:
+                        confidence_score = 1
+                    else:
+                        confidence_score = max(1, min(10, int(round(confidence_value * 10))))
+                    
+                    picks_with_confidence.append({
+                        'pick': pick,
+                        'bet': bet,
+                        'confidence_score': confidence_score
+                    })
+            
+            # Calculate best bets results
+            best_bets_wins = 0
+            best_bets_losses = 0
+            best_bets_pushes = 0
+            best_bets_profit_loss_units = 0.0
+            best_bets_profit_loss_dollars = 0.0
+            best_bets_count = 0
+            
+            for pick in picks:
+                if pick.best_bet:
+                    bet = bet_map.get(pick.id)
+                    if bet and bet.result != BetResult.PENDING:
+                        best_bets_count += 1
+                        if bet.result == BetResult.WIN:
+                            best_bets_wins += 1
+                        elif bet.result == BetResult.PUSH:
+                            best_bets_pushes += 1
+                        else:
+                            best_bets_losses += 1
+                        
+                        # Calculate profit/loss for best bet
+                        profit_units, profit_dollars = self._calculate_bet_profit_loss(pick, bet.result)
+                        best_bets_profit_loss_units += profit_units
+                        best_bets_profit_loss_dollars += profit_dollars
+            
             return {
                 'total_picks': stats['total_picks'],
                 'settled_bets': settled_bets,
@@ -619,7 +670,16 @@ class EmailGenerator:
                 'profit_loss_units': profit_loss_units,
                 'profit_loss_dollars': profit_loss_dollars,
                 'total_wagered_units': total_wagered_units,
-                'total_wagered_dollars': total_wagered_dollars
+                'total_wagered_dollars': total_wagered_dollars,
+                'picks_with_confidence': picks_with_confidence,
+                'best_bets': {
+                    'count': best_bets_count,
+                    'wins': best_bets_wins,
+                    'losses': best_bets_losses,
+                    'pushes': best_bets_pushes,
+                    'profit_loss_units': best_bets_profit_loss_units,
+                    'profit_loss_dollars': best_bets_profit_loss_dollars
+                }
             }
         except Exception as e:
             logger.error(f"Error getting yesterday's results from database: {e}", exc_info=True)
@@ -1875,7 +1935,285 @@ Return the highlights in JSON format."""
             logger.warning(f"Error generating LLM superlatives: {e}. Returning empty.")
             return {}
     
-    def _format_yesterday_performance(self, results: Dict[str, Any]) -> str:
+    def _calculate_bet_profit_loss(self, pick: PickModel, bet_result: BetResult) -> Tuple[float, float]:
+        """
+        Calculate profit/loss for a single bet.
+        
+        For wins:
+        - Negative odds (e.g., -110): profit = stake * (100/abs(odds))
+        - Positive odds (e.g., +110): profit = stake * (odds/100)
+        
+        For losses: -stake
+        For pushes: 0 (stake returned)
+        
+        Returns:
+            Tuple of (profit_loss_units, profit_loss_dollars)
+        """
+        if bet_result == BetResult.WIN:
+            if pick.odds < 0:
+                # Negative odds: profit = stake * (100/abs(odds))
+                profit_multiplier = 100.0 / abs(pick.odds)
+            else:
+                # Positive odds: profit = stake * (odds/100)
+                profit_multiplier = pick.odds / 100.0
+            
+            profit_units = pick.stake_units * profit_multiplier
+            profit_dollars = pick.stake_amount * profit_multiplier
+        elif bet_result == BetResult.PUSH:
+            # Push: stake returned, net profit = 0
+            profit_units = 0.0
+            profit_dollars = 0.0
+        else:  # LOSS
+            # Loss: lose the stake
+            profit_units = -pick.stake_units
+            profit_dollars = -pick.stake_amount
+        
+        return profit_units, profit_dollars
+    
+    def _calculate_confidence_band_results(self, results: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate results broken down by confidence band.
+        
+        Returns:
+            Dictionary with keys 'HIGH', 'Medium', 'Low', each containing:
+            - count: number of bets
+            - wins: number of wins
+            - losses: number of losses
+            - pushes: number of pushes
+            - win_rate: win rate percentage
+            - profit_loss_units: profit/loss in units
+            - profit_loss_dollars: profit/loss in dollars
+        """
+        band_results = {
+            'HIGH': {'count': 0, 'wins': 0, 'losses': 0, 'pushes': 0, 'profit_loss_units': 0.0, 'profit_loss_dollars': 0.0},
+            'Medium': {'count': 0, 'wins': 0, 'losses': 0, 'pushes': 0, 'profit_loss_units': 0.0, 'profit_loss_dollars': 0.0},
+            'Low': {'count': 0, 'wins': 0, 'losses': 0, 'pushes': 0, 'profit_loss_units': 0.0, 'profit_loss_dollars': 0.0}
+        }
+        
+        picks_with_confidence = results.get('picks_with_confidence', [])
+        
+        for item in picks_with_confidence:
+            pick = item['pick']
+            bet = item['bet']
+            confidence_score = item['confidence_score']
+            
+            # Determine confidence band
+            if confidence_score >= 7:
+                band = 'HIGH'
+            elif confidence_score >= 5:
+                band = 'Medium'
+            else:
+                band = 'Low'
+            
+            band_results[band]['count'] += 1
+            
+            # Calculate profit/loss for this bet
+            if bet.result == BetResult.WIN:
+                band_results[band]['wins'] += 1
+            elif bet.result == BetResult.PUSH:
+                band_results[band]['pushes'] += 1
+            else:  # LOSS
+                band_results[band]['losses'] += 1
+            
+            # Calculate profit/loss using correct formula
+            profit_units, profit_dollars = self._calculate_bet_profit_loss(pick, bet.result)
+            band_results[band]['profit_loss_units'] += profit_units
+            band_results[band]['profit_loss_dollars'] += profit_dollars
+        
+        # Calculate win rates for each band
+        for band in band_results:
+            settled = band_results[band]['wins'] + band_results[band]['losses'] + band_results[band]['pushes']
+            if settled > 0:
+                band_results[band]['win_rate'] = (band_results[band]['wins'] / settled * 100)
+            else:
+                band_results[band]['win_rate'] = 0.0
+        
+        return band_results
+    
+    def _calculate_ytd_confidence_band_results(self, target_date: date) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate year-to-date results by confidence band starting from 2025-11-23.
+        
+        Returns:
+            Dictionary with keys 'HIGH', 'Medium', 'Low', each containing:
+            - wins: number of wins
+            - losses: number of losses
+            - pushes: number of pushes
+            - profit_loss_units: profit/loss in units
+        """
+        ytd_start_date = date(2025, 11, 23)
+        
+        band_results = {
+            'HIGH': {'wins': 0, 'losses': 0, 'pushes': 0, 'profit_loss_units': 0.0},
+            'Medium': {'wins': 0, 'losses': 0, 'pushes': 0, 'profit_loss_units': 0.0},
+            'Low': {'wins': 0, 'losses': 0, 'pushes': 0, 'profit_loss_units': 0.0}
+        }
+        
+        if not self.db:
+            return band_results
+        
+        session = self.db.get_session()
+        try:
+            # Query all picks from YTD start date through target_date
+            # Use pick_date if available, otherwise use created_at date
+            picks = session.query(PickModel).filter(
+                or_(
+                    and_(
+                        PickModel.pick_date.isnot(None),
+                        PickModel.pick_date >= ytd_start_date,
+                        PickModel.pick_date <= target_date
+                    ),
+                    and_(
+                        PickModel.pick_date.is_(None),
+                        func.date(PickModel.created_at) >= ytd_start_date,
+                        func.date(PickModel.created_at) <= target_date
+                    )
+                )
+            ).all()
+            
+            # Get all bets for these picks
+            pick_ids = [p.id for p in picks if p.id]
+            if not pick_ids:
+                return band_results
+            
+            bets = session.query(BetModel).filter(
+                BetModel.pick_id.in_(pick_ids),
+                BetModel.result != BetResult.PENDING
+            ).all()
+            
+            bet_map = {bet.pick_id: bet for bet in bets}
+            
+            # Calculate YTD stats by confidence band
+            for pick in picks:
+                bet = bet_map.get(pick.id)
+                if not bet:
+                    continue
+                
+                # Convert confidence (0.0-1.0) to confidence_score (1-10)
+                confidence_value = pick.confidence or 0.5
+                if confidence_value == 0.0:
+                    confidence_score = 1
+                else:
+                    confidence_score = max(1, min(10, int(round(confidence_value * 10))))
+                
+                # Determine confidence band
+                if confidence_score >= 7:
+                    band = 'HIGH'
+                elif confidence_score >= 5:
+                    band = 'Medium'
+                else:
+                    band = 'Low'
+                
+                # Count wins/losses/pushes
+                if bet.result == BetResult.WIN:
+                    band_results[band]['wins'] += 1
+                elif bet.result == BetResult.PUSH:
+                    band_results[band]['pushes'] += 1
+                else:  # LOSS
+                    band_results[band]['losses'] += 1
+                
+                # Calculate profit/loss
+                profit_units, _ = self._calculate_bet_profit_loss(pick, bet.result)
+                band_results[band]['profit_loss_units'] += profit_units
+            
+            # Calculate win rates for each band
+            for band in band_results:
+                settled = band_results[band]['wins'] + band_results[band]['losses'] + band_results[band]['pushes']
+                if settled > 0:
+                    band_results[band]['win_rate'] = (band_results[band]['wins'] / settled * 100)
+                else:
+                    band_results[band]['win_rate'] = 0.0
+            
+            return band_results
+            
+        except Exception as e:
+            logger.error(f"Error calculating YTD confidence band results: {e}", exc_info=True)
+            return band_results
+        finally:
+            session.close()
+    
+    def _calculate_ytd_best_bets(self, target_date: date) -> Dict[str, Any]:
+        """
+        Calculate year-to-date results for best bets starting from 2025-11-23.
+        
+        Returns:
+            Dictionary with:
+            - wins: number of wins
+            - losses: number of losses
+            - pushes: number of pushes
+            - profit_loss_units: profit/loss in units
+            - win_rate: win rate percentage
+        """
+        ytd_start_date = date(2025, 11, 23)
+        
+        result = {'wins': 0, 'losses': 0, 'pushes': 0, 'profit_loss_units': 0.0, 'win_rate': 0.0}
+        
+        if not self.db:
+            return result
+        
+        session = self.db.get_session()
+        try:
+            # Query all best bets from YTD start date through target_date
+            picks = session.query(PickModel).filter(
+                PickModel.best_bet == True,
+                or_(
+                    and_(
+                        PickModel.pick_date.isnot(None),
+                        PickModel.pick_date >= ytd_start_date,
+                        PickModel.pick_date <= target_date
+                    ),
+                    and_(
+                        PickModel.pick_date.is_(None),
+                        func.date(PickModel.created_at) >= ytd_start_date,
+                        func.date(PickModel.created_at) <= target_date
+                    )
+                )
+            ).all()
+            
+            # Get all bets for these picks
+            pick_ids = [p.id for p in picks if p.id]
+            if not pick_ids:
+                return result
+            
+            bets = session.query(BetModel).filter(
+                BetModel.pick_id.in_(pick_ids),
+                BetModel.result != BetResult.PENDING
+            ).all()
+            
+            bet_map = {bet.pick_id: bet for bet in bets}
+            
+            # Calculate YTD stats for best bets
+            for pick in picks:
+                bet = bet_map.get(pick.id)
+                if not bet:
+                    continue
+                
+                # Count wins/losses/pushes
+                if bet.result == BetResult.WIN:
+                    result['wins'] += 1
+                elif bet.result == BetResult.PUSH:
+                    result['pushes'] += 1
+                else:  # LOSS
+                    result['losses'] += 1
+                
+                # Calculate profit/loss
+                profit_units, _ = self._calculate_bet_profit_loss(pick, bet.result)
+                result['profit_loss_units'] += profit_units
+            
+            # Calculate win rate
+            settled = result['wins'] + result['losses'] + result['pushes']
+            if settled > 0:
+                result['win_rate'] = (result['wins'] / settled * 100)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error calculating YTD best bets: {e}", exc_info=True)
+            return result
+        finally:
+            session.close()
+    
+    def _format_yesterday_performance(self, results: Dict[str, Any], target_date: date) -> str:
         """Format yesterday's performance summary with engaging language"""
         wins = results.get('wins', 0)
         losses = results.get('losses', 0)
@@ -1925,9 +2263,286 @@ Return the highlights in JSON format."""
         if settled_bets > 0:
             parts.append(f"📋 {settled_bets} bet{'s' if settled_bets != 1 else ''} settled")
         
-        return " | ".join(parts)
+        performance_summary = " | ".join(parts)
+        
+        # Add confidence band breakdown table with YTD stats and best bets row
+        band_results = self._calculate_confidence_band_results(results)
+        ytd_band_results = self._calculate_ytd_confidence_band_results(target_date)
+        best_bets_data = results.get('best_bets', {})
+        ytd_best_bets = self._calculate_ytd_best_bets(target_date)
+        band_table = self._format_confidence_band_table_html(band_results, ytd_band_results, best_bets_data, ytd_best_bets)
+        
+        # Combine summary and table
+        result_parts = [performance_summary]
+        if band_table:
+            result_parts.append(band_table)
+        
+        return "\n".join(result_parts)
     
-    def _format_yesterday_performance_plain(self, results: Dict[str, Any]) -> str:
+    def _format_confidence_band_table_html(self, band_results: Dict[str, Dict[str, Any]], ytd_band_results: Optional[Dict[str, Dict[str, Any]]] = None, best_bets_data: Optional[Dict[str, Any]] = None, ytd_best_bets: Optional[Dict[str, Any]] = None) -> str:
+        """Format confidence band breakdown as HTML table"""
+        # Check if we have any data
+        total_count = sum(band['count'] for band in band_results.values())
+        if total_count == 0:
+            return ""
+        
+        html_parts = []
+        html_parts.append('<div style="margin-top: 15px;">')
+        html_parts.append('<table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9em;">')
+        html_parts.append('<thead>')
+        html_parts.append('<tr style="background-color: #f0f0f0;">')
+        html_parts.append('<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Confidence Band</th>')
+        html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Record</th>')
+        html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Win Rate</th>')
+        html_parts.append('<th style="padding: 8px; text-align: right; border: 1px solid #ddd;">P&L (Units)</th>')
+        if ytd_band_results:
+            html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd;">YTD Record</th>')
+            html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd;">YTD Win Rate</th>')
+            html_parts.append('<th style="padding: 8px; text-align: right; border: 1px solid #ddd;">YTD P&L (Units)</th>')
+        html_parts.append('</tr>')
+        html_parts.append('</thead>')
+        html_parts.append('<tbody>')
+        
+        # Order: HIGH, Medium, Low
+        for band_name in ['HIGH', 'Medium', 'Low']:
+            band = band_results[band_name]
+            if band['count'] == 0:
+                continue
+            
+            record = f"{band['wins']}-{band['losses']}"
+            if band['pushes'] > 0:
+                record += f"-{band['pushes']}"
+            
+            win_rate = band.get('win_rate', 0.0)
+            profit_loss = band['profit_loss_units']
+            
+            # Color code P&L
+            if profit_loss > 0:
+                pl_color = "#28a745"
+            elif profit_loss < 0:
+                pl_color = "#dc3545"
+            else:
+                pl_color = "#666"
+            
+            html_parts.append('<tr>')
+            html_parts.append(f'<td style="padding: 8px; border: 1px solid #ddd;"><strong>{band_name}</strong></td>')
+            html_parts.append(f'<td style="padding: 8px; text-align: center; border: 1px solid #ddd;">{record}</td>')
+            html_parts.append(f'<td style="padding: 8px; text-align: center; border: 1px solid #ddd;">{win_rate:.1f}%</td>')
+            html_parts.append(f'<td style="padding: 8px; text-align: right; border: 1px solid #ddd; color: {pl_color};"><strong>{profit_loss:+.2f}</strong></td>')
+            
+            # Add YTD columns if available
+            if ytd_band_results:
+                ytd_band = ytd_band_results.get(band_name, {'wins': 0, 'losses': 0, 'pushes': 0, 'profit_loss_units': 0.0, 'win_rate': 0.0})
+                ytd_record = f"{ytd_band['wins']}-{ytd_band['losses']}"
+                if ytd_band['pushes'] > 0:
+                    ytd_record += f"-{ytd_band['pushes']}"
+                ytd_win_rate = ytd_band.get('win_rate', 0.0)
+                ytd_profit_loss = ytd_band['profit_loss_units']
+                
+                # Color code YTD P&L
+                if ytd_profit_loss > 0:
+                    ytd_pl_color = "#28a745"
+                elif ytd_profit_loss < 0:
+                    ytd_pl_color = "#dc3545"
+                else:
+                    ytd_pl_color = "#666"
+                
+                html_parts.append(f'<td style="padding: 8px; text-align: center; border: 1px solid #ddd;">{ytd_record}</td>')
+                html_parts.append(f'<td style="padding: 8px; text-align: center; border: 1px solid #ddd;">{ytd_win_rate:.1f}%</td>')
+                html_parts.append(f'<td style="padding: 8px; text-align: right; border: 1px solid #ddd; color: {ytd_pl_color};"><strong>{ytd_profit_loss:+.2f}</strong></td>')
+            
+            html_parts.append('</tr>')
+        
+        # Add best bets row if available
+        if best_bets_data and best_bets_data.get('count', 0) > 0:
+            best_bets_wins = best_bets_data.get('wins', 0)
+            best_bets_losses = best_bets_data.get('losses', 0)
+            best_bets_pushes = best_bets_data.get('pushes', 0)
+            best_bets_profit_loss = best_bets_data.get('profit_loss_units', 0.0)
+            best_bets_settled = best_bets_wins + best_bets_losses + best_bets_pushes
+            best_bets_win_rate = (best_bets_wins / best_bets_settled * 100) if best_bets_settled > 0 else 0.0
+            
+            best_bets_record = f"{best_bets_wins}-{best_bets_losses}"
+            if best_bets_pushes > 0:
+                best_bets_record += f"-{best_bets_pushes}"
+            
+            # Color code P&L
+            if best_bets_profit_loss > 0:
+                best_bets_pl_color = "#28a745"
+            elif best_bets_profit_loss < 0:
+                best_bets_pl_color = "#dc3545"
+            else:
+                best_bets_pl_color = "#666"
+            
+            html_parts.append('<tr style="background-color: #fff9e6; border-left: 3px solid #f39c12;">')
+            html_parts.append('<td style="padding: 8px; border: 1px solid #ddd;"><strong>⭐ Best Bets</strong></td>')
+            html_parts.append(f'<td style="padding: 8px; text-align: center; border: 1px solid #ddd;">{best_bets_record}</td>')
+            html_parts.append(f'<td style="padding: 8px; text-align: center; border: 1px solid #ddd;">{best_bets_win_rate:.1f}%</td>')
+            html_parts.append(f'<td style="padding: 8px; text-align: right; border: 1px solid #ddd; color: {best_bets_pl_color};"><strong>{best_bets_profit_loss:+.2f}</strong></td>')
+            
+            # Add YTD columns for best bets if available
+            if ytd_band_results and ytd_best_bets:
+                ytd_bb_record = f"{ytd_best_bets['wins']}-{ytd_best_bets['losses']}"
+                if ytd_best_bets['pushes'] > 0:
+                    ytd_bb_record += f"-{ytd_best_bets['pushes']}"
+                ytd_bb_win_rate = ytd_best_bets.get('win_rate', 0.0)
+                ytd_bb_profit_loss = ytd_best_bets['profit_loss_units']
+                
+                # Color code YTD P&L
+                if ytd_bb_profit_loss > 0:
+                    ytd_bb_pl_color = "#28a745"
+                elif ytd_bb_profit_loss < 0:
+                    ytd_bb_pl_color = "#dc3545"
+                else:
+                    ytd_bb_pl_color = "#666"
+                
+                html_parts.append(f'<td style="padding: 8px; text-align: center; border: 1px solid #ddd;">{ytd_bb_record}</td>')
+                html_parts.append(f'<td style="padding: 8px; text-align: center; border: 1px solid #ddd;">{ytd_bb_win_rate:.1f}%</td>')
+                html_parts.append(f'<td style="padding: 8px; text-align: right; border: 1px solid #ddd; color: {ytd_bb_pl_color};"><strong>{ytd_bb_profit_loss:+.2f}</strong></td>')
+            
+            html_parts.append('</tr>')
+        
+        html_parts.append('</tbody>')
+        html_parts.append('</table>')
+        html_parts.append('</div>')
+        
+        return '\n'.join(html_parts)
+    
+    def _format_best_bets_results_html(self, results: Dict[str, Any]) -> str:
+        """Format best bets results as HTML"""
+        best_bets = results.get('best_bets', {})
+        best_bets_count = best_bets.get('count', 0)
+        
+        if best_bets_count == 0:
+            return ""
+        
+        best_bets_wins = best_bets.get('wins', 0)
+        best_bets_losses = best_bets.get('losses', 0)
+        best_bets_pushes = best_bets.get('pushes', 0)
+        best_bets_profit_loss = best_bets.get('profit_loss_units', 0.0)
+        
+        record = f"{best_bets_wins}-{best_bets_losses}"
+        if best_bets_pushes > 0:
+            record += f"-{best_bets_pushes}"
+        
+        settled = best_bets_wins + best_bets_losses + best_bets_pushes
+        win_rate = (best_bets_wins / settled * 100) if settled > 0 else 0.0
+        
+        # Color code P&L
+        if best_bets_profit_loss > 0:
+            pl_color = "#28a745"
+        elif best_bets_profit_loss < 0:
+            pl_color = "#dc3545"
+        else:
+            pl_color = "#666"
+        
+        html_parts = []
+        html_parts.append('<div style="margin-top: 15px; padding: 12px; background-color: #fff9e6; border-left: 4px solid #f39c12; border-radius: 5px;">')
+        html_parts.append('<div style="font-weight: 600; font-size: 1.05em; margin-bottom: 8px;">⭐ Best Bets Performance</div>')
+        html_parts.append(f'<div style="font-size: 0.95em; line-height: 1.8;">')
+        html_parts.append(f'Record: <strong>{record}</strong> | ')
+        html_parts.append(f'Win Rate: <strong>{win_rate:.1f}%</strong> | ')
+        html_parts.append(f'P&L: <strong style="color: {pl_color};">{best_bets_profit_loss:+.2f} units</strong>')
+        html_parts.append('</div>')
+        html_parts.append('</div>')
+        
+        return '\n'.join(html_parts)
+    
+    def _format_best_bets_results_plain(self, results: Dict[str, Any]) -> str:
+        """Format best bets results as plain text"""
+        best_bets = results.get('best_bets', {})
+        best_bets_count = best_bets.get('count', 0)
+        
+        if best_bets_count == 0:
+            return ""
+        
+        best_bets_wins = best_bets.get('wins', 0)
+        best_bets_losses = best_bets.get('losses', 0)
+        best_bets_pushes = best_bets.get('pushes', 0)
+        best_bets_profit_loss = best_bets.get('profit_loss_units', 0.0)
+        
+        record = f"{best_bets_wins}-{best_bets_losses}"
+        if best_bets_pushes > 0:
+            record += f"-{best_bets_pushes}"
+        
+        settled = best_bets_wins + best_bets_losses + best_bets_pushes
+        win_rate = (best_bets_wins / settled * 100) if settled > 0 else 0.0
+        
+        lines = []
+        lines.append("⭐ Best Bets Performance:")
+        lines.append(f"  Record: {record} | Win Rate: {win_rate:.1f}% | P&L: {best_bets_profit_loss:+.2f} units")
+        
+        return '\n'.join(lines)
+    
+    def _format_confidence_band_table_plain(self, band_results: Dict[str, Dict[str, Any]], ytd_band_results: Optional[Dict[str, Dict[str, Any]]] = None, best_bets_data: Optional[Dict[str, Any]] = None, ytd_best_bets: Optional[Dict[str, Any]] = None) -> str:
+        """Format confidence band breakdown as plain text table"""
+        # Check if we have any data
+        total_count = sum(band['count'] for band in band_results.values())
+        if total_count == 0:
+            return ""
+        
+        lines = []
+        lines.append("Results by Confidence Band:")
+        if ytd_band_results:
+            lines.append("-" * 100)
+            lines.append(f"{'Band':<12} {'Record':<12} {'Win Rate':<12} {'P&L (Units)':<15} {'YTD Record':<15} {'YTD Win Rate':<15} {'YTD P&L':<15}")
+        else:
+            lines.append("-" * 60)
+            lines.append(f"{'Band':<12} {'Record':<12} {'Win Rate':<12} {'P&L (Units)':<15}")
+        lines.append("-" * (100 if ytd_band_results else 60))
+        
+        # Order: HIGH, Medium, Low
+        for band_name in ['HIGH', 'Medium', 'Low']:
+            band = band_results[band_name]
+            if band['count'] == 0:
+                continue
+            
+            record = f"{band['wins']}-{band['losses']}"
+            if band['pushes'] > 0:
+                record += f"-{band['pushes']}"
+            
+            win_rate = band.get('win_rate', 0.0)
+            profit_loss = band['profit_loss_units']
+            
+            if ytd_band_results:
+                ytd_band = ytd_band_results.get(band_name, {'wins': 0, 'losses': 0, 'pushes': 0, 'profit_loss_units': 0.0, 'win_rate': 0.0})
+                ytd_record = f"{ytd_band['wins']}-{ytd_band['losses']}"
+                if ytd_band['pushes'] > 0:
+                    ytd_record += f"-{ytd_band['pushes']}"
+                ytd_win_rate = ytd_band.get('win_rate', 0.0)
+                ytd_profit_loss = ytd_band['profit_loss_units']
+                lines.append(f"{band_name:<12} {record:<12} {win_rate:>6.1f}%      {profit_loss:>+10.2f}     {ytd_record:<15} {ytd_win_rate:>6.1f}%      {ytd_profit_loss:>+10.2f}")
+            else:
+                lines.append(f"{band_name:<12} {record:<12} {win_rate:>6.1f}%      {profit_loss:>+10.2f}")
+        
+        # Add best bets row if available
+        if best_bets_data and best_bets_data.get('count', 0) > 0:
+            best_bets_wins = best_bets_data.get('wins', 0)
+            best_bets_losses = best_bets_data.get('losses', 0)
+            best_bets_pushes = best_bets_data.get('pushes', 0)
+            best_bets_profit_loss = best_bets_data.get('profit_loss_units', 0.0)
+            best_bets_settled = best_bets_wins + best_bets_losses + best_bets_pushes
+            best_bets_win_rate = (best_bets_wins / best_bets_settled * 100) if best_bets_settled > 0 else 0.0
+            
+            best_bets_record = f"{best_bets_wins}-{best_bets_losses}"
+            if best_bets_pushes > 0:
+                best_bets_record += f"-{best_bets_pushes}"
+            
+            if ytd_band_results and ytd_best_bets:
+                ytd_bb_record = f"{ytd_best_bets['wins']}-{ytd_best_bets['losses']}"
+                if ytd_best_bets['pushes'] > 0:
+                    ytd_bb_record += f"-{ytd_best_bets['pushes']}"
+                ytd_bb_win_rate = ytd_best_bets.get('win_rate', 0.0)
+                ytd_bb_profit_loss = ytd_best_bets['profit_loss_units']
+                lines.append(f"{'⭐ Best Bets':<12} {best_bets_record:<12} {best_bets_win_rate:>6.1f}%      {best_bets_profit_loss:>+10.2f}     {ytd_bb_record:<15} {ytd_bb_win_rate:>6.1f}%      {ytd_bb_profit_loss:>+10.2f}")
+            else:
+                lines.append(f"{'⭐ Best Bets':<12} {best_bets_record:<12} {best_bets_win_rate:>6.1f}%      {best_bets_profit_loss:>+10.2f}")
+        
+        lines.append("-" * (100 if ytd_band_results else 60))
+        
+        return '\n'.join(lines)
+    
+    def _format_yesterday_performance_plain(self, results: Dict[str, Any], target_date: date) -> str:
         """Format yesterday's performance summary for plain text (no HTML)"""
         wins = results.get('wins', 0)
         losses = results.get('losses', 0)
@@ -1977,7 +2592,21 @@ Return the highlights in JSON format."""
         if settled_bets > 0:
             parts.append(f"📋 {settled_bets} bet{'s' if settled_bets != 1 else ''} settled")
         
-        return " | ".join(parts)
+        performance_summary = " | ".join(parts)
+        
+        # Add confidence band breakdown table with YTD stats and best bets row
+        band_results = self._calculate_confidence_band_results(results)
+        ytd_band_results = self._calculate_ytd_confidence_band_results(target_date)
+        best_bets_data = results.get('best_bets', {})
+        ytd_best_bets = self._calculate_ytd_best_bets(target_date)
+        band_table = self._format_confidence_band_table_plain(band_results, ytd_band_results, best_bets_data, ytd_best_bets)
+        
+        # Combine summary and table
+        result_parts = [performance_summary]
+        if band_table:
+            result_parts.append(band_table)
+        
+        return "\n\n".join(result_parts)
     
     def _extract_best_bets(self, report_text: str) -> List[Dict[str, str]]:
         """Extract best bets from presidents report with rationale"""
@@ -2393,57 +3022,83 @@ Write a compelling recap that highlights the key moments and performance. When d
     
     def _generate_sign_off(self, target_date: date) -> Tuple[str, str]:
         """
-        Generate a motivational sign-off message for degenerate gamblers using LLM.
+        Generate a catchy, engaging quote for the email sign-off using LLM.
         Returns a tuple of (main_message, secondary_message).
         """
         if not self.llm_client:
-            # Fallback to default message if LLM not available
-            return ("Time to print money! 💰🔥", "All gas, no brakes. Let's ride this wave to the bank! 🚀⚡")
+            # Fallback to default catchy quote if LLM not available
+            return (
+                "Let's eat. \U0001F525",
+                "The house doesn't always win—especially when you're playing with data, not emotions."
+            )
         
         try:
-            system_prompt = """You are writing a daily motivational sign-off for a sports betting email newsletter targeting degenerate gamblers.
-            
-Your job: Generate TWO short, energetic lines that will motivate and pump up degenerate gamblers:
-1. First line: A main punchy statement (max 50 chars, bold and exciting)
-2. Second line: A follow-up motivational statement (max 80 chars)
+            system_prompt = """You are writing a catchy, memorable email sign-off for a professional sports betting newsletter. Your goal is to create something sharp, confident, and engaging—NOT cheesy, lame, or overly cutesy.
+
+Your job: Generate TWO lines:
+1. First line: A bold, punchy statement (max 50 chars) - confident and memorable
+2. Second line: A sharp, thought-provoking message about betting, winning, or the game (max 120 chars)
 
 Requirements:
-- NO responsible gambling messages - these are degenerate gamblers who don't care about responsibility
-- Use gambling/casino/money emojis liberally (💰🔥🚀⚡🎰💸💎)
-- Make it exciting, confident, and action-oriented
-- Vary the message each time - don't repeat the same phrases
-- Keep it short and punchy
-- Examples of tone: "Let's get this bread!", "Time to print money!", "All gas no brakes!", "Let's ride!", "YOLO mode activated!"
+- Be confident and bold, not apologetic or weak
+- Use sharp, memorable language—think quotable one-liners
+- Reference sports betting concepts naturally but not obviously
+- Avoid clichés, cheese, or Wisconsin jokes (they're lame)
+- Make it feel like insider wisdom, not generic motivation
+- Vary the message each time - don't repeat phrases
+- Keep it professional yet engaging
+- Examples of GOOD quotes:
+  - "Let's eat."
+  - "The house doesn't always win—especially when you're playing with data, not emotions."
+  - "Trust the process."
+  - "We don't bet on hope. We bet on edges. That's the difference."
+  - "Ready to win?"
+  - "Numbers don't lie. Markets do. Find the gap."
+  - "Game time."
+  - "Confidence comes from preparation, not prayer. We prepare."
+
+Examples of BAD quotes to AVOID:
+- "Go Pack Go!" (too regional/cheesy)
+- "Let's get this bread!" (too cliché)
+- "Time to print money!" (too generic)
+- Wisconsin/cultural references (lame)
+- Overly motivational phrases (corny)
 
 Output format (JSON):
 {
-  "main_message": "Your exciting main message here",
-  "secondary_message": "Your follow-up motivational message here"
+  "main_message": "Your bold, punchy opening line here",
+  "secondary_message": "Your sharp, memorable message here"
 }"""
 
-            user_prompt = f"""Generate a unique motivational sign-off for today ({target_date.strftime('%B %d, %Y')}). 
-Make it exciting and different from previous days. These are degenerate gamblers ready to bet - pump them up!"""
+            user_prompt = f"""Generate a unique, catchy email sign-off for today ({target_date.strftime('%B %d, %Y')}). 
+Make it sharp, confident, and memorable—something that sticks with the reader. Avoid anything cheesy, lame, or overly motivational. Be bold and engaging."""
             
             response = self.llm_client.call(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.9,
-                max_tokens=200,
+                max_tokens=250,
                 parse_json=True
             )
             
             # Extract messages
             if isinstance(response, dict):
-                main = response.get('main_message', 'Time to print money! 💰🔥')
-                secondary = response.get('secondary_message', 'All gas, no brakes. Let\'s ride this wave to the bank! 🚀⚡')
+                main = response.get('main_message', 'Let\'s eat.')
+                secondary = response.get('secondary_message', 'The house doesn\'t always win—especially when you\'re playing with data, not emotions.')
                 return (main, secondary)
             else:
                 logger.warning(f"Unexpected LLM response format for sign-off: {type(response)}")
-                return ("Time to print money! 💰🔥", "All gas, no brakes. Let's ride this wave to the bank! 🚀⚡")
+                return (
+                    "Let's eat.",
+                    "The house doesn't always win—especially when you're playing with data, not emotions."
+                )
                 
         except Exception as e:
             logger.error(f"Error generating LLM sign-off: {e}. Using fallback.")
-            return ("Time to print money! 💰🔥", "All gas, no brakes. Let's ride this wave to the bank! 🚀⚡")
+            return (
+                "Let's eat.",
+                "The house doesn't always win—especially when you're playing with data, not emotions."
+            )
     
     def _format_recap_as_html(self, recap_text: str) -> str:
         """Convert plain text recap to nicely formatted HTML"""

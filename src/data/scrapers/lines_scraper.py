@@ -14,7 +14,7 @@ import pytz
 from src.data.models import BettingLine, BetType, Game
 from src.utils.logging import get_logger
 from src.utils.config import config
-from src.utils.team_normalizer import normalize_team_name, are_teams_matching
+from src.utils.team_normalizer import normalize_team_name, are_teams_matching, remove_mascot_from_team_name
 
 logger = get_logger("scrapers.lines")
 
@@ -320,7 +320,15 @@ class LinesScraper:
             games_for_date = [g for g in games if g.date == game_date]
             
             for event in data:
-                # Find matching game from our list
+                # STEP 1: Extract raw team names from API
+                raw_home_team = event.get('home_team', '').strip()
+                raw_away_team = event.get('away_team', '').strip()
+                
+                # STEP 2: Normalize team names immediately (raw data -> normalization)
+                event_home_team = normalize_team_name(raw_home_team, for_matching=True) if raw_home_team else ''
+                event_away_team = normalize_team_name(raw_away_team, for_matching=True) if raw_away_team else ''
+                
+                # STEP 3: Find matching game using normalized names (normalized_name -> database lookup)
                 matched_game = None
                 for game in games_for_date:
                     if self._matches_game(event, game.team1, game.team2):
@@ -329,10 +337,6 @@ class LinesScraper:
                 
                 if not matched_game:
                     continue
-                
-                # Extract home/away team names from event and match to game teams
-                event_home_team = event.get('home_team', '').strip()
-                event_away_team = event.get('away_team', '').strip()
                 
                 # Match event teams to game teams (could be in either order)
                 home_team_mapped = None
@@ -364,20 +368,24 @@ class LinesScraper:
                             for outcome in market.get('outcomes', []):
                                 line_value = outcome.get('point', 0)
                                 odds = outcome.get('price', 0)
-                                team_name = outcome.get('name', '').strip()  # Team name from API
+                                raw_team_name = outcome.get('name', '').strip()  # Raw team name from API
                                 
-                                # Match team name from outcome to game teams
-                                if team_name:
-                                    # Use centralized normalization for matching
-                                    if are_teams_matching(team_name, matched_game.team1):
+                                # STEP 1: Normalize team name immediately (raw data -> normalization)
+                                normalized_team_name = normalize_team_name(raw_team_name, for_matching=True) if raw_team_name else ''
+                                
+                                # STEP 2: Match normalized name to game teams (normalized_name -> database lookup)
+                                team_name = None
+                                if normalized_team_name:
+                                    # Use normalized name for matching
+                                    if are_teams_matching(normalized_team_name, matched_game.team1):
                                         team_name = matched_game.team1
-                                    elif are_teams_matching(team_name, matched_game.team2):
+                                    elif are_teams_matching(normalized_team_name, matched_game.team2):
                                         team_name = matched_game.team2
                                     else:
                                         # If can't match, try using mapped home/away teams
-                                        if are_teams_matching(team_name, event_home_team) and home_team_mapped:
+                                        if are_teams_matching(normalized_team_name, event_home_team) and home_team_mapped:
                                             team_name = home_team_mapped
-                                        elif are_teams_matching(team_name, event_away_team) and away_team_mapped:
+                                        elif are_teams_matching(normalized_team_name, event_away_team) and away_team_mapped:
                                             team_name = away_team_mapped
                                 
                                 # If team name is still empty, try to infer from line sign and event teams
@@ -432,20 +440,24 @@ class LinesScraper:
                             # Moneyline bets
                             for outcome in market.get('outcomes', []):
                                 odds = outcome.get('price', 0)
-                                team_name = outcome.get('name', '').strip()  # Team name from API
+                                raw_team_name = outcome.get('name', '').strip()  # Raw team name from API
                                 
-                                # Match team name from outcome to game teams
-                                if team_name:
-                                    # Use centralized normalization for matching
-                                    if are_teams_matching(team_name, matched_game.team1):
+                                # STEP 1: Normalize team name immediately (raw data -> normalization)
+                                normalized_team_name = normalize_team_name(raw_team_name, for_matching=True) if raw_team_name else ''
+                                
+                                # STEP 2: Match normalized name to game teams (normalized_name -> database lookup)
+                                team_name = None
+                                if normalized_team_name:
+                                    # Use normalized name for matching
+                                    if are_teams_matching(normalized_team_name, matched_game.team1):
                                         team_name = matched_game.team1
-                                    elif are_teams_matching(team_name, matched_game.team2):
+                                    elif are_teams_matching(normalized_team_name, matched_game.team2):
                                         team_name = matched_game.team2
                                     else:
                                         # If can't match, try using mapped home/away teams
-                                        if are_teams_matching(team_name, event_home_team) and home_team_mapped:
+                                        if are_teams_matching(normalized_team_name, event_home_team) and home_team_mapped:
                                             team_name = home_team_mapped
-                                        elif are_teams_matching(team_name, event_away_team) and away_team_mapped:
+                                        elif are_teams_matching(normalized_team_name, event_away_team) and away_team_mapped:
                                             team_name = away_team_mapped
                                 
                                 # If team name is still empty, try to match by odds and event teams
@@ -538,16 +550,20 @@ class LinesScraper:
                 if not self._matches_game(event, game.team1, game.team2):
                     continue
                 
-                # Extract home/away team names from event and match to game teams
-                event_home_team = event.get('home_team', '').strip()
-                event_away_team = event.get('away_team', '').strip()
+                # STEP 1: Extract raw team names from API
+                raw_home_team = event.get('home_team', '').strip()
+                raw_away_team = event.get('away_team', '').strip()
                 
-                # Match event teams to game teams (could be in either order)
+                # STEP 2: Normalize team names immediately (raw data -> normalization)
+                event_home_team = normalize_team_name(raw_home_team, for_matching=True) if raw_home_team else ''
+                event_away_team = normalize_team_name(raw_away_team, for_matching=True) if raw_away_team else ''
+                
+                # STEP 3: Match normalized names to game teams (normalized_name -> database lookup)
                 home_team_mapped = None
                 away_team_mapped = None
                 
                 if event_home_team and event_away_team:
-                    # Use centralized normalization for matching
+                    # Use normalized names for matching
                     if are_teams_matching(event_home_team, game.team1):
                         home_team_mapped = game.team1
                     elif are_teams_matching(event_home_team, game.team2):
@@ -572,20 +588,24 @@ class LinesScraper:
                             for outcome in market.get('outcomes', []):
                                 line_value = outcome.get('point', 0)
                                 odds = outcome.get('price', 0)
-                                team_name = outcome.get('name', '').strip()  # Team name from API
+                                raw_team_name = outcome.get('name', '').strip()  # Raw team name from API
                                 
-                                # Match team name from outcome to game teams
-                                if team_name:
-                                    # Use centralized normalization for matching
-                                    if are_teams_matching(team_name, game.team1):
+                                # STEP 1: Normalize team name immediately (raw data -> normalization)
+                                normalized_team_name = normalize_team_name(raw_team_name, for_matching=True) if raw_team_name else ''
+                                
+                                # STEP 2: Match normalized name to game teams (normalized_name -> database lookup)
+                                team_name = None
+                                if normalized_team_name:
+                                    # Use normalized name for matching
+                                    if are_teams_matching(normalized_team_name, game.team1):
                                         team_name = game.team1
-                                    elif are_teams_matching(team_name, game.team2):
+                                    elif are_teams_matching(normalized_team_name, game.team2):
                                         team_name = game.team2
                                     else:
                                         # If can't match, try using mapped home/away teams
-                                        if are_teams_matching(team_name, event_home_team) and home_team_mapped:
+                                        if are_teams_matching(normalized_team_name, event_home_team) and home_team_mapped:
                                             team_name = home_team_mapped
-                                        elif are_teams_matching(team_name, event_away_team) and away_team_mapped:
+                                        elif are_teams_matching(normalized_team_name, event_away_team) and away_team_mapped:
                                             team_name = away_team_mapped
                                 
                                 # If team name is still empty, try to infer from line sign and event teams
@@ -640,20 +660,24 @@ class LinesScraper:
                             # Moneyline bets
                             for outcome in market.get('outcomes', []):
                                 odds = outcome.get('price', 0)
-                                team_name = outcome.get('name', '').strip()  # Team name from API
+                                raw_team_name = outcome.get('name', '').strip()  # Raw team name from API
                                 
-                                # Match team name from outcome to game teams
-                                if team_name:
-                                    # Use centralized normalization for matching
-                                    if are_teams_matching(team_name, game.team1):
+                                # STEP 1: Normalize team name immediately (raw data -> normalization)
+                                normalized_team_name = normalize_team_name(raw_team_name, for_matching=True) if raw_team_name else ''
+                                
+                                # STEP 2: Match normalized name to game teams (normalized_name -> database lookup)
+                                team_name = None
+                                if normalized_team_name:
+                                    # Use normalized name for matching
+                                    if are_teams_matching(normalized_team_name, game.team1):
                                         team_name = game.team1
-                                    elif are_teams_matching(team_name, game.team2):
+                                    elif are_teams_matching(normalized_team_name, game.team2):
                                         team_name = game.team2
                                     else:
                                         # If can't match, try using mapped home/away teams
-                                        if are_teams_matching(team_name, event_home_team) and home_team_mapped:
+                                        if are_teams_matching(normalized_team_name, event_home_team) and home_team_mapped:
                                             team_name = home_team_mapped
-                                        elif are_teams_matching(team_name, event_away_team) and away_team_mapped:
+                                        elif are_teams_matching(normalized_team_name, event_away_team) and away_team_mapped:
                                             team_name = away_team_mapped
                                 
                                 # If team name is still empty, try to match by odds and event teams

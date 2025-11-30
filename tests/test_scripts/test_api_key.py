@@ -22,7 +22,7 @@ def test_api_key():
         print("\nTo set it:")
         print("1. Create a .env file in the project root")
         print("2. Add: THE_ODDS_API_KEY=your_api_key_here")
-        return False
+        assert False, "THE_ODDS_API_KEY environment variable is not set"
     
     print(f"✅ API Key found (length: {len(api_key)} characters)")
     print(f"   First 8 chars: {api_key[:8]}...")
@@ -91,33 +91,33 @@ def test_api_key():
                 remaining = response.headers['x-requests-remaining']
                 print(f"\n   📈 Rate limit remaining: {remaining} requests")
             
-            return True
+            assert True, "API request successful"
             
         elif response.status_code == 401:
             print(f"   ❌ ERROR: Unauthorized - Invalid API key")
             print(f"   Response: {response.text[:200]}")
-            return False
+            assert False, f"Unauthorized - Invalid API key: {response.text[:200]}"
         elif response.status_code == 429:
             print(f"   ❌ ERROR: Rate limit exceeded")
             print(f"   Response: {response.text[:200]}")
-            return False
+            assert False, f"Rate limit exceeded: {response.text[:200]}"
         elif response.status_code == 400:
             print(f"   ❌ ERROR: Bad request")
             print(f"   Response: {response.text[:200]}")
-            return False
+            assert False, f"Bad request: {response.text[:200]}"
         else:
             print(f"   ❌ ERROR: Unexpected status code {response.status_code}")
             print(f"   Response: {response.text[:500]}")
-            return False
+            assert False, f"Unexpected status code {response.status_code}: {response.text[:500]}"
             
     except requests.exceptions.RequestException as e:
         print(f"   ❌ Network error: {e}")
-        return False
+        assert False, f"Network error: {e}"
     except Exception as e:
         print(f"   ❌ Error: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        assert False, f"Error: {e}"
 
 
 if __name__ == '__main__':

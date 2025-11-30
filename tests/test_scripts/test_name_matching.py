@@ -105,7 +105,11 @@ def test_matching():
             norm = normalize_team_name(team, for_matching=True)
             print(f"    Normalized: '{norm}'")
     
-    return unmatched_teams
+    # Return value is just for script execution, not for pytest
+    # pytest should not see a return value
+    if __name__ != "__main__":
+        # If running as pytest, use assertions
+        assert isinstance(unmatched_teams, set), "unmatched_teams should be a set"
 
 
 if __name__ == "__main__":
