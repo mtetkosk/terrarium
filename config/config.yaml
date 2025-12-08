@@ -1,6 +1,6 @@
 scraping:
   games_source: "espn"
-  lines_sources: ["draftkings"]  # Only DraftKings to reduce API calls
+  lines_sources: ["draftkings", "fanduel"]  # DraftKings primary, FanDuel as fallback
   kenpom:
     # KenPom credentials (set via environment variables KENPOM_EMAIL and KENPOM_PASSWORD)
     # If not set, will fall back to web search (limited access)

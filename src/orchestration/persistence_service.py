@@ -71,6 +71,11 @@ class PersistenceService:
         ).first()
         
         if existing:
+            # Update game_time_est if provided in the incoming game
+            if game.game_time_est is not None and existing.game_time_est != game.game_time_est:
+                existing.game_time_est = game.game_time_est
+                session.flush()
+            
             # Get team names from relationships for Game dataclass
             team1_name = existing.team1_ref.normalized_team_name if existing.team1_ref else game.team1
             team2_name = existing.team2_ref.normalized_team_name if existing.team2_ref else game.team2
@@ -84,7 +89,8 @@ class PersistenceService:
                 date=existing.date,
                 venue=existing.venue,
                 status=existing.status,
-                result=existing.result
+                result=existing.result,
+                game_time_est=existing.game_time_est
             )
         else:
             # Create new game
@@ -94,7 +100,8 @@ class PersistenceService:
                 date=game.date,
                 venue=game.venue,
                 status=game.status,
-                result=game.result
+                result=game.result,
+                game_time_est=game.game_time_est
             )
             session.add(game_model)
             session.flush()
@@ -108,7 +115,8 @@ class PersistenceService:
                 date=game_model.date,
                 venue=game_model.venue,
                 status=game_model.status,
-                result=game_model.result
+                result=game_model.result,
+                game_time_est=game_model.game_time_est
             )
     
     def save_lines(self, lines: List, games: List[Game]) -> List:

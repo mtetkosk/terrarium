@@ -52,6 +52,145 @@ class EmailGenerator:
             logger.debug(f"Error getting team name for team_id {team_id}: {e}")
         return "Team"
     
+    def _format_game_time_est(self, game_time_est: Optional[datetime]) -> str:
+        """
+        Format game time in EST to a readable format (e.g., "7 PM EST", "7:30 PM EST")
+        
+        Args:
+            game_time_est: Game time datetime in EST (or None)
+            
+        Returns:
+            Formatted time string or empty string if None
+        """
+        if not game_time_est:
+            return ""
+        
+        try:
+            # Format as "7 PM EST" or "7:30 PM EST"
+            hour = game_time_est.hour
+            minute = game_time_est.minute
+            
+            # Convert to 12-hour format
+            if hour == 0:
+                hour_12 = 12
+                am_pm = "AM"
+            elif hour < 12:
+                hour_12 = hour
+                am_pm = "AM"
+            elif hour == 12:
+                hour_12 = 12
+                am_pm = "PM"
+            else:
+                hour_12 = hour - 12
+                am_pm = "PM"
+            
+            if minute == 0:
+                return f"{hour_12} {am_pm} EST"
+            else:
+                return f"{hour_12}:{minute:02d} {am_pm} EST"
+        except Exception as e:
+            logger.debug(f"Error formatting game time: {e}")
+            return ""
+    
+    def _format_team_with_rank(self, team_name: str, kp_rank: Optional[int]) -> str:
+        """
+        Format team name with KenPom rank in parentheses (e.g., "(15) Team Name")
+        
+        Args:
+            team_name: Team name
+            kp_rank: KenPom rank (or None)
+            
+        Returns:
+            Formatted team name with rank if available
+        """
+        if kp_rank is not None:
+            return f"({kp_rank}) {team_name}"
+        return team_name
+    
+    def _get_kenpom_ranks(self, game: GameModel, session) -> Tuple[Optional[int], Optional[int]]:
+        """
+        Get KenPom ranks for both teams in a game
+        
+        Tries multiple sources:
+        1. GameInsightModel (if saved)
+        2. KenPom cache file (direct lookup)
+        
+        Args:
+            game: GameModel instance
+            session: Database session
+            
+        Returns:
+            Tuple of (team1_kp_rank, team2_kp_rank) or (None, None) if not available
+        """
+        team1_kp = None
+        team2_kp = None
+        
+        # First, try GameInsightModel
+        try:
+            insight = session.query(GameInsightModel).filter_by(game_id=game.id).first()
+            if insight:
+                team1_stats = insight.team1_stats if insight.team1_stats else {}
+                team2_stats = insight.team2_stats if insight.team2_stats else {}
+                
+                # Try direct access first (if stats are stored directly with kp_rank at top level)
+                team1_kp = team1_stats.get('kp_rank') or team1_stats.get('rank') if isinstance(team1_stats, dict) else None
+                team2_kp = team2_stats.get('kp_rank') or team2_stats.get('rank') if isinstance(team2_stats, dict) else None
+                
+                # If not found in direct stats, check if team1_stats/team2_stats contain the full researcher output
+                # The researcher format has adv.away and adv.home, but we need to map to team1/team2
+                if (team1_kp is None or team2_kp is None) and isinstance(team1_stats, dict):
+                    # Check if team1_stats contains the full researcher structure
+                    adv = team1_stats.get('adv', {})
+                    if isinstance(adv, dict) and (adv.get('away') or adv.get('home')):
+                        # This looks like the researcher format - need to map away/home to team1/team2
+                        # In standard format: team2 is away, team1 is home (away @ home)
+                        away_stats = adv.get('away', {})
+                        home_stats = adv.get('home', {})
+                        
+                        if isinstance(away_stats, dict):
+                            away_kp = away_stats.get('kp_rank') or away_stats.get('rank')
+                            if away_kp and team2_kp is None:
+                                team2_kp = away_kp
+                        
+                        if isinstance(home_stats, dict):
+                            home_kp = home_stats.get('kp_rank') or home_stats.get('rank')
+                            if home_kp and team1_kp is None:
+                                team1_kp = home_kp
+                
+                # Also check team2_stats in case it has the structure
+                if (team1_kp is None or team2_kp is None) and isinstance(team2_stats, dict):
+                    adv = team2_stats.get('adv', {})
+                    if isinstance(adv, dict) and (adv.get('away') or adv.get('home')):
+                        away_stats = adv.get('away', {})
+                        home_stats = adv.get('home', {})
+                        
+                        if isinstance(away_stats, dict):
+                            away_kp = away_stats.get('kp_rank') or away_stats.get('rank')
+                            if away_kp and team2_kp is None:
+                                team2_kp = away_kp
+                        
+                        if isinstance(home_stats, dict):
+                            home_kp = home_stats.get('kp_rank') or home_stats.get('rank')
+                            if home_kp and team1_kp is None:
+                                team1_kp = home_kp
+        except Exception as e:
+            logger.debug(f"Error getting KenPom ranks from GameInsightModel for game {game.id}: {e}")
+        
+        
+        # Convert to int if they're numbers
+        if team1_kp is not None:
+            try:
+                team1_kp = int(team1_kp)
+            except (ValueError, TypeError):
+                team1_kp = None
+        if team2_kp is not None:
+            try:
+                team2_kp = int(team2_kp)
+            except (ValueError, TypeError):
+                team2_kp = None
+        
+        return (team1_kp, team2_kp)
+    
     def _bucket_confidence_score(self, confidence_score: int) -> str:
         """
         Bucket confidence score into High, Medium, or Low
@@ -64,7 +203,7 @@ class EmailGenerator:
         """
         if confidence_score >= 7:
             return "High"
-        elif confidence_score >= 5:
+        elif confidence_score >= 4:
             return "Medium"
         else:
             return "Low"
@@ -419,14 +558,6 @@ class EmailGenerator:
             html_parts.append('</table>')
             html_parts.append('</div>')
         
-        # Footer - generate sign-off using LLM
-        main_message, secondary_message = self._generate_sign_off(target_date)
-        html_parts.append('<div class="footer">')
-        html_parts.append(f'<p style="font-size: 1.05em; margin-top: 30px;"><strong>{main_message}</strong></p>')
-        html_parts.append(f'<p style="font-size: 0.9em; color: #888; margin-top: 10px;">{secondary_message}</p>')
-        html_parts.append(f'<p style="font-size: 0.85em; color: #999; margin-top: 15px;">Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>')
-        html_parts.append('</div>')
-        
         html_parts.append('</body></html>')
         
         return '\n'.join(html_parts)
@@ -452,31 +583,16 @@ class EmailGenerator:
         best_games = self._get_best_games_to_watch(target_date)
         if best_games:
             email_lines.append("🎯 BEST GAMES TO WATCH")
-            email_lines.append("-" * 60)
+            email_lines.append("")
             for game in best_games:
-                email_lines.append(f"  {game['matchup']}")
-                if game.get('venue'):
-                    email_lines.append(f"    📍 {game['venue']}")
-                if game.get('description'):
-                    # Wrap description nicely
-                    desc = game['description']
-                    if len(desc) > 70:
-                        # Try to break at sentence boundaries
-                        words = desc.split()
-                        lines = []
-                        current_line = "    "
-                        for word in words:
-                            if len(current_line + word) > 70 and current_line.strip() != "":
-                                lines.append(current_line)
-                                current_line = "    " + word + " "
-                            else:
-                                current_line += word + " "
-                        if current_line.strip():
-                            lines.append(current_line)
-                        email_lines.extend(lines)
-                    else:
-                        email_lines.append(f"    {desc}")
+                email_lines.append(game['matchup'].lower())
                 email_lines.append("")
+                if game.get('venue'):
+                    email_lines.append(f"📍 {game['venue']}")
+                    email_lines.append("")
+                if game.get('description'):
+                    email_lines.append(game['description'])
+                    email_lines.append("")
         
         # 2. Yesterday's betting performance
         if yesterday_results:
@@ -559,14 +675,6 @@ class EmailGenerator:
             
             email_lines.append("=" * 80)
             email_lines.append("")
-        
-        # Footer - generate sign-off using LLM
-        main_message, secondary_message = self._generate_sign_off(target_date)
-        email_lines.append("-" * 60)
-        email_lines.append(main_message)
-        email_lines.append(secondary_message)
-        email_lines.append("")
-        email_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         return "\n".join(email_lines)
     
@@ -756,7 +864,21 @@ class EmailGenerator:
                             # Get official team names from database using team_id
                             team1_name = self._get_team_name(game.team1_id, session)
                             team2_name = self._get_team_name(game.team2_id, session)
-                            matchup = f"{team2_name} @ {team1_name}"
+                            
+                            # Get KenPom ranks
+                            team1_kp, team2_kp = self._get_kenpom_ranks(game, session)
+                            
+                            # Format teams with ranks
+                            team1_formatted = self._format_team_with_rank(team1_name, team1_kp)
+                            team2_formatted = self._format_team_with_rank(team2_name, team2_kp)
+                            
+                            matchup = f"{team2_formatted} @ {team1_formatted}"
+                            
+                            # Add game time if available
+                            game_time_str = self._format_game_time_est(game.game_time_est)
+                            if game_time_str:
+                                matchup += f" - {game_time_str}"
+                            
                             if game.venue:
                                 matchup += f" ({game.venue})"
                     except (ValueError, TypeError):
@@ -824,34 +946,64 @@ class EmailGenerator:
                 # Format matchup - get official team names from database using team_id
                 team1_name = self._get_team_name(game.team1_id, session)
                 team2_name = self._get_team_name(game.team2_id, session)
-                matchup = f"{team2_name} @ {team1_name}"
+                
+                # Get KenPom ranks
+                team1_kp, team2_kp = self._get_kenpom_ranks(game, session)
+                
+                # Format teams with ranks
+                team1_formatted = self._format_team_with_rank(team1_name, team1_kp)
+                team2_formatted = self._format_team_with_rank(team2_name, team2_kp)
+                
+                matchup = f"{team2_formatted} @ {team1_formatted}"
+                
+                # Add game time if available
+                game_time_str = self._format_game_time_est(game.game_time_est)
+                if game_time_str:
+                    matchup += f" - {game_time_str}"
+                
                 if game.venue:
                     matchup += f" ({game.venue})"
                 
-                # Format selection
-                selection = pick.selection_text or ""
-                if not selection:
-                    # Construct from bet type and line - use team_id to get official name
-                    if pick.bet_type == BetType.SPREAD:
-                        # Determine which team based on line and team_id
-                        if pick.team_id:
-                            pick_team_name = self._get_team_name(pick.team_id, session)
-                            selection = f"{pick_team_name} {pick.line:+.1f}"
+                # Format selection - always reconstruct from current pick data to ensure consistency
+                # Don't use selection_text as it may contain stale odds
+                if pick.bet_type == BetType.SPREAD:
+                    # Determine which team based on line and team_id
+                    if pick.team_id:
+                        pick_team_name = self._get_team_name(pick.team_id, session)
+                        # Get KenPom rank for the picked team
+                        pick_team_kp = team1_kp if pick.team_id == game.team1_id else (team2_kp if pick.team_id == game.team2_id else None)
+                        pick_team_formatted = self._format_team_with_rank(pick_team_name, pick_team_kp)
+                        selection = f"{pick_team_formatted} {pick.line:+.1f}"
+                    else:
+                        # Fallback to team1/team2 logic
+                        if pick.line > 0:
+                            pick_team_formatted = self._format_team_with_rank(team2_name, team2_kp)
                         else:
-                            # Fallback to team1/team2 logic
-                            selection = f"{team2_name if pick.line > 0 else team1_name} {pick.line:+.1f}"
-                    elif pick.bet_type == BetType.TOTAL:
-                        rationale_lower = (pick.rationale or "").lower()
-                        over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
-                        selection = f"{over_under} {pick.line:.1f}"
-                    elif pick.bet_type == BetType.MONEYLINE:
-                        # Use team_id to get official name
-                        if pick.team_id:
-                            pick_team_name = self._get_team_name(pick.team_id, session)
-                            selection = f"{pick_team_name} ML ({pick.odds:+d})"
+                            pick_team_formatted = self._format_team_with_rank(team1_name, team1_kp)
+                        selection = f"{pick_team_formatted} {pick.line:+.1f}"
+                elif pick.bet_type == BetType.TOTAL:
+                    rationale_lower = (pick.rationale or "").lower()
+                    over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
+                    selection = f"{over_under} {pick.line:.1f}"
+                elif pick.bet_type == BetType.MONEYLINE:
+                    # Use team_id to get official name
+                    # Don't include odds in selection text since they're shown in separate column
+                    if pick.team_id:
+                        pick_team_name = self._get_team_name(pick.team_id, session)
+                        # Get KenPom rank for the picked team
+                        pick_team_kp = team1_kp if pick.team_id == game.team1_id else (team2_kp if pick.team_id == game.team2_id else None)
+                        pick_team_formatted = self._format_team_with_rank(pick_team_name, pick_team_kp)
+                        selection = f"{pick_team_formatted} ML"
+                    else:
+                        # Fallback
+                        if pick.line > 0:
+                            pick_team_formatted = self._format_team_with_rank(team2_name, team2_kp)
                         else:
-                            # Fallback
-                            selection = f"{team2_name if pick.line > 0 else team1_name} ML ({pick.odds:+d})"
+                            pick_team_formatted = self._format_team_with_rank(team1_name, team1_kp)
+                        selection = f"{pick_team_formatted} ML"
+                else:
+                    # Fallback to selection_text if bet type is unknown
+                    selection = pick.selection_text or ""
                 
                 # Format odds
                 odds_str = f"{pick.odds:+d}"
@@ -902,11 +1054,13 @@ class EmailGenerator:
                 # Get official team names from database using team_id
                 team1_name = self._get_team_name(game.team1_id, session)
                 team2_name = self._get_team_name(game.team2_id, session)
+                game_time_str = self._format_game_time_est(game.game_time_est)
                 game_list.append({
                     'id': game.id,
                     'team1': team1_name,
                     'team2': team2_name,
-                    'venue': game.venue
+                    'venue': game.venue,
+                    'game_time_est': game_time_str
                 })
             return game_list
         except Exception as e:
@@ -1021,8 +1175,24 @@ class EmailGenerator:
                 # Get official team names from database using team_id
                 team1_name = self._get_team_name(game.team1_id, session)
                 team2_name = self._get_team_name(game.team2_id, session)
-                home_team = game_result.get('home_team', team1_name)
-                away_team = game_result.get('away_team', team2_name)
+                
+                # Get KenPom ranks
+                team1_kp, team2_kp = self._get_kenpom_ranks(game, session)
+                
+                # Format teams with ranks (use result team names if available, otherwise use database names)
+                home_team_raw = game_result.get('home_team', team1_name)
+                away_team_raw = game_result.get('away_team', team2_name)
+                
+                # Match result team names to team1/team2 to get correct rank
+                if home_team_raw == team1_name or home_team_raw.lower() in team1_name.lower():
+                    home_team = self._format_team_with_rank(home_team_raw, team1_kp)
+                else:
+                    home_team = self._format_team_with_rank(home_team_raw, team2_kp)
+                
+                if away_team_raw == team2_name or away_team_raw.lower() in team2_name.lower():
+                    away_team = self._format_team_with_rank(away_team_raw, team2_kp)
+                else:
+                    away_team = self._format_team_with_rank(away_team_raw, team1_kp)
                 
                 bet_result = bet.result if bet else BetResult.PENDING
                 profit_loss = bet.profit_loss if bet and bet.result != BetResult.PENDING else 0.0
@@ -1049,10 +1219,17 @@ class EmailGenerator:
                         # Determine which team based on line and team_id
                         if pick.team_id:
                             pick_team_name = self._get_team_name(pick.team_id, session)
-                            selection = f"{pick_team_name} {pick.line:+.1f}"
+                            # Get KenPom rank for the picked team
+                            pick_team_kp = team1_kp if pick.team_id == game.team1_id else (team2_kp if pick.team_id == game.team2_id else None)
+                            pick_team_formatted = self._format_team_with_rank(pick_team_name, pick_team_kp)
+                            selection = f"{pick_team_formatted} {pick.line:+.1f}"
                         else:
                             # Fallback to team1/team2 logic
-                            selection = f"{team2_name if pick.line > 0 else team1_name} {pick.line:+.1f}"
+                            if pick.line > 0:
+                                pick_team_formatted = self._format_team_with_rank(team2_name, team2_kp)
+                            else:
+                                pick_team_formatted = self._format_team_with_rank(team1_name, team1_kp)
+                            selection = f"{pick_team_formatted} {pick.line:+.1f}"
                     elif pick.bet_type == BetType.TOTAL:
                         rationale_lower = (pick.rationale or "").lower()
                         over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
@@ -1061,10 +1238,17 @@ class EmailGenerator:
                         # Use team_id to get official name
                         if pick.team_id:
                             pick_team_name = self._get_team_name(pick.team_id, session)
-                            selection = f"{pick_team_name} ML ({pick.odds:+d})"
+                            # Get KenPom rank for the picked team
+                            pick_team_kp = team1_kp if pick.team_id == game.team1_id else (team2_kp if pick.team_id == game.team2_id else None)
+                            pick_team_formatted = self._format_team_with_rank(pick_team_name, pick_team_kp)
+                            selection = f"{pick_team_formatted} ML ({pick.odds:+d})"
                         else:
                             # Fallback
-                            selection = f"{team2_name if pick.line > 0 else team1_name} ML ({pick.odds:+d})"
+                            if pick.line > 0:
+                                pick_team_formatted = self._format_team_with_rank(team2_name, team2_kp)
+                            else:
+                                pick_team_formatted = self._format_team_with_rank(team1_name, team1_kp)
+                            selection = f"{pick_team_formatted} ML ({pick.odds:+d})"
                 
                 best_bets_data.append({
                     'matchup': f"{away_team} @ {home_team}",
@@ -1186,8 +1370,24 @@ class EmailGenerator:
                 # Get official team names from database using team_id
                 team1_name = self._get_team_name(game.team1_id, session)
                 team2_name = self._get_team_name(game.team2_id, session)
-                home_team = game_result.get('home_team', team1_name)
-                away_team = game_result.get('away_team', team2_name)
+                
+                # Get KenPom ranks
+                team1_kp, team2_kp = self._get_kenpom_ranks(game, session)
+                
+                # Format teams with ranks (use result team names if available, otherwise use database names)
+                home_team_raw = game_result.get('home_team', team1_name)
+                away_team_raw = game_result.get('away_team', team2_name)
+                
+                # Match result team names to team1/team2 to get correct rank
+                if home_team_raw == team1_name or home_team_raw.lower() in team1_name.lower():
+                    home_team = self._format_team_with_rank(home_team_raw, team1_kp)
+                else:
+                    home_team = self._format_team_with_rank(home_team_raw, team2_kp)
+                
+                if away_team_raw == team2_name or away_team_raw.lower() in team2_name.lower():
+                    away_team = self._format_team_with_rank(away_team_raw, team2_kp)
+                else:
+                    away_team = self._format_team_with_rank(away_team_raw, team1_kp)
                 
                 bet_result = bet.result if bet else BetResult.PENDING
                 profit_loss = bet.profit_loss if bet and bet.result != BetResult.PENDING else 0.0
@@ -1214,10 +1414,17 @@ class EmailGenerator:
                         # Determine which team based on line and team_id
                         if pick.team_id:
                             pick_team_name = self._get_team_name(pick.team_id, session)
-                            selection = f"{pick_team_name} {pick.line:+.1f}"
+                            # Get KenPom rank for the picked team
+                            pick_team_kp = team1_kp if pick.team_id == game.team1_id else (team2_kp if pick.team_id == game.team2_id else None)
+                            pick_team_formatted = self._format_team_with_rank(pick_team_name, pick_team_kp)
+                            selection = f"{pick_team_formatted} {pick.line:+.1f}"
                         else:
                             # Fallback to team1/team2 logic
-                            selection = f"{team2_name if pick.line > 0 else team1_name} {pick.line:+.1f}"
+                            if pick.line > 0:
+                                pick_team_formatted = self._format_team_with_rank(team2_name, team2_kp)
+                            else:
+                                pick_team_formatted = self._format_team_with_rank(team1_name, team1_kp)
+                            selection = f"{pick_team_formatted} {pick.line:+.1f}"
                     elif pick.bet_type == BetType.TOTAL:
                         rationale_lower = (pick.rationale or "").lower()
                         over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
@@ -1226,10 +1433,17 @@ class EmailGenerator:
                         # Use team_id to get official name
                         if pick.team_id:
                             pick_team_name = self._get_team_name(pick.team_id, session)
-                            selection = f"{pick_team_name} ML ({pick.odds:+d})"
+                            # Get KenPom rank for the picked team
+                            pick_team_kp = team1_kp if pick.team_id == game.team1_id else (team2_kp if pick.team_id == game.team2_id else None)
+                            pick_team_formatted = self._format_team_with_rank(pick_team_name, pick_team_kp)
+                            selection = f"{pick_team_formatted} ML ({pick.odds:+d})"
                         else:
                             # Fallback
-                            selection = f"{team2_name if pick.line > 0 else team1_name} ML ({pick.odds:+d})"
+                            if pick.line > 0:
+                                pick_team_formatted = self._format_team_with_rank(team2_name, team2_kp)
+                            else:
+                                pick_team_formatted = self._format_team_with_rank(team1_name, team1_kp)
+                            selection = f"{pick_team_formatted} ML ({pick.odds:+d})"
                 
                 best_bets_data.append({
                     'matchup': f"{away_team} @ {home_team}",
@@ -1336,6 +1550,7 @@ class EmailGenerator:
     def _get_best_games_to_watch(self, target_date: date) -> List[Dict[str, Any]]:
         """Get 2-3 best games to watch - let LLM select and describe them"""
         if not self.db:
+            logger.warning("DB not available - cannot generate best games to watch")
             return []
         
         if not self.llm_client:
@@ -1349,6 +1564,7 @@ class EmailGenerator:
             ).all()
             
             if not games:
+                logger.warning(f"Best Games -- No games found for {target_date}")
                 return []
             
             # Collect game data for LLM
@@ -1374,8 +1590,20 @@ class EmailGenerator:
                 ).first()
                 
                 # Build game info
+                # Get KenPom ranks
+                team1_kp, team2_kp = self._get_kenpom_ranks(game, session)
+                
+                # Format teams with ranks
+                team1_formatted = self._format_team_with_rank(team1_name, team1_kp)
+                team2_formatted = self._format_team_with_rank(team2_name, team2_kp)
+                
+                matchup = f"{team2_formatted} @ {team1_formatted}"
+                game_time_str = self._format_game_time_est(game.game_time_est)
+                if game_time_str:
+                    matchup += f" - {game_time_str}"
+                
                 game_info = {
-                    'matchup': f"{team2_name} @ {team1_name}",
+                    'matchup': matchup,
                     'venue': game.venue,
                     'team1_rank': int(team1_kp) if team1_kp else None,
                     'team2_rank': int(team2_kp) if team2_kp else None,
@@ -1389,7 +1617,6 @@ class EmailGenerator:
             
             # Let LLM select and describe the best games
             selected_games = self._llm_select_best_games(games_data)
-            
             return selected_games
             
         except Exception as e:
@@ -1401,6 +1628,7 @@ class EmailGenerator:
     def _llm_select_best_games(self, games_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Use LLM to select the 3 most exciting games and generate descriptions"""
         if not games_data:
+            logger.warning("Best Games -- No games data provided to LLM")
             return []
         
         # Format games data for LLM
@@ -1486,10 +1714,19 @@ Return exactly 3 games in JSON format with matchup and description."""
             # Extract selected games
             if isinstance(response, dict):
                 selected = response.get('selected_games', [])
+                print(f"Best Games -- Selected games from LLM: {selected}")
             else:
+                logger.info(f"Best Games -- Response is not a dict: {response}")
                 selected = []
             
             # Match back to original game data to get venue and other info
+            # Helper to normalize matchup by stripping time and normalizing whitespace
+            def normalize_matchup(m):
+                # Remove time portion (everything after " - ")
+                if ' - ' in m:
+                    m = m.split(' - ')[0]
+                return m.strip().lower()
+            
             result = []
             for selected_game in selected[:3]:  # Limit to 3
                 matchup = selected_game.get('matchup', '')
@@ -1497,14 +1734,18 @@ Return exactly 3 games in JSON format with matchup and description."""
                 
                 # Find matching game data
                 matching_game = None
+                normalized_selected = normalize_matchup(matchup)
                 for game in games_data:
-                    if game['matchup'] == matchup:
+                    normalized_game = normalize_matchup(game['matchup'])
+                    if normalized_game == normalized_selected:
                         matching_game = game
                         break
                 
                 if matching_game:
+                    # Use the original matchup format from games_data (with time if available)
+                    result_matchup = matching_game['matchup']
                     result.append({
-                        'matchup': matchup,
+                        'matchup': result_matchup,
                         'venue': matching_game.get('venue'),
                         'description': description
                     })
@@ -1512,7 +1753,7 @@ Return exactly 3 games in JSON format with matchup and description."""
             return result[:3]
             
         except Exception as e:
-            logger.warning(f"Error in LLM game selection: {e}. Using fallback.")
+            logger.info(f"Error in LLM game selection: {e}. Using fallback.")
             # Fallback: return top 3 by ranking if available
             ranked_games = []
             for game in games_data:
@@ -1827,8 +2068,36 @@ Create a brief, engaging summary that captures the key value proposition."""
             except (ValueError, TypeError):
                 away_score = 0
             
-            home_team = result.get('home_team', game.get('team1', 'Home'))
-            away_team = result.get('away_team', game.get('team2', 'Away'))
+            home_team_raw = result.get('home_team', game.get('team1', 'Home'))
+            away_team_raw = result.get('away_team', game.get('team2', 'Away'))
+            
+            # Get KenPom ranks if available
+            home_team = home_team_raw
+            away_team = away_team_raw
+            if self.db and game.get('id'):
+                session = self.db.get_session()
+                try:
+                    from src.data.storage import GameModel
+                    game_model = session.query(GameModel).filter_by(id=game['id']).first()
+                    if game_model:
+                        team1_kp, team2_kp = self._get_kenpom_ranks(game_model, session)
+                        team1_name = self._get_team_name(game_model.team1_id, session)
+                        team2_name = self._get_team_name(game_model.team2_id, session)
+                        
+                        # Match result team names to team1/team2 to get correct rank
+                        if home_team_raw == team1_name or home_team_raw.lower() in team1_name.lower():
+                            home_team = self._format_team_with_rank(home_team_raw, team1_kp)
+                        else:
+                            home_team = self._format_team_with_rank(home_team_raw, team2_kp)
+                        
+                        if away_team_raw == team2_name or away_team_raw.lower() in team2_name.lower():
+                            away_team = self._format_team_with_rank(away_team_raw, team2_kp)
+                        else:
+                            away_team = self._format_team_with_rank(away_team_raw, team1_kp)
+                except Exception as e:
+                    logger.debug(f"Error getting ranks for game {game.get('id')}: {e}")
+                finally:
+                    session.close()
             
             # Get betting lines for this game to determine favorites/underdogs
             spread_info = None
@@ -2000,7 +2269,7 @@ Return the highlights in JSON format."""
             # Determine confidence band
             if confidence_score >= 7:
                 band = 'HIGH'
-            elif confidence_score >= 5:
+            elif confidence_score >= 4:
                 band = 'Medium'
             else:
                 band = 'Low'
@@ -2015,10 +2284,19 @@ Return the highlights in JSON format."""
             else:  # LOSS
                 band_results[band]['losses'] += 1
             
-            # Calculate profit/loss using correct formula
+            # For confidence band reporting, normalize to a 1-unit stake per game.
+            # Use the existing odds-aware profit calculation and scale to per-unit P&L
+            # so wins vary with odds while losses are -1.0 units.
             profit_units, profit_dollars = self._calculate_bet_profit_loss(pick, bet.result)
-            band_results[band]['profit_loss_units'] += profit_units
-            band_results[band]['profit_loss_dollars'] += profit_dollars
+            if pick.stake_units and pick.stake_units != 0:
+                per_unit_profit_units = profit_units / pick.stake_units
+                per_unit_profit_dollars = profit_dollars / pick.stake_units
+            else:
+                per_unit_profit_units = 0.0
+                per_unit_profit_dollars = 0.0
+
+            band_results[band]['profit_loss_units'] += per_unit_profit_units
+            band_results[band]['profit_loss_dollars'] += per_unit_profit_dollars
         
         # Calculate win rates for each band
         for band in band_results:
@@ -2099,7 +2377,7 @@ Return the highlights in JSON format."""
                 # Determine confidence band
                 if confidence_score >= 7:
                     band = 'HIGH'
-                elif confidence_score >= 5:
+                elif confidence_score >= 4:
                     band = 'Medium'
                 else:
                     band = 'Low'
@@ -2112,9 +2390,16 @@ Return the highlights in JSON format."""
                 else:  # LOSS
                     band_results[band]['losses'] += 1
                 
-                # Calculate profit/loss
+                # For confidence band reporting, normalize to a 1-unit stake per game.
+                # Use the existing odds-aware profit calculation and scale to per-unit P&L
+                # so YTD wins vary with odds while losses are -1.0 units.
                 profit_units, _ = self._calculate_bet_profit_loss(pick, bet.result)
-                band_results[band]['profit_loss_units'] += profit_units
+                if pick.stake_units and pick.stake_units != 0:
+                    per_unit_profit_units = profit_units / pick.stake_units
+                else:
+                    per_unit_profit_units = 0.0
+
+                band_results[band]['profit_loss_units'] += per_unit_profit_units
             
             # Calculate win rates for each band
             for band in band_results:
@@ -2245,18 +2530,7 @@ Return the highlights in JSON format."""
         if profit_dollars != 0:
             profit_str += f" (${profit_dollars:+.2f})"
         
-        # Build performance summary with engaging language
-        if settled > 0:
-            if win_rate >= 60:
-                performance_desc = "🔥 Hot streak!"
-            elif win_rate >= 50:
-                performance_desc = "✅ Solid day"
-            else:
-                performance_desc = "📊 Learning day"
-        else:
-            performance_desc = "⏳ Pending"
-        
-        parts = [f"<strong>{performance_desc}</strong>"]
+        parts = []
         parts.append(f"Record: {record}")
         if settled > 0:
             parts.append(f"Win Rate: {win_rate:.1f}%")
@@ -2291,14 +2565,14 @@ Return the highlights in JSON format."""
         html_parts.append('<table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9em;">')
         html_parts.append('<thead>')
         html_parts.append('<tr style="background-color: #f0f0f0;">')
-        html_parts.append('<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Confidence Band</th>')
-        html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Record</th>')
-        html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Win Rate</th>')
-        html_parts.append('<th style="padding: 8px; text-align: right; border: 1px solid #ddd;">P&L (Units)</th>')
+        html_parts.append('<th style="padding: 8px; text-align: left; border: 1px solid #ddd; color: black;">Confidence Band</th>')
+        html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd; color: black;">Record</th>')
+        html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd; color: black;">Win Rate</th>')
+        html_parts.append('<th style="padding: 8px; text-align: right; border: 1px solid #ddd; color: black;">P&L (Units)</th>')
         if ytd_band_results:
-            html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd;">YTD Record</th>')
-            html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd;">YTD Win Rate</th>')
-            html_parts.append('<th style="padding: 8px; text-align: right; border: 1px solid #ddd;">YTD P&L (Units)</th>')
+            html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd; color: black;">YTD Record</th>')
+            html_parts.append('<th style="padding: 8px; text-align: center; border: 1px solid #ddd; color: black;">YTD Win Rate</th>')
+            html_parts.append('<th style="padding: 8px; text-align: right; border: 1px solid #ddd; color: black;">YTD P&L (Units)</th>')
         html_parts.append('</tr>')
         html_parts.append('</thead>')
         html_parts.append('<tbody>')
@@ -2574,18 +2848,7 @@ Return the highlights in JSON format."""
         if profit_dollars != 0:
             profit_str += f" (${profit_dollars:+.2f})"
         
-        # Build performance summary with engaging language
-        if settled > 0:
-            if win_rate >= 60:
-                performance_desc = "🔥 Hot streak!"
-            elif win_rate >= 50:
-                performance_desc = "✅ Solid day"
-            else:
-                performance_desc = "📊 Learning day"
-        else:
-            performance_desc = "⏳ Pending"
-        
-        parts = [performance_desc]
+        parts = []
         parts.append(f"Record: {record}")
         if settled > 0:
             parts.append(f"Win Rate: {win_rate:.1f}%")
@@ -3019,86 +3282,6 @@ Write a compelling recap that highlights the key moments and performance. When d
         except Exception as e:
             logger.error(f"Error generating LLM recap: {e}")
             return None
-    
-    def _generate_sign_off(self, target_date: date) -> Tuple[str, str]:
-        """
-        Generate a catchy, engaging quote for the email sign-off using LLM.
-        Returns a tuple of (main_message, secondary_message).
-        """
-        if not self.llm_client:
-            # Fallback to default catchy quote if LLM not available
-            return (
-                "Let's eat. \U0001F525",
-                "The house doesn't always win—especially when you're playing with data, not emotions."
-            )
-        
-        try:
-            system_prompt = """You are writing a catchy, memorable email sign-off for a professional sports betting newsletter. Your goal is to create something sharp, confident, and engaging—NOT cheesy, lame, or overly cutesy.
-
-Your job: Generate TWO lines:
-1. First line: A bold, punchy statement (max 50 chars) - confident and memorable
-2. Second line: A sharp, thought-provoking message about betting, winning, or the game (max 120 chars)
-
-Requirements:
-- Be confident and bold, not apologetic or weak
-- Use sharp, memorable language—think quotable one-liners
-- Reference sports betting concepts naturally but not obviously
-- Avoid clichés, cheese, or Wisconsin jokes (they're lame)
-- Make it feel like insider wisdom, not generic motivation
-- Vary the message each time - don't repeat phrases
-- Keep it professional yet engaging
-- Examples of GOOD quotes:
-  - "Let's eat."
-  - "The house doesn't always win—especially when you're playing with data, not emotions."
-  - "Trust the process."
-  - "We don't bet on hope. We bet on edges. That's the difference."
-  - "Ready to win?"
-  - "Numbers don't lie. Markets do. Find the gap."
-  - "Game time."
-  - "Confidence comes from preparation, not prayer. We prepare."
-
-Examples of BAD quotes to AVOID:
-- "Go Pack Go!" (too regional/cheesy)
-- "Let's get this bread!" (too cliché)
-- "Time to print money!" (too generic)
-- Wisconsin/cultural references (lame)
-- Overly motivational phrases (corny)
-
-Output format (JSON):
-{
-  "main_message": "Your bold, punchy opening line here",
-  "secondary_message": "Your sharp, memorable message here"
-}"""
-
-            user_prompt = f"""Generate a unique, catchy email sign-off for today ({target_date.strftime('%B %d, %Y')}). 
-Make it sharp, confident, and memorable—something that sticks with the reader. Avoid anything cheesy, lame, or overly motivational. Be bold and engaging."""
-            
-            response = self.llm_client.call(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.9,
-                max_tokens=250,
-                parse_json=True
-            )
-            
-            # Extract messages
-            if isinstance(response, dict):
-                main = response.get('main_message', 'Let\'s eat.')
-                secondary = response.get('secondary_message', 'The house doesn\'t always win—especially when you\'re playing with data, not emotions.')
-                return (main, secondary)
-            else:
-                logger.warning(f"Unexpected LLM response format for sign-off: {type(response)}")
-                return (
-                    "Let's eat.",
-                    "The house doesn't always win—especially when you're playing with data, not emotions."
-                )
-                
-        except Exception as e:
-            logger.error(f"Error generating LLM sign-off: {e}. Using fallback.")
-            return (
-                "Let's eat.",
-                "The house doesn't always win—especially when you're playing with data, not emotions."
-            )
     
     def _format_recap_as_html(self, recap_text: str) -> str:
         """Convert plain text recap to nicely formatted HTML"""

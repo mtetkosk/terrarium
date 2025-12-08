@@ -315,6 +315,9 @@ class Coordinator:
         # Extract home/away teams and conferences from researcher output and update analytics_games
         self._extract_and_save_home_away(insights, games, target_date)
         
+        # Save insights to GameInsightModel for KenPom ranks and other stats
+        self._save_game_insights(insights, games, target_date)
+        
         # Update odds analytics now that we have home/away information
         # Odds are now stored directly in BettingLineModel - no need for separate analytics table
         
@@ -376,6 +379,117 @@ class Coordinator:
             # Note: Home/away teams are now determined dynamically from GameModel using utility functions
             # No need to save to AnalyticsGameModel anymore
             # Conference information from researcher is still available in the insights but not stored separately
+    
+    def _save_game_insights(self, insights: Dict[str, Any], games: List[Game], target_date: date) -> None:
+        """Save researcher insights to GameInsightModel for KenPom ranks and other stats"""
+        if not self.db:
+            return
+        
+        insights_games = insights.get("games", [])
+        if not insights_games:
+            return
+        
+        session = self.db.get_session()
+        try:
+            from src.data.storage import GameInsightModel
+            from src.utils.team_normalizer import normalize_team_name
+            
+            # Create a map of game_id to game object
+            game_map = {g.id: g for g in games if g.id}
+            
+            for insight_game in insights_games:
+                game_id_str = insight_game.get("game_id")
+                if not game_id_str:
+                    continue
+                
+                # Try to parse game_id (could be string or int)
+                try:
+                    game_id = int(game_id_str)
+                except (ValueError, TypeError):
+                    # Try to match by team names
+                    teams_data = insight_game.get("teams", {})
+                    home_team_name = teams_data.get("home", "")
+                    away_team_name = teams_data.get("away", "")
+                    
+                    # Find matching game
+                    matching_game = None
+                    for game in games:
+                        if (home_team_name and away_team_name and
+                            ((home_team_name.lower() in game.team1.lower() and away_team_name.lower() in game.team2.lower()) or
+                             (home_team_name.lower() in game.team2.lower() and away_team_name.lower() in game.team1.lower()))):
+                            matching_game = game
+                            break
+                    
+                    if not matching_game or not matching_game.id:
+                        continue
+                    game_id = matching_game.id
+                
+                if game_id not in game_map:
+                    continue
+                
+                game = game_map[game_id]
+                
+                # Get team names from game to determine which is team1 (home) and team2 (away)
+                # Standard format: team2 @ team1 (away @ home)
+                team1_name = game.team1  # home
+                team2_name = game.team2  # away
+                
+                # Extract advanced stats from researcher output
+                adv_data = insight_game.get("adv", {})
+                home_stats = adv_data.get("home", {}) if isinstance(adv_data, dict) else {}
+                away_stats = adv_data.get("away", {}) if isinstance(adv_data, dict) else {}
+                
+                # Map home/away stats to team1/team2
+                # team1 = home, team2 = away
+                team1_stats = home_stats if isinstance(home_stats, dict) else {}
+                team2_stats = away_stats if isinstance(away_stats, dict) else {}
+                
+                # Extract other insight data
+                matchup_notes = insight_game.get("matchup_notes", "") or insight_game.get("context", [])
+                if isinstance(matchup_notes, list):
+                    matchup_notes = " | ".join(matchup_notes)
+                
+                confidence_factors = insight_game.get("confidence_factors", {})
+                rest_days_team1 = insight_game.get("rest_days_team1")
+                rest_days_team2 = insight_game.get("rest_days_team2")
+                travel_impact = insight_game.get("travel_impact")
+                rivalry = insight_game.get("rivalry", False)
+                
+                # Get or create GameInsightModel
+                insight_model = session.query(GameInsightModel).filter_by(game_id=game_id).first()
+                if insight_model:
+                    # Update existing
+                    insight_model.team1_stats = team1_stats
+                    insight_model.team2_stats = team2_stats
+                    insight_model.matchup_notes = matchup_notes
+                    insight_model.confidence_factors = confidence_factors
+                    insight_model.rest_days_team1 = rest_days_team1
+                    insight_model.rest_days_team2 = rest_days_team2
+                    insight_model.travel_impact = travel_impact
+                    insight_model.rivalry = rivalry
+                else:
+                    # Create new
+                    insight_model = GameInsightModel(
+                        game_id=game_id,
+                        team1_stats=team1_stats,
+                        team2_stats=team2_stats,
+                        matchup_notes=matchup_notes,
+                        confidence_factors=confidence_factors,
+                        rest_days_team1=rest_days_team1,
+                        rest_days_team2=rest_days_team2,
+                        travel_impact=travel_impact,
+                        rivalry=rivalry
+                    )
+                    session.add(insight_model)
+            
+            session.commit()
+            logger.info(f"💾 Saved {len(insights_games)} game insights to database")
+            
+        except Exception as e:
+            logger.error(f"Error saving game insights: {e}", exc_info=True)
+            session.rollback()
+        finally:
+            session.close()
     
     def _step_model(self, insights: Dict[str, Any], lines: List[BettingLine], target_date: date, force_refresh: bool = False) -> Dict[str, Any]:
         """Step 4: Modeler generates predictions"""

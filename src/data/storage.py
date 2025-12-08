@@ -42,6 +42,7 @@ class GameModel(Base):
     venue = Column(String, nullable=True)
     status = Column(SQLEnum(GameStatus), default=GameStatus.SCHEDULED)
     result = Column(JSON, nullable=True)
+    game_time_est = Column(DateTime, nullable=True)  # Game time in Eastern Time
     created_at = Column(DateTime, default=datetime.now)
     
     # Relationships
@@ -316,6 +317,20 @@ class Database:
         
         inspector = inspect(self.engine)
         table_names = inspector.get_table_names()
+        
+        # Migrate games table
+        if 'games' in table_names:
+            existing_columns = [col['name'] for col in inspector.get_columns('games')]
+            
+            # Add game_time_est column if missing
+            if 'game_time_est' not in existing_columns:
+                try:
+                    with self.engine.connect() as conn:
+                        conn.execute(text("ALTER TABLE games ADD COLUMN game_time_est DATETIME"))
+                        conn.commit()
+                    logger.info("✅ Added 'game_time_est' column to games table")
+                except Exception as e:
+                    logger.warning(f"Could not add 'game_time_est' column to games: {e}")
         
         # Migrate betting_lines table
         if 'betting_lines' in table_names:

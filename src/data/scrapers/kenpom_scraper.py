@@ -613,22 +613,26 @@ class KenPomScraper:
                 if not self._team_cache:
                     return None
         
-        # Follow the same normalization + mapping pattern as cache building
-        # Step 1: Normalize
+        # CRITICAL: Normalize input team name FIRST before any matching
+        # This ensures matching happens on normalized names on BOTH sides
+        # Step 1: Normalize (removes mascots, standardizes format)
         normalized = normalize_team_name_for_lookup(team_name)
         # Step 2: Map to canonical form
         canonical_name = map_team_name_to_canonical(team_name)
         
+        logger.debug(f"Looking up team '{team_name}' -> normalized: '{normalized}', canonical: '{canonical_name}'")
+        
         # Step 3: Try direct lookup with canonical name (primary lookup)
+        # Cache keys are already normalized from cache building, so this matches normalized to normalized
         if canonical_name in self._team_cache:
             stats = self._team_cache[canonical_name].copy()
-            logger.debug(f"Found KenPom stats for {team_name} via canonical name: {canonical_name}")
+            logger.debug(f"Found KenPom stats for '{team_name}' (normalized: '{normalized}') via canonical name: '{canonical_name}'")
             return stats
         
         # Step 4: Try normalized name (in case it's stored as alias)
         if normalized in self._team_cache:
             stats = self._team_cache[normalized].copy()
-            logger.debug(f"Found KenPom stats for {team_name} via normalized name: {normalized}")
+            logger.debug(f"Found KenPom stats for '{team_name}' (normalized: '{normalized}') via normalized name")
             return stats
         
         # Step 5: Try all variations (for backwards compatibility with old cache entries)
@@ -640,15 +644,16 @@ class KenPomScraper:
             
             if lookup_canonical in self._team_cache:
                 stats = self._team_cache[lookup_canonical].copy()
-                logger.debug(f"Found KenPom stats for {team_name} via variation canonical: {lookup_canonical}")
+                logger.debug(f"Found KenPom stats for '{team_name}' (normalized: '{normalized}') via variation canonical: '{lookup_canonical}'")
                 return stats
             if lookup_normalized in self._team_cache:
                 stats = self._team_cache[lookup_normalized].copy()
-                logger.debug(f"Found KenPom stats for {team_name} via variation normalized: {lookup_normalized}")
+                logger.debug(f"Found KenPom stats for '{team_name}' (normalized: '{normalized}') via variation normalized: '{lookup_normalized}'")
                 return stats
         
         # If still not found, use LLM for fuzzy matching
-        logger.info(f"No direct or partial match found for {team_name}, trying LLM fuzzy matching...")
+        # Log normalized name so it's clear what we're trying to match
+        logger.info(f"No direct or partial match found for '{team_name}' (normalized: '{normalized}'), trying LLM fuzzy matching...")
         matched_team = self._llm_fuzzy_match_team(team_name)
         if matched_team:
             # Normalize and map the LLM-matched team name
@@ -664,7 +669,7 @@ class KenPomScraper:
                 logger.debug(f"Found KenPom stats for {team_name} via LLM fuzzy match (normalized): {matched_normalized}")
                 return self._team_cache[matched_normalized].copy()
         
-        logger.warning(f"Could not find KenPom stats for {team_name} in cache (tried direct, partial, and LLM matching)")
+        logger.warning(f"Could not find KenPom stats for '{team_name}' (normalized: '{normalized}') in cache (tried direct, partial, and LLM matching)")
         return None
     
     def _llm_fuzzy_match_team(self, team_name: str) -> Optional[str]:
@@ -714,6 +719,11 @@ Be lenient with matching - consider:
 - Nicknames vs official names (e.g., "Volunteers" -> "Tennessee")
 - Full names vs short names (e.g., "Rice Owls" -> "Rice")
 - Common abbreviations (e.g., "NC State" -> "N.C. State")
+
+CRITICAL: Distinguish between similar team names:
+- "Miami Red", "Miami Red Hawks", "Miami Redhawks", "Miami Ohio", "Miami (Oh)", "miami oh" -> Match to "Miami OH" or "Miami (OH)" (MAC conference)
+- "Miami FL", "Miami (FL)", "Miami Florida", "Miami Hurricanes" -> Match to "Miami FL" or "Miami (FL)" (ACC conference)
+These are DIFFERENT teams - do NOT mix them up!
 
 Return JSON: {"matched_team": "exact name from list" or null}"""
 

@@ -54,6 +54,7 @@ class Game:
     venue: Optional[str] = None
     status: GameStatus = GameStatus.SCHEDULED
     result: Optional[Dict[str, Any]] = None
+    game_time_est: Optional[datetime] = None  # Game time in Eastern Time
 
 
 @dataclass

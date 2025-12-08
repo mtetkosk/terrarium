@@ -136,11 +136,18 @@ class LinesScraper:
         return lines
     
     def scrape_lines(self, games: List[Game]) -> List[BettingLine]:
-        """Scrape betting lines for given games"""
+        """Scrape betting lines for given games
+        
+        Uses DraftKings as primary source, FanDuel as fallback for games without DraftKings lines.
+        """
         if not games:
             return []
         
         all_lines = []
+        
+        # Separate primary and fallback sources
+        primary_sources = [s for s in self.sources if s == 'draftkings']
+        fallback_sources = [s for s in self.sources if s != 'draftkings']
         
         # Optimize: Fetch all games at once from The Odds API if possible
         api_key = os.getenv('THE_ODDS_API_KEY')
@@ -151,8 +158,11 @@ class LinesScraper:
                 # Get unique dates from games
                 game_dates = list(set(game.date for game in games))
                 
-                # Fetch lines for all games at once (one call per book, per date)
-                for source in self.sources:
+                # Track which games have lines from primary sources
+                games_with_lines = set()
+                
+                # First, try primary sources (DraftKings)
+                for source in primary_sources:
                     for game_date in game_dates:
                         # Check cache first
                         cached_lines_data = self._get_cached_lines(source, game_date)
@@ -164,6 +174,7 @@ class LinesScraper:
                             filtered_lines = [l for l in cached_lines if l.game_id in game_ids]
                             if filtered_lines:
                                 all_lines.extend(filtered_lines)
+                                games_with_lines.update(l.game_id for l in filtered_lines)
                                 logger.info(f"Using {len(filtered_lines)} cached lines from {source} for {len([g for g in games if g.date == game_date])} games")
                                 continue
                         
@@ -174,6 +185,7 @@ class LinesScraper:
                                 # Cache the results
                                 self._cache_lines(source, game_date, lines)
                                 all_lines.extend(lines)
+                                games_with_lines.update(l.game_id for l in lines)
                                 logger.info(f"Fetched {len(lines)} lines from {source} for {len([g for g in games if g.date == game_date])} games in batch")
                                 time.sleep(0.5)  # Rate limiting between books
                             else:
@@ -189,27 +201,93 @@ class LinesScraper:
                     if not batch_success:
                         break
                 
-                # If batch fetching succeeded, return early
-                if batch_success and all_lines:
-                    logger.info(f"Scraped {len(all_lines)} betting lines using batch API calls (with caching)")
-                    return all_lines
+                # If batch fetching succeeded for primary sources, try fallback sources for games without lines
+                if batch_success:
+                    # Find games that don't have lines yet
+                    games_without_lines = [g for g in games if g.id not in games_with_lines]
+                    
+                    if games_without_lines and fallback_sources:
+                        logger.info(f"Found {len(games_without_lines)} games without lines from primary sources, trying fallback sources")
+                        
+                        # Try fallback sources only for games without lines
+                        for source in fallback_sources:
+                            for game_date in game_dates:
+                                games_for_date = [g for g in games_without_lines if g.date == game_date]
+                                if not games_for_date:
+                                    continue
+                                
+                                # Check cache first
+                                cached_lines_data = self._get_cached_lines(source, game_date)
+                                if cached_lines_data:
+                                    # Convert cached data to BettingLine objects
+                                    cached_lines = self._convert_cached_lines_to_objects(cached_lines_data, games_for_date)
+                                    # Filter to only lines for games we're interested in
+                                    game_ids = {g.id for g in games_for_date}
+                                    filtered_lines = [l for l in cached_lines if l.game_id in game_ids]
+                                    if filtered_lines:
+                                        all_lines.extend(filtered_lines)
+                                        games_with_lines.update(l.game_id for l in filtered_lines)
+                                        logger.info(f"Using {len(filtered_lines)} cached fallback lines from {source} for {len(games_for_date)} games")
+                                        continue
+                                
+                                # Cache miss - fetch from API
+                                try:
+                                    lines = self._scrape_odds_api_batch(games_for_date, source, api_key, game_date)
+                                    if lines:
+                                        # Cache the results
+                                        self._cache_lines(source, game_date, lines)
+                                        all_lines.extend(lines)
+                                        games_with_lines.update(l.game_id for l in lines)
+                                        logger.info(f"Fetched {len(lines)} fallback lines from {source} for {len(games_for_date)} games in batch")
+                                        time.sleep(0.5)  # Rate limiting between books
+                                except Exception as e:
+                                    logger.warning(f"Fallback batch fetch failed for {source}: {e}")
+                    
+                    if all_lines:
+                        logger.info(f"Scraped {len(all_lines)} betting lines using batch API calls (with caching)")
+                        logger.info(f"Lines coverage: {len(games_with_lines)}/{len(games)} games have lines")
+                        return all_lines
             except Exception as e:
                 logger.warning(f"Batch fetching failed: {e}, falling back to per-game scraping")
                 # Fall through to per-game scraping
         
-        # Fallback: Per-game scraping (original method)
+        # Fallback: Per-game scraping with primary/fallback logic
+        games_with_lines = set()
         for game in games:
-            for source in self.sources:
+            # Try primary sources first
+            found_lines = False
+            for source in primary_sources:
                 try:
                     lines = self._scrape_source(game, source)
-                    all_lines.extend(lines)
-                    time.sleep(0.5)  # Rate limiting
+                    if lines:
+                        all_lines.extend(lines)
+                        games_with_lines.add(game.id)
+                        found_lines = True
+                        logger.debug(f"Found {len(lines)} lines from {source} for {game.team1} vs {game.team2}")
+                        break  # Found lines, no need to try other primary sources
                 except Exception as e:
-                    logger.error(f"Error scraping {source} for game {game.id}: {e}")
-                    # Don't use mock data - skip games without lines
-                    logger.warning(f"No lines found for {game.team1} vs {game.team2} from {source}, skipping")
+                    logger.debug(f"Error scraping {source} for game {game.id}: {e}")
+            
+            # If no lines from primary sources, try fallback sources
+            if not found_lines:
+                for source in fallback_sources:
+                    try:
+                        lines = self._scrape_source(game, source)
+                        if lines:
+                            all_lines.extend(lines)
+                            games_with_lines.add(game.id)
+                            logger.info(f"Found {len(lines)} fallback lines from {source} for {game.team1} vs {game.team2}")
+                            break  # Found lines, no need to try other fallback sources
+                    except Exception as e:
+                        logger.debug(f"Error scraping fallback {source} for game {game.id}: {e}")
+            
+            if not found_lines:
+                logger.warning(f"No lines found for {game.team1} vs {game.team2} from any source")
+            
+            time.sleep(0.5)  # Rate limiting
         
         logger.info(f"Scraped {len(all_lines)} betting lines")
+        logger.info(f"Lines coverage: {len(games_with_lines)}/{len(games)} games have lines")
         return all_lines
     
     def _scrape_source(self, game: Game, source: str) -> List[BettingLine]:
