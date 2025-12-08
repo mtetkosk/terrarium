@@ -13,26 +13,39 @@ from src.utils.config import config
 from src.utils.llm import LLMClient, get_llm_client
 
 
-def _make_json_serializable(obj: Any) -> Any:
+def _make_json_serializable(obj: Any, _seen: Optional[set] = None) -> Any:
     """
     Recursively convert dataclasses, enums, and dates to JSON-serializable types
     
     Args:
         obj: Object to convert
+        _seen: Set of object ids already visited (for circular reference detection)
         
     Returns:
         JSON-serializable version of the object
     """
+    # Initialize seen set on first call
+    if _seen is None:
+        _seen = set()
+    
+    # Check for circular references (only for mutable objects that can have cycles)
+    if isinstance(obj, (dict, list)):
+        obj_id = id(obj)
+        if obj_id in _seen:
+            # Circular reference detected - return placeholder
+            return "[Circular Reference]"
+        _seen.add(obj_id)
+    
     if is_dataclass(obj):
-        return {k: _make_json_serializable(v) for k, v in asdict(obj).items()}
+        return {k: _make_json_serializable(v, _seen) for k, v in asdict(obj).items()}
     elif isinstance(obj, Enum):
         return obj.value
     elif isinstance(obj, (date, datetime)):
         return obj.isoformat()
     elif isinstance(obj, dict):
-        return {k: _make_json_serializable(v) for k, v in obj.items()}
+        return {k: _make_json_serializable(v, _seen) for k, v in obj.items()}
     elif isinstance(obj, (list, tuple)):
-        return [_make_json_serializable(item) for item in obj]
+        return [_make_json_serializable(item, _seen) for item in obj]
     else:
         return obj
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from src.agents.base import BaseAgent
 from src.data.models import BetResult, BetType, GameStatus
-from src.data.storage import Database, BetModel, PickModel, GameModel
+from src.data.storage import Database, BetModel, PickModel, GameModel, TeamModel
 from src.data.scrapers.games_scraper import GamesScraper
 from sqlalchemy import func
 from src.utils.logging import get_logger
@@ -617,6 +617,12 @@ class ResultsProcessor(BaseAgent):
                     match = re.search(r'(over|under)\s+(\d+\.?\d*)', pick_selection_text.lower())
                     if match:
                         expected_direction = match.group(1).lower()
+                if not expected_direction and pick_rationale:
+                    rationale_lower = pick_rationale.lower()
+                    if "over" in rationale_lower:
+                        expected_direction = "over"
+                    elif "under" in rationale_lower:
+                        expected_direction = "under"
                 
                 if not expected_direction:
                     self.log_error(
@@ -634,19 +640,13 @@ class ResultsProcessor(BaseAgent):
                     BettingLineModel.team == expected_direction
                 ).first()
                 
-                if not betting_line:
-                    self.log_error(
-                        f"Cannot settle TOTAL bet for pick {pick_id} (game_id={pick_game_id}, "
-                        f"bet_type=TOTAL, book={pick_book}, direction={expected_direction}): "
-                        f"betting line not found in database. Skipping."
-                    )
-                    no_bet_result_count += 1
-                    continue
-                
-                # Use the line from betting_lines table (source of truth)
-                actual_line = betting_line.line
-                # Use the team field which should be "over" or "under" for totals
-                betting_line_team = betting_line.team
+                if betting_line:
+                    actual_line = betting_line.line
+                    betting_line_team = betting_line.team
+                else:
+                    # Fall back to pick data when no matching betting line is stored
+                    actual_line = pick_line
+                    betting_line_team = expected_direction
                 
                 if not betting_line_team or betting_line_team.lower() not in ["over", "under"]:
                     self.log_error(
@@ -705,12 +705,21 @@ class ResultsProcessor(BaseAgent):
             else:
                 # For spread/moneyline, use team_id (REQUIRED)
                 if not pick_team_id:
-                    self.log_error(
-                        f"Cannot settle {pick_bet_type.value} bet for pick {pick_id} (game_id={pick_game_id}): "
-                        f"team_id is required but is None. This indicates a data integrity issue. Skipping."
-                    )
-                    no_bet_result_count += 1
-                    continue
+                    game = session.query(GameModel).filter_by(id=pick_game_id).first()
+                    if game:
+                        if pick_line < 0:
+                            pick_team_id = game.team1_id
+                        elif pick_line > 0:
+                            pick_team_id = game.team2_id
+                        else:
+                            pick_team_id = game.team1_id
+                    if not pick_team_id:
+                        self.log_error(
+                            f"Cannot settle {pick_bet_type.value} bet for pick {pick_id} (game_id={pick_game_id}): "
+                            f"team_id is required but is None. This indicates a data integrity issue. Skipping."
+                        )
+                        no_bet_result_count += 1
+                        continue
                 
                 bet_result = self._determine_bet_result_from_team_id(
                     pick_game_id, pick_bet_type, actual_line, pick_team_id, game_result, session
@@ -718,7 +727,6 @@ class ResultsProcessor(BaseAgent):
                 
                 if not bet_result:
                     # This means team_id doesn't match game teams - data integrity issue
-                    from src.data.storage import GameModel, TeamModel
                     game = session.query(GameModel).filter_by(id=pick_game_id).first()
                     pick_team = session.query(TeamModel).filter_by(id=pick_team_id).first()
                     game_team1 = session.query(TeamModel).filter_by(id=game.team1_id).first() if game else None
@@ -778,388 +786,6 @@ class ResultsProcessor(BaseAgent):
         session.commit()
         return settled_count
     
-    def _determine_bet_result_from_attrs(
-        self, 
-        pick_game_id: int, 
-        pick_bet_type, 
-        pick_line: float, 
-        pick_rationale: str, 
-        game_result: Dict[str, Any], 
-        session,
-        betting_line_team: Optional[str] = None,  # For totals: "over" or "under" from betting_lines table (REQUIRED)
-        pick_team_id: Optional[int] = None  # Team ID for the pick (helps with matching)
-    ) -> Optional[BetResult]:
-        """Determine if a bet won, lost, or pushed based on game result (using extracted attributes)"""
-        result_data = game_result.get("result")
-        if not result_data:
-            return None
-        
-        # Convert scores to integers (they might come as strings from the API)
-        home_score_raw = result_data.get("home_score", 0)
-        away_score_raw = result_data.get("away_score", 0)
-        home_score = safe_int(home_score_raw, 0)
-        away_score = safe_int(away_score_raw, 0)
-        home_team = result_data.get("home_team", "")
-        away_team = result_data.get("away_team", "")
-        
-        # Get pick details from extracted attributes
-        bet_type = pick_bet_type
-        line = pick_line
-        
-        # Get game information to determine which team the pick is for
-        # We need to check the game model to see which team is home/away
-        try:
-            from src.data.storage import GameModel
-            game = session.query(GameModel).filter_by(id=pick_game_id).first()
-            if not game:
-                return None
-            
-            # Extract game attributes while session is active
-            # Use team references if available, otherwise fall back to old team1/team2 columns
-            if hasattr(game, 'team1_ref') and game.team1_ref:
-                game_home_team = game.team1_ref.normalized_team_name
-            else:
-                game_home_team = getattr(game, 'team1', '')
-            
-            if hasattr(game, 'team2_ref') and game.team2_ref:
-                game_away_team = game.team2_ref.normalized_team_name
-            else:
-                game_away_team = getattr(game, 'team2', '')
-        except Exception as e:
-            self.log_error(f"Error accessing game attributes: {e}")
-            return None
-        
-        # Determine which team the pick is for by checking rationale
-        # The rationale should mention the team name
-        # Use normalized team names for better matching
-        rationale_lower = pick_rationale.lower()
-        
-        # Normalize team names for matching
-        norm_home_team = normalize_team_name(home_team, for_matching=True)
-        norm_away_team = normalize_team_name(away_team, for_matching=True)
-        norm_game_home_team = normalize_team_name(game_home_team, for_matching=True)
-        norm_game_away_team = normalize_team_name(game_away_team, for_matching=True)
-        
-        # Also get team name variations for more flexible matching
-        home_variations = get_team_name_variations(home_team) + get_team_name_variations(game_home_team)
-        away_variations = get_team_name_variations(away_team) + get_team_name_variations(game_away_team)
-        
-        pick_team = None
-        if bet_type == BetType.SPREAD or bet_type == BetType.MONEYLINE:
-            # First, try to use pick_team_id to directly match against result's home/away teams
-            # This is more reliable than parsing rationale
-            if pick_team_id:
-                from src.data.storage import TeamModel
-                pick_team_model = session.query(TeamModel).filter_by(id=pick_team_id).first()
-                if pick_team_model:
-                    pick_team_name = pick_team_model.normalized_team_name
-                    norm_pick_team = normalize_team_name(pick_team_name, for_matching=True).lower()
-                    norm_home_team_lower = normalize_team_name(home_team, for_matching=True).lower()
-                    norm_away_team_lower = normalize_team_name(away_team, for_matching=True).lower()
-                    
-                    # Check if pick team matches home or away team from result
-                    pick_matches_home = (norm_pick_team in norm_home_team_lower or 
-                                        norm_home_team_lower in norm_pick_team or
-                                        norm_pick_team == norm_home_team_lower)
-                    pick_matches_away = (norm_pick_team in norm_away_team_lower or 
-                                        norm_away_team_lower in norm_pick_team or
-                                        norm_pick_team == norm_away_team_lower)
-                    
-                    if pick_matches_home and not pick_matches_away:
-                        pick_team = "home"
-                        self.logger.debug(f"Team determined as HOME via team_id matching: {pick_team_name} matches {home_team}")
-                    elif pick_matches_away and not pick_matches_home:
-                        pick_team = "away"
-                        self.logger.debug(f"Team determined as AWAY via team_id matching: {pick_team_name} matches {away_team}")
-                    elif pick_matches_home and pick_matches_away:
-                        # Ambiguous - both match (shouldn't happen, but handle gracefully)
-                        self.logger.warning(f"Team {pick_team_name} matches both home and away teams, cannot determine")
-                        pick_team = None
-            
-            # If team_id matching didn't work, fall back to rationale parsing
-            if not pick_team:
-                # Don't use selection_text for grading - rely on rationale parsing
-                # Helper function for team matching
-                def check_team_match(norm_team_name, rationale_text):
-                    """Check if team name matches rationale (exact or all words present)"""
-                    if norm_team_name in rationale_text:
-                        return True
-                    # Check if all significant words appear (for cases like "nicholls colonels" where words appear separately)
-                    words = norm_team_name.split()
-                    skip_words = {'univ', 'university', 'of', 'the', 'st', 'state', 'univ'}
-                    significant_words = [w for w in words if w not in skip_words and len(w) > 2]
-                    if len(significant_words) >= 2:
-                        # Check if all significant words appear in rationale
-                        all_words_present = all(word in rationale_text for word in significant_words)
-                        if all_words_present:
-                            return True
-                    return False
-            
-            # Initialize match flags
-            home_match = False
-            away_match = False
-            
-            # If we couldn't determine from selection_text, fall back to rationale parsing
-            if not pick_team:
-                # Check if rationale mentions home or away team using normalized names
-                # Check both exact normalized names and variations
-                
-                # Check normalized names first (most reliable)
-                # Also check if all significant words from the normalized name appear in rationale
-                if check_team_match(norm_home_team, rationale_lower) or check_team_match(norm_game_home_team, rationale_lower):
-                    home_match = True
-                if check_team_match(norm_away_team, rationale_lower) or check_team_match(norm_game_away_team, rationale_lower):
-                    away_match = True
-            
-            # Check for common abbreviations (e.g., "LIU" for "Long Island University")
-            # Extract first letters of each word to form potential abbreviations
-            # Also check for abbreviations that skip common words like "univ", "university", "of"
-            def get_abbreviations(team_name_normalized):
-                """Get possible abbreviations from a normalized team name"""
-                abbrevs = set()
-                words = team_name_normalized.split()
-                # Full abbreviation (all words)
-                if words:
-                    abbrevs.add(''.join([w[0] for w in words if len(w) > 0]))
-                # Abbreviation skipping common words (univ, university, of, the)
-                skip_words = {'univ', 'university', 'of', 'the', 'st', 'state'}
-                significant_words = [w for w in words if w not in skip_words]
-                if len(significant_words) >= 2:
-                    abbrevs.add(''.join([w[0] for w in significant_words if len(w) > 0]))
-                # Also check for patterns like "Long Island" -> "LI"
-                if len(words) >= 2:
-                    abbrevs.add(''.join([w[0] for w in words[:3] if len(w) > 0]))  # First 3 words
-                return abbrevs
-            
-            if not home_match:
-                home_abbrevs = get_abbreviations(norm_home_team) | get_abbreviations(norm_game_home_team)
-                for abbrev in home_abbrevs:
-                    if len(abbrev) >= 2 and abbrev.lower() in rationale_lower:
-                        home_match = True
-                        break
-            if not away_match:
-                away_abbrevs = get_abbreviations(norm_away_team) | get_abbreviations(norm_game_away_team)
-                for abbrev in away_abbrevs:
-                    if len(abbrev) >= 2 and abbrev.lower() in rationale_lower:
-                        away_match = True
-                        break
-            
-            # If no normalized match, check variations (but skip very short/common words)
-            # Check both teams' variations and find the best match
-            if not home_match and not away_match:
-                best_home_match = None
-                best_away_match = None
-                
-                # Check home team variations - find the longest match
-                for variation in home_variations:
-                    if variation and len(variation) > 3:  # Skip very short variations that are too common
-                        if variation.lower() in rationale_lower:
-                            if best_home_match is None or len(variation) > len(best_home_match):
-                                best_home_match = variation
-                
-                # Check away team variations - find the longest match
-                for variation in away_variations:
-                    if variation and len(variation) > 3:  # Skip very short variations that are too common
-                        if variation.lower() in rationale_lower:
-                            if best_away_match is None or len(variation) > len(best_away_match):
-                                best_away_match = variation
-                
-                # Use the best match - prefer longer/more specific matches
-                if best_home_match and best_away_match:
-                    # Both matched - use the longer/more specific one
-                    # If same length, prefer the one that's more team-specific
-                    # (check if full normalized team name appears, or prefer away if equal)
-                    if len(best_home_match) > len(best_away_match):
-                        home_match = True
-                    elif len(best_away_match) > len(best_home_match):
-                        away_match = True
-                    else:
-                        # Same length - check if full normalized names appear
-                        if norm_away_team in rationale_lower or norm_game_away_team in rationale_lower:
-                            away_match = True
-                        elif norm_home_team in rationale_lower or norm_game_home_team in rationale_lower:
-                            home_match = True
-                        else:
-                            # Still tied - this is ambiguous, prefer neither
-                            # (will fall through to return None)
-                            pass
-                elif best_home_match:
-                    home_match = True
-                elif best_away_match:
-                    away_match = True
-            
-            # Determine team based on matches
-            if home_match and away_match:
-                # Both teams mentioned - try to disambiguate by checking which team is mentioned with the spread
-                # Look for patterns like "Team +X" or "Team -X" or "Team X" where X is the line
-                line_str = f"{abs(line):.1f}".rstrip('0').rstrip('.')
-                
-                # Get significant words from team names for matching
-                def get_significant_words(team_name):
-                    words = team_name.split()
-                    skip_words = {'univ', 'university', 'of', 'the', 'st', 'state', 'univ'}
-                    return [w for w in words if w not in skip_words and len(w) > 2]
-                
-                home_sig_words = get_significant_words(norm_home_team) + get_significant_words(norm_game_home_team)
-                away_sig_words = get_significant_words(norm_away_team) + get_significant_words(norm_game_away_team)
-                
-                # Check if any significant word from home team appears with the spread line
-                home_with_line = False
-                for word in set(home_sig_words):
-                    if (f"{word} {line_str}" in rationale_lower or 
-                        f"{word} +{line_str}" in rationale_lower or
-                        f"{word} -{line_str}" in rationale_lower):
-                        home_with_line = True
-                        break
-                
-                # Check if any significant word from away team appears with the spread line
-                away_with_line = False
-                for word in set(away_sig_words):
-                    if (f"{word} {line_str}" in rationale_lower or 
-                        f"{word} +{line_str}" in rationale_lower or
-                        f"{word} -{line_str}" in rationale_lower):
-                        away_with_line = True
-                        break
-                
-                if away_with_line and not home_with_line:
-                    pick_team = "away"
-                    self.logger.debug(f"Both teams matched, but away team mentioned with spread line, determined as AWAY")
-                elif home_with_line and not away_with_line:
-                    pick_team = "home"
-                    self.logger.debug(f"Both teams matched, but home team mentioned with spread line, determined as HOME")
-                else:
-                    # Still ambiguous, return None
-                    self.logger.debug(f"Both teams matched in rationale, cannot determine pick team")
-                    pick_team = None
-            elif home_match:
-                pick_team = "home"
-                self.logger.debug(f"Team determined as HOME via name matching")
-            elif away_match:
-                pick_team = "away"
-                self.logger.debug(f"Team determined as AWAY via name matching")
-            else:
-                # No match found - cannot determine team
-                self.logger.debug(f"No team name found in rationale, cannot determine pick team")
-                pick_team = None
-        
-        # If we couldn't determine which team, return None
-        if not pick_team and bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
-            self.logger.debug(f"Could not determine pick team for bet_type={bet_type}, rationale={pick_rationale[:100]}")
-            return None
-        
-        # Debug logging for team determination
-        if bet_type == BetType.SPREAD:
-            self.logger.debug(f"Spread bet: pick_team={pick_team}, line={line}, rationale={pick_rationale[:100]}")
-        
-        # Calculate result based on bet type
-        if bet_type == BetType.SPREAD:
-            if pick_team == "home":
-                # Home team spread: home needs to cover the spread
-                # For home team with -7.5: home must win by more than 7.5 (margin > 7.5)
-                # For home team with +7.5: home gets 7.5 points, wins if they lose by 7 or less (margin > -7.5)
-                # Formula: home wins if (home_score + line) > away_score
-                # Which simplifies to: home_score - away_score > -line
-                # Or: margin > -line (where margin = home_score - away_score)
-                margin = home_score - away_score
-                line_negated = -line
-                if abs(margin - line_negated) < 0.01:  # Floating point comparison with tolerance
-                    self.logger.debug(f"Home spread PUSH: margin={margin}, line={line}, -line={line_negated}")
-                    return BetResult.PUSH
-                elif margin > line_negated:
-                    self.logger.debug(f"Home spread WIN: margin={margin}, line={line}, -line={line_negated}, check: {margin} > {line_negated} = True")
-                    return BetResult.WIN
-                else:
-                    self.logger.debug(f"Home spread LOSS: margin={margin}, line={line}, -line={line_negated}, check: {margin} > {line_negated} = False")
-                    return BetResult.LOSS
-            elif pick_team == "away":
-                # Away team spread: away needs to cover the spread
-                # For away team with +7.5: away gets 7.5 points, wins if they lose by 7 or less (margin >= -7)
-                # For away team with -1.5: away must win by more than 1.5 (margin > 1.5)
-                # The line is stored as positive for underdogs (+7.5 stored as 7.5) and negative for favorites
-                # Formula: away wins if (away_score + line) > home_score
-                # Which simplifies to: away_score - home_score > -line
-                # Or: margin > -line (where margin = away_score - home_score)
-                margin = away_score - home_score
-                # For positive lines (underdog): line > 0, so -line < 0
-                #   Example: line = 7.5, margin = -2, check: -2 > -7.5 → TRUE → WIN ✓
-                #   Example: line = 7.5, margin = -8, check: -8 > -7.5 → FALSE → LOSS ✓
-                # For negative lines (favorite): line < 0, so -line > 0  
-                #   Example: line = -1.5, margin = 2, check: 2 > 1.5 → TRUE → WIN ✓
-                #   Example: line = -1.5, margin = 1, check: 1 > 1.5 → FALSE → LOSS ✓
-                # Check for exact equality first (for whole number lines that can push)
-                # Use a small tolerance for floating point comparison
-                line_negated = -line
-                if abs(margin - line_negated) < 0.01:  # Floating point comparison with tolerance
-                    self.logger.debug(f"Away spread PUSH: margin={margin}, line={line}, -line={line_negated}")
-                    return BetResult.PUSH
-                elif margin > line_negated:
-                    self.logger.debug(f"Away spread WIN: margin={margin}, line={line}, -line={line_negated}, check: {margin} > {line_negated} = True")
-                    return BetResult.WIN
-                else:
-                    # margin < -line
-                    self.logger.debug(f"Away spread LOSS: margin={margin}, line={line}, -line={line_negated}, check: {margin} > {line_negated} = False")
-                    return BetResult.LOSS
-        
-        elif bet_type == BetType.TOTAL:
-            # Total: Over/Under
-            # CRITICAL: betting_line_team MUST be provided from database (no fallbacks)
-            if not betting_line_team:
-                self.log_error(
-                    f"Cannot determine TOTAL bet result: betting_line_team is required but not provided. "
-                    f"Pick must have a corresponding betting line in the database."
-                )
-                return None
-            
-            total_score = home_score + away_score
-            betting_line_team_lower = betting_line_team.lower().strip()
-            
-            if betting_line_team_lower == "under":
-                # Under bet: win if total < line
-                if total_score < line:
-                    self.logger.debug(f"Under bet WIN: total_score={total_score} < line={line}")
-                    return BetResult.WIN
-                elif total_score > line:
-                    self.logger.debug(f"Under bet LOSS: total_score={total_score} > line={line}")
-                    return BetResult.LOSS
-                else:
-                    self.logger.debug(f"Under bet PUSH: total_score={total_score} == line={line}")
-                    return BetResult.PUSH
-            elif betting_line_team_lower == "over":
-                # Over bet: win if total > line
-                if total_score > line:
-                    self.logger.debug(f"Over bet WIN: total_score={total_score} > line={line}")
-                    return BetResult.WIN
-                elif total_score < line:
-                    self.logger.debug(f"Over bet LOSS: total_score={total_score} < line={line}")
-                    return BetResult.LOSS
-                else:
-                    self.logger.debug(f"Over bet PUSH: total_score={total_score} == line={line}")
-                    return BetResult.PUSH
-            else:
-                self.log_error(
-                    f"Invalid betting_line_team value: '{betting_line_team}'. "
-                    f"Expected 'over' or 'under'. Cannot determine bet result."
-                )
-                return None
-        
-        elif bet_type == BetType.MONEYLINE:
-            # Moneyline: pick team to win
-            if pick_team == "home" and home_score > away_score:
-                return BetResult.WIN
-            elif pick_team == "away" and away_score > home_score:
-                return BetResult.WIN
-            elif home_score == away_score:
-                return BetResult.PUSH  # Tie (rare in basketball)
-            else:
-                return BetResult.LOSS
-        
-        elif bet_type == BetType.PARLAY:
-            # Parlay: all legs must win
-            # For now, we'll need to check each leg
-            # This is complex - for MVP, we'll return None and handle separately
-            return None
-        
-        return None
     
     def _calculate_payout_from_attrs(
         self, 

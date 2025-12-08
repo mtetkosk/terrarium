@@ -367,19 +367,6 @@ class Auditor(BaseAgent):
             period_end=period_end
         )
     
-    def detect_model_drift(
-        self,
-        predictions: List,
-        results: List[Bet]
-    ) -> Dict[str, Any]:
-        """Detect model drift"""
-        # Placeholder for model drift detection
-        # Would compare predicted vs actual outcomes
-        return {
-            "drift_detected": False,
-            "drift_magnitude": 0.0,
-            "notes": "Model drift detection not yet implemented"
-        }
     
     def generate_feedback(self, metrics: AccuracyMetrics) -> Dict[str, Any]:
         """Generate feedback for other agents"""

@@ -446,20 +446,15 @@ class Researcher(BaseAgent):
                     ]
                 }
                 
-                # Then add tool result messages
-                # Truncate large tool results to avoid token limit issues
-                # Reduced limits to keep prompts smaller and more efficient
-                MAX_TOOL_RESULT_SIZE = 8000  # Max characters per tool result (reduced from 12000)
+                # Then add tool result messages, trimming oversized payloads
+                MAX_TOOL_RESULT_SIZE = 8000
                 for tool_call in response["tool_calls"]:
                     call_id = tool_call.get("id", "")
                     result = tool_results.get(call_id, {"error": "No result"})
                     
-                    # Truncate result if it's too large
                     result_str = json.dumps(result)
                     if len(result_str) > MAX_TOOL_RESULT_SIZE:
-                        # Try to truncate intelligently - if it's a list, keep first N items
                         if isinstance(result, list) and len(result) > 0:
-                            # Prioritize items: keep advanced stats sources first, then truncate content within items
                             prioritized = sorted(
                                 result,
                                 key=lambda x: (
@@ -469,14 +464,11 @@ class Researcher(BaseAgent):
                                 reverse=True
                             )
                             
-                            # Keep top items and truncate content within each
                             truncated = []
-                            for item in prioritized[:5]:  # Reduced from 10 to 5 items to save tokens
+                            for item in prioritized[:5]:
                                 if isinstance(item, dict):
                                     truncated_item = item.copy()
-                                    # More aggressive truncation to reduce token usage
                                     if 'content' in truncated_item and isinstance(truncated_item['content'], str):
-                                        # Reduced from 5000 to 2000 chars per content field
                                         if len(truncated_item['content']) > 2000:
                                             truncated_item['content'] = truncated_item['content'][:2000] + "... [truncated]"
                                     truncated.append(truncated_item)

@@ -289,7 +289,6 @@ class DataConverter:
                 "confidence": pick.confidence,
                 "confidence_score": pick.confidence_score,
                 "best_bet": pick.best_bet,
-                "favorite": pick.favorite,  # Backwards compatibility
                 "book": pick.book,
                 "rationale": pick.rationale
             }

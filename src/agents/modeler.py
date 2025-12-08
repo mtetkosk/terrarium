@@ -503,11 +503,105 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
                     if cleaned_notes != model_notes:
                         model['model_notes'] = cleaned_notes
             
+            # Transform predictions to expected report format
+            for model in game_models:
+                self._transform_predictions_format(model)
+            
             return game_models
             
         except Exception as e:
             self.log_error(f"Error in batch LLM modeling: {e}", exc_info=True)
             return []
+    
+    def _transform_predictions_format(self, model: Dict[str, Any]) -> None:
+        """Normalize predictions to provide both flat and nested formats."""
+        predictions = model.get('predictions', {})
+        if not predictions:
+            predictions = {}
+            model['predictions'] = predictions
+            
+        predicted_score = model.get('predicted_score', {})
+        
+        # Extract values - handle both flat format and nested format
+        margin = predictions.get('margin')
+        if margin is None and isinstance(predictions.get('spread'), dict):
+            margin = predictions['spread'].get('projected_margin')
+            
+        total_val = predictions.get('total')
+        # If total is already a dict, extract the projected_total value
+        if isinstance(total_val, dict):
+            total_val = total_val.get('projected_total')
+        
+        win_probs = predictions.get('win_probs', {})
+        if not win_probs and isinstance(predictions.get('moneyline'), dict):
+            ml = predictions['moneyline']
+            win_probs = {
+                'away': ml.get('away_win_prob', ml.get('away_win_probability', 0)),
+                'home': ml.get('home_win_prob', ml.get('home_win_probability', 0))
+            }
+            
+        confidence = predictions.get('confidence', 0.5)
+        if not isinstance(confidence, (int, float)):
+            confidence = 0.5
+        
+        # Also try to get margin/total from predicted_score if not in predictions
+        if margin is None and predicted_score:
+            away_score = predicted_score.get('away_score', 0)
+            home_score = predicted_score.get('home_score', 0)
+            if away_score and home_score:
+                margin = home_score - away_score  # Home perspective
+                
+        if total_val is None and predicted_score:
+            away_score = predicted_score.get('away_score', 0)
+            home_score = predicted_score.get('home_score', 0)
+            if away_score and home_score:
+                total_val = away_score + home_score
+        
+        # Ensure margin and total_val are numbers, not dicts
+        if isinstance(margin, dict):
+            margin = margin.get('projected_margin')
+        if isinstance(total_val, dict):
+            total_val = total_val.get('projected_total')
+        
+        # Build/update predictions structure with BOTH formats for compatibility
+        # Keep top-level values for persistence AND nested dicts for report generator
+        
+        # Spread - create nested structure but KEEP top-level margin
+        if margin is not None:
+            predictions['margin'] = float(margin)  # Keep for persistence
+            predictions['spread'] = {
+                'projected_margin': float(margin),
+                'projected_line': f"{margin:+.1f}" if margin else None,
+                'model_confidence': float(confidence),
+                'confidence': float(confidence)
+            }
+        
+        # Total - create nested structure but KEEP top-level total as number
+        if total_val is not None:
+            predictions['total'] = float(total_val)  # Keep as NUMBER for persistence
+            predictions['total_details'] = {  # Use different key for nested format
+                'projected_total': float(total_val),
+                'model_confidence': float(confidence),
+                'confidence': float(confidence)
+            }
+        
+        # Moneyline
+        if win_probs:
+            away_prob = float(win_probs.get('away', 0))
+            home_prob = float(win_probs.get('home', 0))
+            predictions['win_probs'] = {'away': away_prob, 'home': home_prob}  # Keep for persistence
+            predictions['moneyline'] = {
+                'away_win_prob': away_prob,
+                'home_win_prob': home_prob,
+                'away_win_probability': away_prob,
+                'home_win_probability': home_prob,
+                'team_probabilities': {'away': away_prob, 'home': home_prob},
+                'model_confidence': float(confidence),
+                'confidence': float(confidence)
+            }
+        
+        # Keep confidence at top level
+        predictions['confidence'] = float(confidence)
     
     def _create_fallback_model(self, game: Dict[str, Any], betting_lines: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -570,7 +664,14 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
         # Try to estimate predicted score from total if available
         predicted_score = {"away_score": 0.0, "home_score": 0.0}
         if "total" in predictions:
-            total = predictions["total"].get("projected_total", 0.0)
+            total_data = predictions["total"]
+            # Handle both formats: total as float or dict with projected_total
+            if isinstance(total_data, dict):
+                total = total_data.get("projected_total", 0.0)
+            elif isinstance(total_data, (int, float)):
+                total = total_data
+            else:
+                total = 0.0
             if total > 0:
                 # Simple estimate: split total evenly (can be improved later)
                 predicted_score = {"away_score": total / 2, "home_score": total / 2}

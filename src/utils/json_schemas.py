@@ -229,7 +229,6 @@ def get_picker_schema() -> dict:
                                 "confidence": {"type": "number"},
                                 "confidence_score": {"type": "integer"},
                                 "best_bet": {"type": "boolean"},
-                                "favorite": {"type": "boolean"},  # Deprecated, use best_bet instead
                                 "correlation_group": {"type": "string"},
                                 "notes": {"type": "string"},
                                 "book": {"type": "string"}
@@ -238,10 +237,6 @@ def get_picker_schema() -> dict:
                         }
                     },
                     "overall_strategy_summary": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    },
-                    "favorites_summary": {
                         "type": "array",
                         "items": {"type": "string"}
                     }
