@@ -16,7 +16,14 @@ from sqlalchemy import func, or_, and_
 from src.agents.results_processor import ResultsProcessor
 from src.data.models import BetResult, BetType
 from src.data.storage import BetModel, Database, GameModel, PickModel, GameInsightModel, PredictionModel, BettingLineModel, TeamModel
-from src.prompts import EMAIL_GENERATOR_RECAP_SYSTEM_PROMPT
+from src.prompts import (
+    best_bet_summary_prompts,
+    daily_recap_prompts,
+    highlights_prompts,
+    slate_overview_prompts,
+    watch_blurbs_prompts,
+    watch_description_prompts,
+)
 from src.utils.config import config
 from src.utils.llm import LLMClient
 from src.utils.logging import get_logger
@@ -208,6 +215,162 @@ class EmailGenerator:
         else:
             return "Low"
     
+    def _generate_slate_summary(self, target_date: date) -> Optional[str]:
+        """
+        Generate a 1-2 sentence summary characterizing the day's slate of games using LLM.
+        
+        Gathers KenPom rank data and passes it to an LLM to generate a natural,
+        varied summary about the quality of today's matchups.
+        
+        Args:
+            target_date: Date to analyze
+            
+        Returns:
+            Summary string or None if no games
+        """
+        if not self.db:
+            return None
+        
+        session = self.db.get_session()
+        try:
+            from sqlalchemy import func
+            
+            # Get all games for target date
+            games = session.query(GameModel).filter(
+                func.date(GameModel.date) == target_date
+            ).all()
+            
+            if not games:
+                return None
+            
+            num_games = len(games)
+            
+            # Collect KenPom ranks and team info
+            all_ranks = []
+            matchups = []
+            missing_data_count = 0
+            
+            for game in games:
+                team1_kp, team2_kp = self._get_kenpom_ranks(game, session)
+                team1_name = self._get_team_name(game.team1_id, session)
+                team2_name = self._get_team_name(game.team2_id, session)
+                
+                matchup_info = {
+                    'home': team1_name,
+                    'away': team2_name,
+                    'home_rank': team1_kp,
+                    'away_rank': team2_kp
+                }
+                matchups.append(matchup_info)
+                
+                if team1_kp:
+                    all_ranks.append(team1_kp)
+                else:
+                    missing_data_count += 1
+                    
+                if team2_kp:
+                    all_ranks.append(team2_kp)
+                else:
+                    missing_data_count += 1
+            
+            # Calculate summary stats
+            if all_ranks:
+                avg_rank = sum(all_ranks) / len(all_ranks)
+                top_25_count = sum(1 for r in all_ranks if r <= 25)
+                top_50_count = sum(1 for r in all_ranks if r <= 50)
+                low_major_count = sum(1 for r in all_ranks if r > 200)
+                min_rank = min(all_ranks)
+                max_rank = max(all_ranks)
+            else:
+                avg_rank = None
+                top_25_count = 0
+                top_50_count = 0
+                low_major_count = 0
+                min_rank = None
+                max_rank = None
+            
+            # If LLM not available, use simple fallback
+            if not self.llm_client:
+                if not all_ranks:
+                    return f"Light slate with {num_games} games – limited data available."
+                elif low_major_count >= len(all_ranks) // 2:
+                    return "Mostly low-major matchups today – higher variance expected."
+                elif top_25_count >= 4:
+                    return f"Quality slate with {top_25_count // 2} top-25 matchups."
+                else:
+                    return f"{num_games} games on tap today."
+            
+            # Build context for LLM
+            slate_data = {
+                'num_games': num_games,
+                'avg_kenpom_rank': round(avg_rank, 1) if avg_rank else None,
+                'top_25_teams': top_25_count,
+                'top_50_teams': top_50_count,
+                'low_major_teams_rank_200_plus': low_major_count,
+                'best_ranked_team': min_rank,
+                'worst_ranked_team': max_rank,
+                'teams_missing_data': missing_data_count,
+                'total_teams': num_games * 2
+            }
+            
+            system_prompt, user_prompt = slate_overview_prompts(slate_data)
+
+            response = self.llm_client.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.9,  # Higher temp for more variety
+                max_tokens=100,
+                parse_json=False
+            )
+            
+            if response:
+                # LLM client returns {"raw_response": content} when parse_json=False
+                if isinstance(response, dict):
+                    summary = response.get('raw_response', '')
+                else:
+                    summary = str(response)
+                # Clean up the response
+                if summary:
+                    summary = summary.strip().strip('"').strip("'")
+                    return summary
+            
+            # Fallback if LLM returns empty
+            return f"{num_games} games on the schedule today."
+            
+        except Exception as e:
+            logger.error(f"Error generating slate summary: {e}")
+            return None
+        finally:
+            session.close()
+    
+    def _gather_email_data(
+        self,
+        target_date: date,
+        today_presidents_report: Optional[str],
+        yesterday_games: List[Dict[str, Any]],
+        yesterday_results: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Gather all data needed for email generation, including LLM-generated content.
+        This is called ONCE and the results are used for both HTML and plain text formats.
+        
+        Args:
+            target_date: Date to generate email for
+            today_presidents_report: President's report content
+            yesterday_games: List of yesterday's games
+            yesterday_results: Yesterday's betting results
+            
+        Returns:
+            Dictionary containing all email data (slate_summary, best_games, underdog, picks, etc.)
+        """
+        return {
+            'slate_summary': self._generate_slate_summary(target_date),
+            'best_games': self._get_best_games_to_watch(target_date),
+            'underdog': self._extract_underdog_of_the_day(target_date, today_presidents_report),
+            'all_picks': self._get_today_picks_ordered_by_confidence(target_date),
+            'superlatives': self._generate_superlatives(yesterday_games, yesterday_results) if yesterday_results else None,
+        }
+    
     def generate_email(
         self,
         target_date: Optional[date] = None,
@@ -231,8 +394,6 @@ class EmailGenerator:
         yesterday = target_date - timedelta(days=1)
         
         # Get yesterday's results (for games that happened on yesterday)
-        # results_processor.process() takes target_date and processes bets from target_date - 1
-        # So to get results for games on yesterday, we pass target_date (today)
         yesterday_results = self._get_yesterday_results(target_date)
         
         # Get today's presidents report
@@ -242,20 +403,74 @@ class EmailGenerator:
         today_games = self._get_today_games(target_date)
         yesterday_games = self._get_yesterday_games(yesterday)
         
+        # Gather all LLM-generated content ONCE
+        email_data = self._gather_email_data(target_date, today_presidents_report, yesterday_games, yesterday_results)
+        
         subject = f"Daily Betting Picks - {target_date.strftime('%B %d, %Y')}"
         
         if format_html:
             email_content = self._generate_html_email(
                 target_date, yesterday, recipient_name,
-                yesterday_results, today_presidents_report, today_games, yesterday_games
+                yesterday_results, today_presidents_report, today_games, yesterday_games,
+                email_data
             )
         else:
             email_content = self._generate_plain_text_email(
                 target_date, yesterday, recipient_name,
-                yesterday_results, today_presidents_report, today_games, yesterday_games
+                yesterday_results, today_presidents_report, today_games, yesterday_games,
+                email_data
             )
         
         return subject, email_content
+    
+    def generate_email_both_formats(
+        self,
+        target_date: Optional[date] = None,
+        recipient_name: str = "Friends"
+    ) -> Tuple[str, str, str]:
+        """
+        Generate email content in both HTML and plain text formats with a single set of LLM calls.
+        
+        Args:
+            target_date: Date to generate email for (default: today)
+            recipient_name: Name to address email to
+            
+        Returns:
+            Tuple of (subject, html_content, plain_text_content)
+        """
+        if target_date is None:
+            target_date = date.today()
+        
+        yesterday = target_date - timedelta(days=1)
+        
+        # Get yesterday's results
+        yesterday_results = self._get_yesterday_results(target_date)
+        
+        # Get today's presidents report
+        today_presidents_report = self._get_today_presidents_report(target_date)
+        
+        # Get game information
+        today_games = self._get_today_games(target_date)
+        yesterday_games = self._get_yesterday_games(yesterday)
+        
+        # Gather all LLM-generated content ONCE
+        email_data = self._gather_email_data(target_date, today_presidents_report, yesterday_games, yesterday_results)
+        
+        subject = f"Daily Betting Picks - {target_date.strftime('%B %d, %Y')}"
+        
+        # Generate both formats using the same data
+        html_content = self._generate_html_email(
+            target_date, yesterday, recipient_name,
+            yesterday_results, today_presidents_report, today_games, yesterday_games,
+            email_data
+        )
+        plain_text_content = self._generate_plain_text_email(
+            target_date, yesterday, recipient_name,
+            yesterday_results, today_presidents_report, today_games, yesterday_games,
+            email_data
+        )
+        
+        return subject, html_content, plain_text_content
     
     def _generate_html_email(
         self,
@@ -265,9 +480,10 @@ class EmailGenerator:
         yesterday_results: Optional[Dict[str, Any]],
         today_presidents_report: Optional[str],
         today_games: List[Dict[str, Any]],
-        yesterday_games: List[Dict[str, Any]]
+        yesterday_games: List[Dict[str, Any]],
+        email_data: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Generate HTML formatted email"""
+        """Generate HTML formatted email using pre-gathered data"""
         html_parts = []
         
         # HTML header with styles
@@ -440,8 +656,18 @@ class EmailGenerator:
         html_parts.append(f'<p style="font-size: 1.1em;">Hey {recipient_name}! 👋</p>')
         html_parts.append('<p style="color: #555; margin-top: -10px;">Ready for another day of action? Let\'s dive in.</p>')
         
+        # Use pre-gathered data if available, otherwise fall back to generating
+        slate_summary = email_data.get('slate_summary') if email_data else self._generate_slate_summary(target_date)
+        best_games = email_data.get('best_games') if email_data else self._get_best_games_to_watch(target_date)
+        underdog = email_data.get('underdog') if email_data else self._extract_underdog_of_the_day(target_date, today_presidents_report)
+        all_picks = email_data.get('all_picks') if email_data else self._get_today_picks_ordered_by_confidence(target_date)
+        superlatives = email_data.get('superlatives') if email_data else (self._generate_superlatives(yesterday_games, yesterday_results) if yesterday_results else None)
+        
+        # Slate Summary
+        if slate_summary:
+            html_parts.append(f'<p style="color: #666; font-style: italic; margin-top: 10px; padding: 10px 15px; background-color: #f8f9fa; border-radius: 4px;">📋 <strong>Today\'s Slate:</strong> {slate_summary}</p>')
+        
         # Best Games to Watch
-        best_games = self._get_best_games_to_watch(target_date)
         if best_games:
             html_parts.append('<div class="section">')
             html_parts.append('<h2><span class="emoji">🎯</span> BEST GAMES TO WATCH</h2>')
@@ -466,8 +692,7 @@ class EmailGenerator:
                 html_parts.append(f'<div class="performance">{performance_text}</div>')
                 html_parts.append('</div>')
                 
-                # 2.5. Yesterday's Superlatives
-                superlatives = self._generate_superlatives(yesterday_games, yesterday_results)
+                # 2.5. Yesterday's Superlatives (use pre-gathered data)
                 if superlatives:
                     html_parts.append('<div class="section">')
                     html_parts.append('<h2><span class="emoji">🏆</span> YESTERDAY\'S HIGHLIGHTS</h2>')
@@ -477,8 +702,7 @@ class EmailGenerator:
                         html_parts.append('</div>')
                     html_parts.append('</div>')
         
-        # 3. Underdog of the Day (if available)
-        underdog = self._extract_underdog_of_the_day(target_date, today_presidents_report)
+        # 3. Underdog of the Day (use pre-gathered data)
         if underdog:
             html_parts.append('<div class="section">')
             html_parts.append('<h2><span class="emoji">🐕</span> UNDERDOG OF THE DAY</h2>')
@@ -504,8 +728,7 @@ class EmailGenerator:
             html_parts.append('</div>')
             html_parts.append('</div>')
         
-        # 4. All picks ordered by confidence
-        all_picks = self._get_today_picks_ordered_by_confidence(target_date)
+        # 4. All picks ordered by confidence (use pre-gathered data)
         if all_picks:
             html_parts.append('<div class="section">')
             html_parts.append('<h2><span class="emoji">⭐</span> TODAY\'S PICKS</h2>')
@@ -570,17 +793,29 @@ class EmailGenerator:
         yesterday_results: Optional[Dict[str, Any]],
         today_presidents_report: Optional[str],
         today_games: List[Dict[str, Any]],
-        yesterday_games: List[Dict[str, Any]]
+        yesterday_games: List[Dict[str, Any]],
+        email_data: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Generate plain text email (for file saving)"""
+        """Generate plain text email using pre-gathered data"""
         email_lines = []
+        
+        # Use pre-gathered data if available, otherwise fall back to generating
+        slate_summary = email_data.get('slate_summary') if email_data else self._generate_slate_summary(target_date)
+        best_games = email_data.get('best_games') if email_data else self._get_best_games_to_watch(target_date)
+        underdog = email_data.get('underdog') if email_data else self._extract_underdog_of_the_day(target_date, today_presidents_report)
+        all_picks = email_data.get('all_picks') if email_data else self._get_today_picks_ordered_by_confidence(target_date)
+        superlatives = email_data.get('superlatives') if email_data else (self._generate_superlatives(yesterday_games, yesterday_results) if yesterday_results else None)
         
         email_lines.append(f"Hey {recipient_name}! 👋")
         email_lines.append("Ready for another day of action? Let's dive in.")
         email_lines.append("")
         
-        # Best Games to Watch
-        best_games = self._get_best_games_to_watch(target_date)
+        # Slate Summary (use pre-gathered data)
+        if slate_summary:
+            email_lines.append(f"📋 Today's Slate: {slate_summary}")
+            email_lines.append("")
+        
+        # Best Games to Watch (use pre-gathered data)
         if best_games:
             email_lines.append("🎯 BEST GAMES TO WATCH")
             email_lines.append("")
@@ -603,8 +838,7 @@ class EmailGenerator:
                 email_lines.append(performance_text)
                 email_lines.append("")
                 
-                # 2.5. Yesterday's Superlatives
-                superlatives = self._generate_superlatives(yesterday_games, yesterday_results)
+                # 2.5. Yesterday's Superlatives (use pre-gathered data)
                 if superlatives:
                     email_lines.append("🏆 YESTERDAY'S HIGHLIGHTS")
                     email_lines.append("-" * 60)
@@ -612,8 +846,7 @@ class EmailGenerator:
                         email_lines.append(f"  {key}: {value}")
                     email_lines.append("")
         
-        # 3. Underdog of the Day (if available)
-        underdog = self._extract_underdog_of_the_day(target_date, today_presidents_report)
+        # 3. Underdog of the Day (use pre-gathered data)
         if underdog:
             email_lines.append("🐕 UNDERDOG OF THE DAY")
             email_lines.append("-" * 60)
@@ -637,8 +870,7 @@ class EmailGenerator:
             
             email_lines.append("")
         
-        # 4. All picks ordered by confidence
-        all_picks = self._get_today_picks_ordered_by_confidence(target_date)
+        # 4. All picks ordered by confidence (use pre-gathered data)
         if all_picks:
             email_lines.append("⭐ TODAY'S PICKS")
             email_lines.append("=" * 80)
@@ -982,8 +1214,26 @@ class EmailGenerator:
                             pick_team_formatted = self._format_team_with_rank(team1_name, team1_kp)
                         selection = f"{pick_team_formatted} {pick.line:+.1f}"
                 elif pick.bet_type == BetType.TOTAL:
-                    rationale_lower = (pick.rationale or "").lower()
-                    over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
+                    # First try to get Over/Under from selection_text which is authoritative
+                    if pick.selection_text:
+                        selection_upper = pick.selection_text.upper()
+                        if "OVER" in selection_upper:
+                            over_under = "Over"
+                        elif "UNDER" in selection_upper:
+                            over_under = "Under"
+                        else:
+                            # Fallback: infer from rationale if selection_text doesn't have it
+                            rationale_lower = (pick.rationale or "").lower()
+                            # Use more specific pattern matching to avoid false matches like "uncertainty"
+                            over_match = re.search(r'\bover\s+\d', rationale_lower) or "total_over" in rationale_lower or "over edge" in rationale_lower
+                            under_match = re.search(r'\bunder\s+\d', rationale_lower) or "total_under" in rationale_lower or "under edge" in rationale_lower
+                            over_under = "Over" if over_match and not under_match else "Under"
+                    else:
+                        # No selection_text, infer from rationale
+                        rationale_lower = (pick.rationale or "").lower()
+                        over_match = re.search(r'\bover\s+\d', rationale_lower) or "total_over" in rationale_lower or "over edge" in rationale_lower
+                        under_match = re.search(r'\bunder\s+\d', rationale_lower) or "total_under" in rationale_lower or "under edge" in rationale_lower
+                        over_under = "Over" if over_match and not under_match else "Under"
                     selection = f"{over_under} {pick.line:.1f}"
                 elif pick.bet_type == BetType.MONEYLINE:
                     # Use team_id to get official name
@@ -1231,9 +1481,8 @@ class EmailGenerator:
                                 pick_team_formatted = self._format_team_with_rank(team1_name, team1_kp)
                             selection = f"{pick_team_formatted} {pick.line:+.1f}"
                     elif pick.bet_type == BetType.TOTAL:
-                        rationale_lower = (pick.rationale or "").lower()
-                        over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
-                        selection = f"{over_under} {pick.line:.1f}"
+                        # Fallback - shouldn't happen since selection_text should be set
+                        selection = f"Total {pick.line:.1f}"
                     elif pick.bet_type == BetType.MONEYLINE:
                         # Use team_id to get official name
                         if pick.team_id:
@@ -1426,9 +1675,8 @@ class EmailGenerator:
                                 pick_team_formatted = self._format_team_with_rank(team1_name, team1_kp)
                             selection = f"{pick_team_formatted} {pick.line:+.1f}"
                     elif pick.bet_type == BetType.TOTAL:
-                        rationale_lower = (pick.rationale or "").lower()
-                        over_under = "Over" if "over" in rationale_lower and "under" not in rationale_lower else "Under"
-                        selection = f"{over_under} {pick.line:.1f}"
+                        # Fallback - shouldn't happen since selection_text should be set
+                        selection = f"Total {pick.line:.1f}"
                     elif pick.bet_type == BetType.MONEYLINE:
                         # Use team_id to get official name
                         if pick.team_id:
@@ -1667,40 +1915,7 @@ class EmailGenerator:
         
         games_list = "\n".join(games_text)
         
-        system_prompt = """You are a sports writer selecting the most exciting games to watch for a daily betting email newsletter.
-
-Your task: Select the 3 most exciting/compelling games from the list and write a short, engaging blurb (1-2 sentences, max 120 characters) for each explaining why it's worth watching.
-
-Selection criteria (prioritize in this order):
-1. Top-ranked matchups (both teams in top 50)
-2. Rivalry games
-3. Historic/notable venues
-4. Extremely close projected games (margin ≤ 2 points)
-5. High-scoring shootouts (projected total ≥ 170) or defensive battles (≤ 115)
-6. Games with interesting context/storylines
-
-For each selected game, write a unique, specific blurb that:
-- Explains what makes THIS game special
-- Avoids generic phrases unless truly exceptional
-- Is conversational and exciting
-- Varies language across games (don't repeat the same phrases)
-
-Output format (JSON):
-{
-  "selected_games": [
-    {
-      "matchup": "Team A @ Team B",
-      "description": "Your engaging 1-2 sentence blurb here"
-    },
-    ...
-  ]
-}"""
-        
-        user_prompt = f"""Select the 3 most exciting games from today's slate and write engaging blurbs:
-
-{games_list}
-
-Return exactly 3 games in JSON format with matchup and description."""
+        system_prompt, user_prompt = watch_blurbs_prompts(games_list)
         
         try:
             response = self.llm_client.call(
@@ -1813,29 +2028,8 @@ Return exactly 3 games in JSON format with matchup and description."""
             
             context = "\n".join(context_parts) if context_parts else "Standard college basketball matchup"
             
-            system_prompt = """You are a sports writer creating engaging, concise descriptions for "Best Games to Watch" in a daily betting email newsletter.
-
-Your task: Write a 1-2 sentence description (max 150 characters) that explains why this game is worth watching. Be specific, engaging, and avoid generic phrases like "high-scoring affair" or "nail-biter" unless truly exceptional.
-
-Focus on:
-- What makes THIS game unique (rankings, venue, rivalry, etc.)
-- Why viewers should tune in
-- Be conversational and exciting
-
-Avoid:
-- Repetitive phrases across different games
-- Generic statements that could apply to any game
-- Overusing "projected" or "expected"
-"""
-            
-            user_prompt = f"""Write a compelling 1-2 sentence description for why viewers should watch this game:
-
-Matchup: {team2_name} @ {team1_name}
-
-Context:
-{context}
-
-Make it unique, specific, and exciting. Focus on what makes THIS game special."""
+            matchup = f"{team2_name} @ {team1_name}"
+            system_prompt, user_prompt = watch_description_prompts(matchup, context)
             
             response = self.llm_client.call(
                 system_prompt=system_prompt,
@@ -1891,23 +2085,9 @@ Make it unique, specific, and exciting. Focus on what makes THIS game special.""
             # Remove historical adjustment and president's analysis sections
             cleaned = self._remove_unwanted_sections(full_rationale)
             
-            system_prompt = """You are a sports betting analyst creating concise summaries for best bets in an email newsletter.
-
-Your task: Take a detailed betting rationale and create a concise 1-2 bullet point summary (max 150 characters total) that explains:
-- The key value proposition (why this bet has edge)
-- The main reasoning (model edge, matchup advantage, etc.)
-
-Format as 1-2 short bullet points. Be specific and avoid generic language."""
-            
-            user_prompt = f"""Summarize this betting rationale into 1-2 concise bullet points:
-
-Matchup: {matchup}
-Selection: {selection}
-
-Full Rationale:
-{cleaned}
-
-Create a brief, engaging summary that captures the key value proposition."""
+            system_prompt, user_prompt = best_bet_summary_prompts(
+                matchup, selection, cleaned
+            )
             
             response = self.llm_client.call(
                 system_prompt=system_prompt,
@@ -2146,34 +2326,7 @@ Create a brief, engaging summary that captures the key value proposition."""
             for i, g in enumerate(games_data)
         ])
         
-        system_prompt = """You are a sports analyst identifying the most interesting highlights from yesterday's college basketball games.
-
-Your task: Analyze the game results and identify 2-4 of the most interesting highlights. Focus on:
-
-1. Biggest Underdog Win: The team that was the biggest underdog (largest positive spread) that won
-2. Biggest Blowout: The game with the largest margin of victory (only if margin ≥ 15 points)
-3. Highest or Lowest Scoring Game: Pick whichever is more interesting/notable (very high ≥170 or very low ≤100)
-4. Most Exciting Game: A close game with margin ≤ 5 points (only if there is one)
-
-For each highlight, write a concise, engaging description (max 80 characters) in the format:
-"Team Name (spread if underdog) description - Final Score"
-
-Output format (JSON):
-{
-  "highlights": [
-    {
-      "category": "Biggest Underdog Win" | "Biggest Blowout" | "Highest Scoring Game" | "Lowest Scoring Game" | "Most Exciting Game",
-      "description": "Your engaging description here"
-    },
-    ...
-  ]
-}"""
-        
-        user_prompt = f"""Analyze these game results from yesterday and identify 2-4 interesting highlights:
-
-{games_text}
-
-Return the highlights in JSON format."""
+        system_prompt, user_prompt = highlights_prompts(games_text)
         
         try:
             response = self.llm_client.call(
@@ -2190,13 +2343,36 @@ Return the highlights in JSON format."""
             else:
                 highlights = []
             
-            # Convert to dictionary format
+            # Convert to dictionary format with de-duplication
             superlatives = {}
-            for highlight in highlights[:4]:  # Limit to 4
+            seen_games = set()  # Track games we've already included
+            
+            for highlight in highlights[:6]:  # Check more than 4 in case we need to skip duplicates
                 category = highlight.get('category', '')
                 description = highlight.get('description', '')
-                if category and description:
-                    superlatives[category] = description
+                game_id = highlight.get('game_id', '')
+                
+                if not category or not description:
+                    continue
+                
+                # Try to identify game from description if game_id not provided
+                if not game_id:
+                    # Extract team names from description for de-duplication
+                    # Look for patterns like "Team wins..." or "Team drops..." or score patterns
+                    game_id = description.lower()[:40]  # Use first 40 chars as rough identifier
+                
+                # Skip if we've already seen this game
+                game_key = game_id.lower().strip()
+                if game_key in seen_games:
+                    logger.debug(f"Skipping duplicate game in superlatives: {game_id}")
+                    continue
+                
+                seen_games.add(game_key)
+                superlatives[category] = description
+                
+                # Stop after 4 unique games
+                if len(superlatives) >= 4:
+                    break
             
             return superlatives
             
@@ -3206,9 +3382,6 @@ Return the highlights in JSON format."""
                         'predictions': predictions  # What we predicted
                     })
             
-            # Use system prompt from prompts.py
-            system_prompt = EMAIL_GENERATOR_RECAP_SYSTEM_PROMPT
-            
             # Format games with predictions - explicitly include both team names
             games_text = []
             for g in games_summary:
@@ -3224,23 +3397,9 @@ Return the highlights in JSON format."""
                 else:
                     games_text.append(f"- {matchup}: Actual: {actual}")
             
-            user_prompt = f"""Generate a daily betting recap for {yesterday.isoformat()}.
-
-Results Summary:
-- Total Picks: {results_summary['total_picks']}
-- Wins: {results_summary['wins']}
-- Losses: {results_summary['losses']}
-- Pushes: {results_summary['pushes']}
-- Accuracy: {results_summary['accuracy']:.1f}%
-
-Notable Games (with predictions):
-{chr(10).join(games_text)}
-
-{f'Modeler Predictions Context:{chr(10)}{modeler_stash[:2000]}' if modeler_stash else ''}
-
-IMPORTANT: Each game listed above shows the full matchup (both team names). When writing about notable games in your recap, you MUST use the complete matchup format "Team A vs. Team B" - never use "[opponent]" or omit team names. Always include both team names when discussing any game.
-
-Write a compelling recap that highlights the key moments and performance. When discussing notable games, ALWAYS mention the full matchup (both teams), what we predicted, and what actually happened. Do NOT mention units, profit, loss, P&L, or dollar amounts."""
+            system_prompt, user_prompt = daily_recap_prompts(
+                yesterday, results_summary, games_text, modeler_stash
+            )
             
             response = self.llm_client.call(
                 system_prompt=system_prompt,

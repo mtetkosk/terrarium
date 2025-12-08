@@ -5,6 +5,7 @@ import os
 from typing import Optional, Dict, Any, List, Callable
 from openai import OpenAI
 from src.utils.logging import get_logger
+from src.prompts import generic_agent_user_prompt
 
 logger = get_logger("utils.llm")
 
@@ -265,12 +266,7 @@ class LLMClient:
         Returns:
             Agent response as dict
         """
-        user_prompt = f"""Please process the following input data and provide your response in the specified JSON format.
-
-Input data:
-{json.dumps(input_data, indent=2)}
-
-Remember to follow your role and responsibilities as defined in your system prompt."""
+        user_prompt = generic_agent_user_prompt(input_data)
         
         self.logger.info(f"Calling {agent_name} agent")
         response = self.call(

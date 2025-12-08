@@ -442,7 +442,8 @@ class LinesScraper:
                         market_key = market.get('key', '')
                         
                         if market_key == 'spreads':
-                            # Spread bets
+                            # Spread bets - process all outcomes first to ensure proper team assignment
+                            spread_outcomes = []
                             for outcome in market.get('outcomes', []):
                                 line_value = outcome.get('point', 0)
                                 odds = outcome.get('price', 0)
@@ -468,26 +469,62 @@ class LinesScraper:
                                 
                                 # If team name is still empty, try to infer from line sign and event teams
                                 if not team_name:
-                                    # Negative line typically means home team (favorite)
-                                    # Positive line typically means away team (underdog)
+                                    # Negative line = favorite, Positive line = underdog
                                     if line_value < 0 and home_team_mapped:
                                         team_name = home_team_mapped
                                     elif line_value > 0 and away_team_mapped:
                                         team_name = away_team_mapped
-                                    # If still empty, try matching by odds (favorites have negative odds)
-                                    if not team_name:
-                                        if odds < 0 and home_team_mapped:
+                                    # If still empty and we have both teams mapped, infer from line sign
+                                    if not team_name and home_team_mapped and away_team_mapped:
+                                        # Negative line = favorite (typically home), positive line = underdog (typically away)
+                                        if line_value < 0:
                                             team_name = home_team_mapped
-                                        elif odds > 0 and away_team_mapped:
+                                        elif line_value > 0:
                                             team_name = away_team_mapped
                                 
+                                spread_outcomes.append({
+                                    'line_value': line_value,
+                                    'odds': odds,
+                                    'team_name': team_name
+                                })
+                            
+                            # Post-process: if we have two outcomes and one team is missing, assign the other team
+                            if len(spread_outcomes) == 2:
+                                outcome1 = spread_outcomes[0]
+                                outcome2 = spread_outcomes[1]
+                                
+                                # If one outcome has a team and the other doesn't, assign the other team
+                                if outcome1['team_name'] and not outcome2['team_name']:
+                                    # Assign the team that's NOT outcome1's team
+                                    if outcome1['team_name'] == matched_game.team1:
+                                        outcome2['team_name'] = matched_game.team2
+                                    elif outcome1['team_name'] == matched_game.team2:
+                                        outcome2['team_name'] = matched_game.team1
+                                    elif home_team_mapped and outcome1['team_name'] == home_team_mapped:
+                                        outcome2['team_name'] = away_team_mapped
+                                    elif away_team_mapped and outcome1['team_name'] == away_team_mapped:
+                                        outcome2['team_name'] = home_team_mapped
+                                
+                                elif not outcome1['team_name'] and outcome2['team_name']:
+                                    # Assign the team that's NOT outcome2's team
+                                    if outcome2['team_name'] == matched_game.team1:
+                                        outcome1['team_name'] = matched_game.team2
+                                    elif outcome2['team_name'] == matched_game.team2:
+                                        outcome1['team_name'] = matched_game.team1
+                                    elif home_team_mapped and outcome2['team_name'] == home_team_mapped:
+                                        outcome1['team_name'] = away_team_mapped
+                                    elif away_team_mapped and outcome2['team_name'] == away_team_mapped:
+                                        outcome1['team_name'] = home_team_mapped
+                            
+                            # Create BettingLine objects from processed outcomes
+                            for outcome in spread_outcomes:
                                 all_lines.append(BettingLine(
                                     game_id=matched_game.id or 0,
                                     book=book,
                                     bet_type=BetType.SPREAD,
-                                    line=line_value,
-                                    odds=odds,
-                                    team=team_name or None,
+                                    line=outcome['line_value'],
+                                    odds=outcome['odds'],
+                                    team=outcome['team_name'] or None,
                                     timestamp=datetime.now()
                                 ))
                         
@@ -662,7 +699,8 @@ class LinesScraper:
                         market_key = market.get('key', '')
                         
                         if market_key == 'spreads':
-                            # Spread bets
+                            # Spread bets - process all outcomes first to ensure proper team assignment
+                            spread_outcomes = []
                             for outcome in market.get('outcomes', []):
                                 line_value = outcome.get('point', 0)
                                 odds = outcome.get('price', 0)
@@ -688,26 +726,62 @@ class LinesScraper:
                                 
                                 # If team name is still empty, try to infer from line sign and event teams
                                 if not team_name:
-                                    # Negative line typically means home team (favorite)
-                                    # Positive line typically means away team (underdog)
+                                    # Negative line = favorite, Positive line = underdog
                                     if line_value < 0 and home_team_mapped:
                                         team_name = home_team_mapped
                                     elif line_value > 0 and away_team_mapped:
                                         team_name = away_team_mapped
-                                    # If still empty, try matching by odds (favorites have negative odds)
-                                    if not team_name:
-                                        if odds < 0 and home_team_mapped:
+                                    # If still empty and we have both teams mapped, infer from line sign
+                                    if not team_name and home_team_mapped and away_team_mapped:
+                                        # Negative line = favorite (typically home), positive line = underdog (typically away)
+                                        if line_value < 0:
                                             team_name = home_team_mapped
-                                        elif odds > 0 and away_team_mapped:
+                                        elif line_value > 0:
                                             team_name = away_team_mapped
                                 
+                                spread_outcomes.append({
+                                    'line_value': line_value,
+                                    'odds': odds,
+                                    'team_name': team_name
+                                })
+                            
+                            # Post-process: if we have two outcomes and one team is missing, assign the other team
+                            if len(spread_outcomes) == 2:
+                                outcome1 = spread_outcomes[0]
+                                outcome2 = spread_outcomes[1]
+                                
+                                # If one outcome has a team and the other doesn't, assign the other team
+                                if outcome1['team_name'] and not outcome2['team_name']:
+                                    # Assign the team that's NOT outcome1's team
+                                    if outcome1['team_name'] == game.team1:
+                                        outcome2['team_name'] = game.team2
+                                    elif outcome1['team_name'] == game.team2:
+                                        outcome2['team_name'] = game.team1
+                                    elif home_team_mapped and outcome1['team_name'] == home_team_mapped:
+                                        outcome2['team_name'] = away_team_mapped
+                                    elif away_team_mapped and outcome1['team_name'] == away_team_mapped:
+                                        outcome2['team_name'] = home_team_mapped
+                                
+                                elif not outcome1['team_name'] and outcome2['team_name']:
+                                    # Assign the team that's NOT outcome2's team
+                                    if outcome2['team_name'] == game.team1:
+                                        outcome1['team_name'] = game.team2
+                                    elif outcome2['team_name'] == game.team2:
+                                        outcome1['team_name'] = game.team1
+                                    elif home_team_mapped and outcome2['team_name'] == home_team_mapped:
+                                        outcome1['team_name'] = away_team_mapped
+                                    elif away_team_mapped and outcome2['team_name'] == away_team_mapped:
+                                        outcome1['team_name'] = home_team_mapped
+                            
+                            # Create BettingLine objects from processed outcomes
+                            for outcome in spread_outcomes:
                                 lines.append(BettingLine(
                                     game_id=game.id or 0,
                                     book=book,
                                     bet_type=BetType.SPREAD,
-                                    line=line_value,
-                                    odds=odds,
-                                    team=team_name or None,
+                                    line=outcome['line_value'],
+                                    odds=outcome['odds'],
+                                    team=outcome['team_name'] or None,
                                     timestamp=datetime.now()
                                 ))
                         

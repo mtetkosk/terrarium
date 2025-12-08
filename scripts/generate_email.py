@@ -9,7 +9,7 @@ import sys
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.utils.email_generator import EmailGenerator
+from src.utils.email.email_generator import EmailGenerator
 from src.data.storage import Database
 from src.utils.logging import setup_logging
 from src.utils.config import config
@@ -67,44 +67,27 @@ def main():
     email_generator = EmailGenerator(db)
     
     try:
-        # Generate email
+        # Generate email - both formats with a single set of LLM calls
         logger.info(f"Generating email for {target_date}")
-        # Always generate HTML version for sending, plain text for file saving
-        subject, email_content = email_generator.generate_email(
+        
+        subject, html_content, plain_text = email_generator.generate_email_both_formats(
             target_date=target_date,
-            recipient_name=args.recipient,
-            format_html=True  # Always use HTML for better formatting
+            recipient_name=args.recipient
         )
         
         # Save email (plain text version for file)
         if args.output:
             output_path = Path(args.output)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            # Generate plain text version for file
-            _, plain_text = email_generator.generate_email(
-                target_date=target_date,
-                recipient_name=args.recipient,
-                format_html=False
-            )
             with open(output_path, 'w') as f:
                 f.write(f"Subject: {subject}\n\n")
                 f.write(plain_text)
             logger.info(f"Email saved to {output_path}")
         else:
             # Save plain text version to default location
-            _, plain_text = email_generator.generate_email(
-                target_date=target_date,
-                recipient_name=args.recipient,
-                format_html=False
-            )
             email_generator.save_email(f"Subject: {subject}\n\n{plain_text}", target_date)
         
-        # Print plain text version to console
-        _, plain_text = email_generator.generate_email(
-            target_date=target_date,
-            recipient_name=args.recipient,
-            format_html=False
-        )
+        # Print plain text version to console (reuse already generated)
         print("\n" + "=" * 80)
         print("GENERATED EMAIL")
         print("=" * 80)
@@ -119,7 +102,7 @@ def main():
                 recipients = [r.strip() for r in args.recipients.split(',') if r.strip()]
             
             logger.info("Sending email...")
-            success = email_generator.send_email(subject, email_content, target_date, recipients, send_html=True)
+            success = email_generator.send_email(subject, html_content, target_date, recipients, send_html=True)
             if success:
                 logger.info("Email sent successfully!")
                 return 0

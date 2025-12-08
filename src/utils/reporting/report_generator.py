@@ -251,9 +251,9 @@ class ReportGenerator:
             lines.append("-" * 80)
             lines.append("")
         
-        # Separate best bets from other picks (best_bet is the primary field, favorite is deprecated)
-        favorite_picks = [p for p in approved_picks if p.best_bet or p.favorite]  # Support both for backwards compatibility
-        other_picks = [p for p in approved_picks if not (p.best_bet or p.favorite)]
+        # Separate best bets from other picks (best_bet only)
+        favorite_picks = [p for p in approved_picks if p.best_bet]
+        other_picks = [p for p in approved_picks if not p.best_bet]
         
         total_units = sum(p.stake_units for p in favorite_picks)
         total_amount = sum(p.stake_amount for p in favorite_picks)
@@ -932,10 +932,15 @@ class ReportGenerator:
                         spread_pred = predictions['spread']
                         lines.append(f"    Projected Margin: {spread_pred.get('projected_margin', 'N/A')}")
                         lines.append(f"    Model Confidence: {spread_pred.get('model_confidence', 0):.1%}")
-                    elif pick.bet_type.value == 'total' and 'total' in predictions:
-                        total_pred = predictions['total']
-                        lines.append(f"    Projected Total: {total_pred.get('projected_total', 'N/A')}")
-                        lines.append(f"    Model Confidence: {total_pred.get('model_confidence', 0):.1%}")
+                    elif pick.bet_type.value == 'total' and ('total' in predictions or 'total_details' in predictions):
+                        # Handle both formats: total as float or total_details as dict
+                        total_pred = predictions.get('total_details') or predictions.get('total')
+                        if isinstance(total_pred, dict):
+                            lines.append(f"    Projected Total: {total_pred.get('projected_total', 'N/A')}")
+                            lines.append(f"    Model Confidence: {total_pred.get('model_confidence', 0):.1%}")
+                        elif isinstance(total_pred, (int, float)):
+                            lines.append(f"    Projected Total: {total_pred}")
+                            lines.append(f"    Model Confidence: {predictions.get('confidence', 0):.1%}")
                     elif pick.bet_type.value == 'moneyline' and 'moneyline' in predictions:
                         ml_pred = predictions['moneyline']
                         # Handle both formats: team_probabilities dict or direct away_win_probability/home_win_probability
@@ -1244,13 +1249,21 @@ class ReportGenerator:
                         # Get confidence - check both 'confidence' and 'model_confidence' for backward compatibility
                         spread_confidence = spread.get('confidence') or spread.get('model_confidence', 0) or 0
                         lines.append(f"    Confidence: {spread_confidence:.1%}")
-                    if "total" in predictions:
-                        total = predictions["total"]
-                        projected_total = total.get('projected_total', 'N/A')
+                    # Check for total - handle both formats:
+                    # 1. predictions.total as dict with projected_total (old format)
+                    # 2. predictions.total as float + predictions.total_details as dict (new format)
+                    total_data = predictions.get("total_details") or predictions.get("total")
+                    if total_data is not None:
+                        if isinstance(total_data, dict):
+                            projected_total = total_data.get('projected_total', 'N/A')
+                            total_confidence = total_data.get('confidence') or total_data.get('model_confidence', 0) or 0
+                        elif isinstance(total_data, (int, float)):
+                            projected_total = total_data
+                            total_confidence = predictions.get('confidence', 0) or 0
+                        else:
+                            projected_total = 'N/A'
+                            total_confidence = 0
                         lines.append(f"    Total: {projected_total}")
-                        
-                        # Get confidence - check both 'confidence' and 'model_confidence' for backward compatibility
-                        total_confidence = total.get('confidence') or total.get('model_confidence', 0) or 0
                         lines.append(f"    Confidence: {total_confidence:.1%}")
                     if "moneyline" in predictions:
                         ml = predictions["moneyline"]
