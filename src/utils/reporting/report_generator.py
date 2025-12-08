@@ -1216,31 +1216,75 @@ class ReportGenerator:
                     lines.append("  Predictions:")
                     if "spread" in predictions:
                         spread = predictions["spread"]
-                        lines.append(f"    Spread: {spread.get('projected_line', 'N/A')} (Margin: {spread.get('projected_margin', 'N/A')})")
-                        lines.append(f"    Confidence: {spread.get('model_confidence', 0):.1%}")
+                        # Format spread line from away_line, home_line, or projected_margin
+                        projected_margin = spread.get('projected_margin')
+                        away_line = spread.get('away_line')
+                        home_line = spread.get('home_line')
+                        projected_line = spread.get('projected_line')  # Check for this key too
+                        
+                        # Determine spread line format - prioritize projected_line if available
+                        if projected_line is not None:
+                            spread_line = str(projected_line)
+                        elif away_line is not None:
+                            spread_line = f"Away {away_line:+.1f}"
+                        elif home_line is not None:
+                            spread_line = f"Home {home_line:+.1f}"
+                        elif projected_margin is not None:
+                            spread_line = f"{projected_margin:+.1f}"
+                        else:
+                            spread_line = "N/A"
+                        
+                        margin_display = f"{projected_margin:.1f}" if projected_margin is not None else "N/A"
+                        # If we have margin but no explicit line, just show margin
+                        if spread_line == "N/A" and projected_margin is not None:
+                            lines.append(f"    Spread: {margin_display}")
+                        else:
+                            lines.append(f"    Spread: {spread_line} (Margin: {margin_display})")
+                        
+                        # Get confidence - check both 'confidence' and 'model_confidence' for backward compatibility
+                        spread_confidence = spread.get('confidence') or spread.get('model_confidence', 0) or 0
+                        lines.append(f"    Confidence: {spread_confidence:.1%}")
                     if "total" in predictions:
                         total = predictions["total"]
-                        lines.append(f"    Total: {total.get('projected_total', 'N/A')}")
-                        lines.append(f"    Confidence: {total.get('model_confidence', 0):.1%}")
+                        projected_total = total.get('projected_total', 'N/A')
+                        lines.append(f"    Total: {projected_total}")
+                        
+                        # Get confidence - check both 'confidence' and 'model_confidence' for backward compatibility
+                        total_confidence = total.get('confidence') or total.get('model_confidence', 0) or 0
+                        lines.append(f"    Confidence: {total_confidence:.1%}")
                     if "moneyline" in predictions:
                         ml = predictions["moneyline"]
-                        # Handle both formats: team_probabilities dict or direct away_win_probability/home_win_probability
-                        probs = ml.get("team_probabilities", {})
-                        away_prob = probs.get('away')
-                        home_prob = probs.get('home')
+                        # Handle multiple formats for backward compatibility
+                        away_prob = None
+                        home_prob = None
                         
-                        # If not found in team_probabilities, try direct keys
+                        # Try direct keys first (current format)
+                        if 'away_win_prob' in ml:
+                            away_prob = ml.get('away_win_prob')
+                            home_prob = ml.get('home_win_prob')
+                        
+                        # Try alternative key names
                         if away_prob is None:
                             away_prob = ml.get('away_win_probability')
                         if home_prob is None:
                             home_prob = ml.get('home_win_probability')
+                        
+                        # Try team_probabilities dict format (old format)
+                        if away_prob is None:
+                            probs = ml.get("team_probabilities", {})
+                            if isinstance(probs, dict):
+                                away_prob = probs.get('away')
+                                home_prob = probs.get('home')
                         
                         # Default to 0 if still not found
                         away_prob = away_prob if away_prob is not None else 0
                         home_prob = home_prob if home_prob is not None else 0
                         
                         lines.append(f"    Moneyline Probabilities: Away {away_prob:.1%} / Home {home_prob:.1%}")
-                        lines.append(f"    Confidence: {ml.get('model_confidence', 0):.1%}")
+                        
+                        # Get confidence - check both 'confidence' and 'model_confidence' for backward compatibility
+                        ml_confidence = ml.get('confidence') or ml.get('model_confidence', 0) or 0
+                        lines.append(f"    Confidence: {ml_confidence:.1%}")
                 
                 predicted_score = model.get("predicted_score", {})
                 if predicted_score:
@@ -1288,7 +1332,20 @@ class ReportGenerator:
                 lines.append(f"  Selection: {pick.get('selection', 'N/A')}")
                 lines.append(f"  Odds: {pick.get('odds', 'N/A')}")
                 edge_est = pick.get('edge_estimate', 0) or 0
-                conf = pick.get('confidence', 0) or 0
+                # Get confidence - handle both confidence_score (1-10) and confidence (0.0-1.0)
+                conf_raw = pick.get('confidence', 0) or 0
+                confidence_score = pick.get('confidence_score')
+                
+                # If confidence_score is provided, use it and convert to 0.0-1.0
+                if confidence_score is not None:
+                    conf = max(0.0, min(1.0, float(confidence_score) / 10.0))
+                elif conf_raw > 1.0:
+                    # confidence is likely a confidence_score (1-10), convert to 0.0-1.0
+                    conf = max(0.0, min(1.0, float(conf_raw) / 10.0))
+                else:
+                    # confidence is already in 0.0-1.0 range
+                    conf = max(0.0, min(1.0, float(conf_raw)))
+                
                 lines.append(f"  Edge Estimate: {edge_est:.3f}")
                 lines.append(f"  Confidence: {conf:.1%}")
                 

@@ -211,11 +211,16 @@ YOUR TASKS:
    - Historical performance patterns
    - Typical range: 0.5 (low confidence/edge) to 3.0 (exceptional value)
 
-2. Select UP TO 5 best bets from all picks:
-   - These should be the highest-value opportunities
-   - Consider: edge, confidence, data quality, and strategic value
+2. Select UP TO 5 best bets from all picks using STRICT criteria:
+   - **MANDATORY REQUIREMENTS (ALL must be met):**
+     * Edge >= 5.0 (spread/total) OR ROI >= 15% (moneyline)
+     * Confidence_Score >= 7 AND Modeler_Confidence >= 0.65
+     * Assigned units >= 1.5u (must be "Aggressive" or "Max Strike" tier)
+     * No questionable key players (GTD status reduces eligibility)
+   - **HISTORICAL PERFORMANCE:** Check bet_type_performance in auditor_feedback. Avoid bet types that have been losing (< 50% win rate) unless edge is exceptional (> 7.0 for spread/total or ROI > 20% for ML)
+   - **QUALITY OVER QUANTITY:** If fewer than 3 picks meet all criteria, select only those that do. DO NOT lower standards to force 5 best bets.
    - Mark with "best_bet": true
-   - Best bets can be favorites OR underdogs - value is what matters
+   - Best bets can be favorites OR underdogs - value is what matters, but quality thresholds are non-negotiable
 
 3. Generate comprehensive reasoning for each pick:
    - Use the Picker's rationale (already synthesized from research and model data)
@@ -226,10 +231,12 @@ YOUR TASKS:
 
 CRITICAL REQUIREMENTS:
 - You must assign units to ALL picks (do not skip any)
-- You must select UP TO 5 best bets (fewer if there are fewer than 5 picks)
+- You may select UP TO 5 best bets, but ONLY if they meet ALL strict criteria (edge >= 5.0, confidence_score >= 7, modeler_confidence >= 0.65, units >= 1.5)
+- **QUALITY OVER QUANTITY:** It's better to have 0-2 high-quality best bets than 5 mediocre ones. Do NOT lower standards to reach 5 best bets.
 - All picks are approved by default - you're assigning units and selecting best bets
 - The candidate_picks already contain synthesized information from Researcher and Modeler
 - Use the edge, confidence, picker_rating, and key_rationale fields to make decisions
+- **HISTORICAL LEARNING:** Use auditor_feedback to identify which bet types have been profitable vs losing. Prefer bet types with positive historical performance.
 
 Provide your response in the specified JSON format with approved_picks (all picks with units and best_bet flags) and daily_report_summary."""
         

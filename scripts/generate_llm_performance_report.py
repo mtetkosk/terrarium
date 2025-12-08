@@ -4,6 +4,7 @@
 import sys
 import argparse
 import json
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -341,6 +342,17 @@ def build_key_games(
         if pick.game_id:
             picks_by_game[pick.game_id].append(pick)
     
+    # Extract over/under direction from selection_text for totals bets
+    # This matches the logic used in results_processor for consistency
+    direction_by_pick = {}
+    totals_picks = [p for p in picks if p.bet_type == BetType.TOTAL and p.id]
+    if totals_picks:
+        for pick in totals_picks:
+            if pick.selection_text:
+                match = re.search(r'(over|under)\s+(\d+\.?\d*)', pick.selection_text.lower())
+                if match:
+                    direction_by_pick[pick.id] = match.group(1).lower()
+    
     for game_id, game_picks in picks_by_game.items():
         game = game_lookup.get(game_id)
         if not game:
@@ -375,18 +387,25 @@ def build_key_games(
             
             pick_data = {
                 "id": pick.id,
-                "bt": pick.bet_type.value if hasattr(pick.bet_type, 'value') else str(pick.bet_type),
+                "bet_type": pick.bet_type.value if hasattr(pick.bet_type, 'value') else str(pick.bet_type),
                 "line": pick.line,
                 "odds": pick.odds,
                 "stake": round(stake, 2),
-                "ev": round(ev, 3),
-                "conf": pick.confidence_score or 5,
-                "r": rationale
+                "expected_value": round(ev, 3),
+                "confidence": pick.confidence_score or 5,
+                "rationale": rationale
             }
+            
+            # For totals bets, get over/under direction from selection_text
+            # This matches the logic used in results_processor for consistency
+            if pick.bet_type == BetType.TOTAL and pick.id:
+                direction = direction_by_pick.get(pick.id)
+                if direction:
+                    pick_data["direction"] = direction
             
             if bet:
                 pick_data["result"] = bet.result.value if hasattr(bet.result, 'value') else str(bet.result)
-                pick_data["pnl"] = round(bet.profit_loss, 2)
+                pick_data["profit_loss"] = round(bet.profit_loss, 2)
             
             game_pick_data.append(pick_data)
         
@@ -394,45 +413,50 @@ def build_key_games(
         result_data = None
         if game.result and game.status == GameStatus.FINAL:
             result_data = {
-                "hs": game.result.get("home_score") or game.result.get("homeScore"),
-                "as": game.result.get("away_score") or game.result.get("awayScore")
+                "home_score": game.result.get("home_score") or game.result.get("homeScore"),
+                "away_score": game.result.get("away_score") or game.result.get("awayScore")
             }
         
         game_data = {
-            "gid": game_id,
-            "d": game.date.isoformat(),
-            "t": [team1_name, team2_name],
+            "game_id": game_id,
+            "date": game.date.isoformat(),
+            "teams": [team1_name, team2_name],
             "picks": game_pick_data,
-            "ev": round(total_ev, 2),
-            "pnl": round(total_pnl, 2)
+            "expected_value": round(total_ev, 2),
+            "profit_loss": round(total_pnl, 2)
         }
         
         if pred:
-            game_data["pred"] = {
-                "sp": round(pred.predicted_spread, 1),
-                "tot": round(pred.predicted_total, 1) if pred.predicted_total else None,
-                "wp1": round(pred.win_probability_team1, 3),
-                "wp2": round(pred.win_probability_team2, 3),
-                "ev": round(pred.ev_estimate, 3) if pred.ev_estimate else None,
-                "conf": round(pred.confidence_score, 3)
+            game_data["prediction"] = {
+                "predicted_spread": round(pred.predicted_spread, 1),
+                "predicted_total": round(pred.predicted_total, 1) if pred.predicted_total else None,
+                "ev_estimate": round(pred.ev_estimate, 3) if pred.ev_estimate else None,
+                "confidence": round(pred.confidence_score, 3)
             }
+            
+            # Only include win probabilities if they're properly populated (not defaulted to 0.5)
+            wp1 = pred.win_probability_team1
+            wp2 = pred.win_probability_team2
+            if not (wp1 == 0.5 and wp2 == 0.5):
+                game_data["prediction"]["win_probability_team1"] = round(wp1, 3)
+                game_data["prediction"]["win_probability_team2"] = round(wp2, 3)
         
         if result_data:
-            game_data["res"] = result_data
+            game_data["result"] = result_data
         
         if insight:
-            # Include key research data (token-efficient)
-            game_data["resrch"] = {
-                "inj": len(insight.injuries) if insight.injuries else 0,
-                "rival": insight.rivalry,
-                "r1": insight.rest_days_team1,
-                "r2": insight.rest_days_team2
+            # Include key research data
+            game_data["research"] = {
+                "injury_count": len(insight.injuries) if insight.injuries else 0,
+                "rivalry": insight.rivalry,
+                "rest_days_team1": insight.rest_days_team1,
+                "rest_days_team2": insight.rest_days_team2
             }
         
         key_games.append(game_data)
     
     # Sort by absolute P&L (biggest wins/losses first), then by EV
-    key_games.sort(key=lambda x: (abs(x.get("pnl", 0)), abs(x.get("ev", 0))), reverse=True)
+    key_games.sort(key=lambda x: (abs(x.get("profit_loss", 0)), abs(x.get("expected_value", 0))), reverse=True)
     
     return key_games[:max_games]
 
@@ -542,51 +566,51 @@ def build_report(
             "end": end_date.isoformat()
         },
         "summary": {
-            "tg": len(games),
-            "gwp": games_with_picks,
-            "gwr": games_with_results,
-            "tp": performance["total_picks"],
-            "sp": performance["settled_picks"],
-            "wr": performance["win_rate"],
+            "total_games": len(games),
+            "games_with_picks": games_with_picks,
+            "games_with_results": games_with_results,
+            "total_picks": performance["total_picks"],
+            "settled_picks": performance["settled_picks"],
+            "win_rate": performance["win_rate"],
             "roi": performance["roi"],
-            "tw": performance["total_wagered"],
-            "tpr": performance["total_profit"],
-            "ee": performance["ev_efficiency"]
+            "total_wagered": performance["total_wagered"],
+            "total_profit": performance["total_profit"],
+            "ev_efficiency": performance["ev_efficiency"]
         },
-        "pbt": {  # performance_by_bet_type
+        "performance_by_bet_type": {
             k: {
-                "p": v["picks"],
-                "w": v["wins"],
-                "l": v["losses"],
-                "wr": v["win_rate"],
+                "picks": v["picks"],
+                "wins": v["wins"],
+                "losses": v["losses"],
+                "win_rate": v["win_rate"],
                 "roi": v["roi"]
             }
             for k, v in performance["bet_type_stats"].items()
         },
-        "ma": {  # model_accuracy
-            "smae": model_accuracy["spread_mae"],
-            "tmae": model_accuracy["total_mae"],
-            "ss": model_accuracy["spread_samples"],
-            "ts": model_accuracy["total_samples"],
-            "wpc": model_accuracy["win_prob_calibration"]
+        "model_accuracy": {
+            "spread_mae": model_accuracy["spread_mae"],
+            "total_mae": model_accuracy["total_mae"],
+            "spread_samples": model_accuracy["spread_samples"],
+            "total_samples": model_accuracy["total_samples"],
+            "win_prob_calibration": model_accuracy["win_prob_calibration"]
         },
-        "eva": {  # ev_analysis
-            "tev": performance["total_expected_ev"],
-            "trv": performance["total_profit"],
-            "ee": performance["ev_efficiency"],
-            "ct": {  # by_confidence_tier
+        "ev_analysis": {
+            "total_expected_ev": performance["total_expected_ev"],
+            "total_realized_value": performance["total_profit"],
+            "ev_efficiency": performance["ev_efficiency"],
+            "by_confidence_tier": {
                 k: {
-                    "p": v["picks"],
-                    "w": v["wins"],
-                    "l": v["losses"],
-                    "wr": v["win_rate"],
+                    "picks": v["picks"],
+                    "wins": v["wins"],
+                    "losses": v["losses"],
+                    "win_rate": v["win_rate"],
                     "roi": v["roi"]
                 }
                 for k, v in performance["confidence_tiers"].items()
             }
         },
-        "kg": key_games,  # key_games
-        "ins": insights  # insights
+        "key_games": key_games,
+        "insights": insights
     }
     
     return report

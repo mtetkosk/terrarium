@@ -8,27 +8,29 @@ from sqlalchemy.orm import Session
 MASCOT_NAMES = [
     # Compound names first (longest)
     'fighting illini', 'fighting irish', 'fighting hawks', 'runnin\' bulldogs',
-    'upstate spartans', 'gulf coast eagles', 'crimson tide', 'nittany lions',
-    'golden eagles', 'red raiders', 'blue devils', 'tar heels', 'rainbow warriors',
+    'upstate spartans', 'gulf coast eagles',     'crimson tide', 'nittany lions',
+    'golden eagles', 'golden griffins', 'red raiders', 'blue devils', 'tar heels', 'rainbow warriors',
     'sea warriors', 'black knights', 'purple eagles', 'screaming eagles',
     'river hawks', 'skyhawks', 'firehawks', 'red dragons', 'red hawks',
     'mountaineers', 'leathernecks', 'fighting bees', 'chanticleers',
     # Single word mascots
     'roadrunners', 'matadors', 'titans', 'buccaneers', 'yellow jackets', 
     'crusaders', 'saints', 'redbirds', 'sycamores', 'bison', 'aztecs', 
-    'toreros', 'gators', 'cardinals', 'hilltoppers', 'bobcats', 'hokies', 
+    'toreros', 'gators', 'cardinals', 'hilltoppers', 'bobcats', 'broncos', 'chargers', 'hokies',
+    'monarchs', 
     'explorers', 'delta devils', 'lobos', 'aggies', 'orange', 'trailblazers', 
     'shockers', 'gamecocks', 'jackrabbits', 'coyotes', 'thunderbirds', 
     'seahawks', 'gaels', 'islanders', 'boilermakers', 'bulldogs', 'wildcats', 
     'tigers', 'eagles', 'hawks', 'owls', 'falcons', 'bears', 'lions', 
-    'panthers', 'warriors', 'knights', 'pirates', 'cavaliers', 'seminoles', 
+    'panthers', 'warriors', 'knights', 'pirates', 'cavaliers', 'seminoles',
+    'mastodons', 
     'hurricanes', 'cardinal', 'crimson', 'longhorns', 'buckeyes', 
     'wolverines', 'spartans', 'badgers', 'fgcu', 'jayhawks', 'hoosiers', 
     'demons', 'lopes', 'mustangs', 'jaspers', 'razorbacks', 'quakers', 
     'dragons', 'colonels', 'highlanders', 'keydets', 'rams', 'cowboys', 
     'flyers', 'chanticleers', 'dolphins', 'stags', 'mavericks', 'spiders',
     'friars', 'anteaters', 'peacocks', 'sharks', 'midshipmen', 'hoyas', 
-    'seawolves', 'jaguars', 'griffins', 'lakers'
+    'seawolves', 'jaguars', 'griffins', 'lakers', 'cougars'
 ]
 
 # Special mappings
@@ -138,6 +140,19 @@ def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
     # This prevents UNC Greensboro, NC Central, etc. from being normalized to just "north carolina"
     original_lower = normalized
     
+    # CRITICAL: Check for Miami (Ohio) vs Miami (FL) FIRST, before any processing
+    # Miami Ohio is in MAC conference, Miami FL is in ACC - must NOT be mixed up
+    # Check for Miami Ohio variations (must come before parenthetical removal)
+    if any(term in original_lower for term in ['miami red', 'miami red hawks', 'miami redhawks', 'miami ohio', 'miami (oh)', 'miami oh']):
+        return 'miami ohio'
+    
+    # Check for Miami FL variations (Miami Hurricanes, Miami (FL), Miami Florida)
+    # This must come AFTER Miami Ohio check to avoid conflicts
+    if any(term in original_lower for term in ['miami (fl)', 'miami fl', 'miami florida', 'miami hurricanes']):
+        # But check if it's actually Miami Ohio (should have been caught above)
+        if 'ohio' not in original_lower and 'oh' not in original_lower and 'red' not in original_lower:
+            return 'miami fl'
+    
     # Check for UNC Greensboro variations
     if any(term in original_lower for term in ['unc greensboro', 'uncg', 'north carolina greensboro', 'nc greensboro']):
         return 'unc greensboro'
@@ -163,7 +178,25 @@ def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
         return 'unc charlotte'
     
     # Remove parenthetical content like "(PA)", "(TN)", etc.
+    # BUT preserve parenthetical info for Miami before removing (will handle after)
+    miami_ohio_indicators = []
+    if 'miami' in normalized:
+        # Check for Ohio indicators in parentheses before removing
+        if re.search(r'\(.*oh.*\)', normalized, re.IGNORECASE):
+            miami_ohio_indicators.append('oh')
+        if re.search(r'\(.*fl.*\)', normalized, re.IGNORECASE):
+            miami_ohio_indicators.append('fl')
+        if 'red' in normalized.lower():
+            miami_ohio_indicators.append('red')
+    
     normalized = re.sub(r'\s*\([^)]*\)', '', normalized)
+    
+    # After removing parentheses, re-check Miami if we found indicators
+    if 'miami' in normalized and miami_ohio_indicators:
+        if 'oh' in miami_ohio_indicators or 'red' in miami_ohio_indicators:
+            return 'miami ohio'
+        elif 'fl' in miami_ohio_indicators:
+            return 'miami fl'
     
     # Handle "N.C." -> "NC" before removing periods (special case for NC State)
     # Match "n.c." or "N.C." (case insensitive, with word boundaries)
@@ -246,6 +279,19 @@ def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
         # "Northwestern" without "State" means Northwestern (not Northwestern State)
         normalized = 'northwestern'
     
+    # Purdue Fort Wayne vs Purdue (CRITICAL: must distinguish these)
+    # Check for IPFW first (common abbreviation for Purdue Fort Wayne)
+    # Handle IPFW even if it has a mascot suffix (e.g., "IPFW Mastodons")
+    if normalized == 'ipfw' or normalized.startswith('ipfw '):
+        # Remove any mascot that might follow IPFW, then normalize to purdue fort wayne
+        normalized = 'purdue fort wayne'
+    # Check for Purdue Fort Wayne first (more specific)
+    elif 'purdue fort wayne' in normalized:
+        normalized = 'purdue fort wayne'  # Keep full name to distinguish from Purdue
+    elif normalized == 'purdue':
+        # "Purdue" without "Fort Wayne" means Purdue (not Purdue Fort Wayne)
+        normalized = 'purdue'
+    
     # South Carolina Upstate variations
     if 'south carolina upstate' in normalized or 'sc upstate' in normalized or 'usc upstate' in normalized:
         normalized = 'usc upstate'
@@ -257,6 +303,18 @@ def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
     # Tennessee Tech variations
     if 'tennessee tech' in normalized or 'tn tech' in normalized:
         normalized = 'tennessee tech'
+    
+    # Miami (Ohio) vs Miami (FL) - re-check after all normalization (CRITICAL: must distinguish these)
+    # Miami Ohio is in MAC conference, Miami FL is in ACC
+    if normalized.startswith('miami'):
+        # Check for Ohio indicators (red, ohio, oh)
+        if any(indicator in normalized for indicator in ['red', 'ohio', ' oh']):
+            normalized = 'miami ohio'
+        # If it's just "miami" and we haven't already normalized it, we need to be careful
+        # But at this point, if it's just "miami" without context, we can't determine
+        # so leave it as-is (will be handled by context or explicit matching)
+        elif 'fl' in normalized or 'florida' in normalized:
+            normalized = 'miami fl'
     
     # Appalachian State variations - normalize to "app st" for matching
     if 'appalachian' in normalized and ('st' in normalized or 'state' in normalized):
@@ -321,34 +379,22 @@ def normalize_team_name_for_lookup(team_name: str) -> str:
     """
     normalized = normalize_team_name(team_name, for_matching=True)
     
-    # Remove common team name suffixes for lookup
-    # Order matters - check longer/more specific suffixes first
-    suffixes = [
-        ' blue devils', ' blue raiders', ' tar heels', ' crimson tide',
-        ' nittany lions', ' golden eagles', ' upstate spartans',
-        ' gulf coast eagles', ' red wolves', ' red raiders',
-        ' fighting irish', ' boilermakers',
-        ' bulldogs', ' wildcats', ' tigers', ' eagles', ' hawks', ' owls', ' falcons',
-        ' bears', ' lions', ' panthers', ' warriors', ' knights', ' pirates',
-        ' cavaliers', ' seminoles', ' hurricanes',
-        ' cardinal', ' crimson',
-        ' longhorns', ' buckeyes', ' wolverines', ' spartans', ' badgers',
-        ' fgcu', ' jayhawks', ' hoosiers',
-        ' demons', ' lopes', ' mustangs', ' jaspers', ' aggies',
-        ' razorbacks', ' quakers', ' dragons',
-        ' colonels', ' highlanders', ' keydets', ' rams', ' shockers',
-        ' sycamores', ' cowboys', ' flyers', ' fighting hawks', ' chanticleers',
-        ' dolphins', ' stags', ' roadrunners', ' delta devils', ' colonels',
-        ' bears', ' mavericks', ' spiders', ' runnin\' bulldogs', ' nittany lions',
-        ' friars', ' anteaters', ' panthers', ' peacocks', ' river hawks',
-        ' sharks', ' fighting illini', ' midshipmen', ' hoyas', ' seahawks',
-        ' seawolves'
-    ]
+    # Remove mascot names using the MASCOT_NAMES list (sorted by length, longest first)
+    # This ensures compound names like "fighting irish" are matched before single words
+    sorted_mascots = sorted(MASCOT_NAMES, key=len, reverse=True)
     
-    for suffix in suffixes:
-        if normalized.endswith(suffix):
-            normalized = normalized[:-len(suffix)].strip()
+    for mascot in sorted_mascots:
+        name_lower = normalized.lower()
+        # Remove mascot if it appears at the end (with or without leading space)
+        if name_lower.endswith(' ' + mascot):
+            normalized = normalized[:-(len(mascot) + 1)].strip()
             break
+        elif name_lower.endswith(mascot):
+            normalized = normalized[:-len(mascot)].strip()
+            break
+    
+    # Clean up any trailing spaces or dashes
+    normalized = normalized.strip().rstrip('-').strip()
     
     return normalized
 
@@ -428,6 +474,22 @@ def are_teams_matching(team1: str, team2: str) -> bool:
            (unc_school in norm2 and 'north carolina' in norm1 and unc_school not in norm1 and 'nc st' not in norm1):
             return False
     
+    # Purdue Fort Wayne vs Purdue should NEVER match
+    # Also check for IPFW (abbreviation for Purdue Fort Wayne)
+    purdue_fw_variants = ['purdue fort wayne', 'ipfw']
+    for variant in purdue_fw_variants:
+        if (variant in norm1 and 'purdue' in norm2 and 'purdue fort wayne' not in norm2 and 'ipfw' not in norm2) or \
+           (variant in norm2 and 'purdue' in norm1 and 'purdue fort wayne' not in norm1 and 'ipfw' not in norm1):
+            return False
+    
+    # Miami Ohio vs Miami FL should NEVER match (CRITICAL: different conferences - MAC vs ACC)
+    if ('miami ohio' in norm1 and 'miami' in norm2 and 'miami ohio' not in norm2 and 'miami fl' in norm2) or \
+       ('miami ohio' in norm2 and 'miami' in norm1 and 'miami ohio' not in norm1 and 'miami fl' in norm1):
+        return False
+    if ('miami fl' in norm1 and 'miami' in norm2 and 'miami fl' not in norm2 and 'miami ohio' in norm2) or \
+       ('miami fl' in norm2 and 'miami' in norm1 and 'miami fl' not in norm1 and 'miami ohio' in norm1):
+        return False
+    
     # Substring match (one contains the other) - but only if not excluded above
     if norm1 in norm2 or norm2 in norm1:
         return True
@@ -460,6 +522,19 @@ def are_teams_matching(team1: str, team2: str) -> bool:
             if (unc_school in norm1 and 'north carolina' in norm2 and unc_school not in norm2 and 'nc st' not in norm2) or \
                (unc_school in norm2 and 'north carolina' in norm1 and unc_school not in norm1 and 'nc st' not in norm1):
                 return False
+        # Check Purdue Fort Wayne vs Purdue (including IPFW)
+        purdue_fw_variants = ['purdue fort wayne', 'ipfw']
+        for variant in purdue_fw_variants:
+            if (variant in norm1 and 'purdue' in norm2 and 'purdue fort wayne' not in norm2 and 'ipfw' not in norm2) or \
+               (variant in norm2 and 'purdue' in norm1 and 'purdue fort wayne' not in norm1 and 'ipfw' not in norm1):
+                return False
+        # Check Miami Ohio vs Miami FL
+        if ('miami ohio' in norm1 and 'miami' in norm2 and 'miami ohio' not in norm2 and 'miami fl' in norm2) or \
+           ('miami ohio' in norm2 and 'miami' in norm1 and 'miami ohio' not in norm1 and 'miami fl' in norm1):
+            return False
+        if ('miami fl' in norm1 and 'miami' in norm2 and 'miami fl' not in norm2 and 'miami ohio' in norm2) or \
+           ('miami fl' in norm2 and 'miami' in norm1 and 'miami fl' not in norm1 and 'miami ohio' in norm1):
+            return False
         return True
     
     return False
@@ -522,6 +597,10 @@ def get_team_name_variations(team_name: str) -> List[str]:
     # Florida Gulf Coast
     if 'florida gulf coast' in name_lower or 'fgcu' in name_lower:
         variations.update(['florida gulf coast', 'fgcu'])
+    
+    # Purdue Fort Wayne variations
+    if 'purdue fort wayne' in name_lower or 'ipfw' in name_lower:
+        variations.update(['purdue fort wayne', 'ipfw', 'purdue fort wayne mastodons'])
     
     # Add first word only (for teams like "Duke Blue Devils" -> "Duke")
     if ' ' in name_lower:

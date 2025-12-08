@@ -5,6 +5,7 @@ from typing import List, Optional
 import requests
 from bs4 import BeautifulSoup
 import time
+from zoneinfo import ZoneInfo
 
 from src.data.models import Game, GameStatus
 from src.utils.logging import get_logger
@@ -114,6 +115,27 @@ class GamesScraper:
                     venue_data = competition.get('venue', {})
                     venue = venue_data.get('fullName', '')
                     
+                    # Extract game time and convert to EST
+                    game_time_est = None
+                    try:
+                        # ESPN API provides date in ISO format (e.g., "2024-01-15T19:00Z" or "2024-01-15T19:00:00Z")
+                        date_str = competition.get('date', '') or event.get('date', '')
+                        if date_str:
+                            # Parse the datetime string (ESPN uses UTC)
+                            # Handle different formats: "2024-01-15T19:00Z" or "2024-01-15T19:00:00Z"
+                            date_str_clean = date_str.replace('Z', '+00:00')
+                            # If no timezone info, assume UTC
+                            if '+' not in date_str_clean and 'Z' not in date_str:
+                                date_str_clean = date_str + '+00:00'
+                            
+                            game_time_utc = datetime.fromisoformat(date_str_clean)
+                            # Convert to EST
+                            est = ZoneInfo("America/New_York")
+                            game_time_est = game_time_utc.astimezone(est)
+                            logger.debug(f"Extracted game time: {game_time_est} EST")
+                    except (ValueError, AttributeError, KeyError, TypeError) as e:
+                        logger.debug(f"Could not parse game time from '{date_str}': {e}")
+                    
                     # Determine game status
                     status_type = event.get('status', {}).get('type', {})
                     status_id = status_type.get('id', '1')
@@ -155,10 +177,11 @@ class GamesScraper:
                             date=target_date,
                             venue=venue if venue else None,
                             status=game_status,
-                            result=result_data
+                            result=result_data,
+                            game_time_est=game_time_est
                         )
                         games.append(game)
-                        logger.debug(f"Found game: {team1} vs {team2} (Status: {game_status.value})")
+                        logger.debug(f"Found game: {team1} vs {team2} (Status: {game_status.value}, Time: {game_time_est})")
                     
                 except Exception as e:
                     logger.warning(f"Error parsing game event: {e}")

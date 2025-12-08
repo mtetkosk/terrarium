@@ -221,6 +221,25 @@ class DataConverter:
                 # Ensure confidence_score is between 1-10
                 confidence_score = max(1, min(10, int(confidence_score)))
                 
+                # Convert confidence_score (1-10) to confidence (0.0-1.0) for the Pick model
+                # The Pick model expects confidence in 0.0-1.0 range, not 1-10
+                # If confidence is explicitly provided in 0.0-1.0 range, use it; otherwise convert from confidence_score
+                confidence_raw = pick_data.get("confidence")
+                if confidence_raw is not None:
+                    # Check if it's already in 0.0-1.0 range (should be <= 1.0)
+                    confidence_value = float(confidence_raw)
+                    if confidence_value <= 1.0:
+                        # Already in correct range (0.0-1.0)
+                        confidence = max(0.0, min(1.0, confidence_value))
+                    else:
+                        # Likely a confidence_score value (1-10) incorrectly provided as "confidence"
+                        # Convert it: divide by 10 and clamp
+                        confidence = max(0.0, min(1.0, confidence_value / 10.0))
+                else:
+                    # No confidence provided, convert from confidence_score (1-10) to (0.0-1.0)
+                    # confidence_score 1 -> 0.1, 5 -> 0.5, 10 -> 1.0
+                    confidence = max(0.0, min(1.0, confidence_score / 10.0))
+                
                 # Extract book field, defaulting to "draftkings" if missing, None, or empty
                 book_value = pick_data.get("book", "draftkings")
                 if not book_value or (isinstance(book_value, str) and not book_value.strip()):
@@ -232,7 +251,7 @@ class DataConverter:
                     line=float(line),
                     odds=odds,
                     rationale=rationale,
-                    confidence=float(pick_data.get("confidence", 0.5)),
+                    confidence=confidence,
                     expected_value=float(pick_data.get("edge_estimate", 0.0)),
                     book=book_value,
                     selection_text=selection_text,
