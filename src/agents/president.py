@@ -280,17 +280,6 @@ Provide your response in the specified JSON format with approved_picks (all pick
                 for pick in approved_picks:
                     if pick.get("best_bet", False) and pick.get("game_id") not in top_ids:
                         pick["best_bet"] = False
-            elif best_bet_count < max_best_bets and len(approved_picks) >= max_best_bets:
-                # Too few - add more from remaining picks
-                remaining = [p for p in approved_picks if not p.get("best_bet", False)]
-                sorted_remaining = sorted(
-                    remaining,
-                    key=lambda p: (p.get("edge_estimate", 0), p.get("confidence", 0) if "confidence" in p else 0),
-                    reverse=True
-                )
-                needed = max_best_bets - best_bet_count
-                for pick in sorted_remaining[:needed]:
-                    pick["best_bet"] = True
             
             # Calculate totals for daily report summary
             total_units = sum(p.get("units", 0.0) for p in approved_picks)
