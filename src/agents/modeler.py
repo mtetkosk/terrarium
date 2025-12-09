@@ -357,6 +357,28 @@ class Modeler(BaseAgent):
         
         return []
     
+    def _dump_debug_info(self, batch_num: int, input_data: Dict[str, Any], response: Any, error: str = None) -> None:
+        """Dump debug info to file for troubleshooting"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"data/debug/modeler_batch_{batch_num}_{timestamp}.json"
+        try:
+            # Create debug directory if it doesn't exist
+            Path(filename).parent.mkdir(parents=True, exist_ok=True)
+            
+            debug_data = {
+                "batch_num": batch_num,
+                "timestamp": timestamp,
+                "error": error,
+                "input_game_ids": [g.get("game_id") for g in input_data.get("researcher_output", {}).get("games", [])],
+                "response_keys": list(response.keys()) if isinstance(response, dict) else str(type(response)),
+                "response_content": response
+            }
+            with open(filename, 'w') as f:
+                json.dump(debug_data, f, indent=2, default=str)
+            self.log_warning(f"📝 Dumped debug info to {filename}")
+        except Exception as e:
+            self.log_warning(f"Failed to dump debug info: {e}")
+
     def _process_batch(
         self,
         batch_games: List[Dict[str, Any]],
@@ -408,11 +430,13 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
                     f"Error: {response.get('parse_error', 'Unknown')}."
                 )
                 self.log_debug(f"Raw response: {response.get('raw_response', '')[:500]}")
+                self._dump_debug_info(0, input_data, response, error="json_decode_error")
                 return []
             
             # Ensure response has expected structure
             if not isinstance(response, dict) or "game_models" not in response:
                 self.log_warning(f"Unexpected response structure from Modeler: {response.keys() if isinstance(response, dict) else type(response)}")
+                self._dump_debug_info(0, input_data, response, error="unexpected_structure")
                 return []
             
             game_models = response.get('game_models', [])
@@ -430,6 +454,9 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
                 missing_ids = expected_ids - generated_ids
                 if missing_ids:
                     self.log_warning(f"Missing game_ids in batch: {sorted(missing_ids)}")
+                
+                # Dump debug info for incomplete batches
+                self._dump_debug_info(0, input_data, response, error="incomplete_batch")
             
             # CRITICAL: Cap confidence at 0.3 (3/10) for games without advanced stats
             # Normalize game_id to int for consistent matching
@@ -515,172 +542,3 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
     
     def _transform_predictions_format(self, model: Dict[str, Any]) -> None:
         """Normalize predictions to provide both flat and nested formats."""
-        predictions = model.get('predictions', {})
-        if not predictions:
-            predictions = {}
-            model['predictions'] = predictions
-            
-        predicted_score = model.get('predicted_score', {})
-        
-        # Extract values - handle both flat format and nested format
-        margin = predictions.get('margin')
-        if margin is None and isinstance(predictions.get('spread'), dict):
-            margin = predictions['spread'].get('projected_margin')
-            
-        total_val = predictions.get('total')
-        # If total is already a dict, extract the projected_total value
-        if isinstance(total_val, dict):
-            total_val = total_val.get('projected_total')
-        
-        win_probs = predictions.get('win_probs', {})
-        if not win_probs and isinstance(predictions.get('moneyline'), dict):
-            ml = predictions['moneyline']
-            win_probs = {
-                'away': ml.get('away_win_prob', ml.get('away_win_probability', 0)),
-                'home': ml.get('home_win_prob', ml.get('home_win_probability', 0))
-            }
-            
-        confidence = predictions.get('confidence', 0.5)
-        if not isinstance(confidence, (int, float)):
-            confidence = 0.5
-        
-        # Also try to get margin/total from predicted_score if not in predictions
-        if margin is None and predicted_score:
-            away_score = predicted_score.get('away_score', 0)
-            home_score = predicted_score.get('home_score', 0)
-            if away_score and home_score:
-                margin = home_score - away_score  # Home perspective
-                
-        if total_val is None and predicted_score:
-            away_score = predicted_score.get('away_score', 0)
-            home_score = predicted_score.get('home_score', 0)
-            if away_score and home_score:
-                total_val = away_score + home_score
-        
-        # Ensure margin and total_val are numbers, not dicts
-        if isinstance(margin, dict):
-            margin = margin.get('projected_margin')
-        if isinstance(total_val, dict):
-            total_val = total_val.get('projected_total')
-        
-        # Build/update predictions structure with BOTH formats for compatibility
-        # Keep top-level values for persistence AND nested dicts for report generator
-        
-        # Spread - create nested structure but KEEP top-level margin
-        if margin is not None:
-            predictions['margin'] = float(margin)  # Keep for persistence
-            predictions['spread'] = {
-                'projected_margin': float(margin),
-                'projected_line': f"{margin:+.1f}" if margin else None,
-                'model_confidence': float(confidence),
-                'confidence': float(confidence)
-            }
-        
-        # Total - create nested structure but KEEP top-level total as number
-        if total_val is not None:
-            predictions['total'] = float(total_val)  # Keep as NUMBER for persistence
-            predictions['total_details'] = {  # Use different key for nested format
-                'projected_total': float(total_val),
-                'model_confidence': float(confidence),
-                'confidence': float(confidence)
-            }
-        
-        # Moneyline
-        if win_probs:
-            away_prob = float(win_probs.get('away', 0))
-            home_prob = float(win_probs.get('home', 0))
-            predictions['win_probs'] = {'away': away_prob, 'home': home_prob}  # Keep for persistence
-            predictions['moneyline'] = {
-                'away_win_prob': away_prob,
-                'home_win_prob': home_prob,
-                'away_win_probability': away_prob,
-                'home_win_probability': home_prob,
-                'team_probabilities': {'away': away_prob, 'home': home_prob},
-                'model_confidence': float(confidence),
-                'confidence': float(confidence)
-            }
-        
-        # Keep confidence at top level
-        predictions['confidence'] = float(confidence)
-    
-    def _create_fallback_model(self, game: Dict[str, Any], betting_lines: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Create a fallback model entry for a game when processing fails
-        
-        This ensures the game is still passed to the next agent, marked as having unavailable data
-        """
-        game_id = game.get('game_id')
-        if game_id is None:
-            logger.warning("game_id is None in fallback model, cannot create fallback")
-            return {}
-        
-        try:
-            game_id_int = int(game_id)
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid game_id type in fallback model: {game_id} (type: {type(game_id)})")
-            return {}
-        
-        # Get betting lines for this game if available (normalize to int for comparison)
-        game_lines = [
-            l for l in betting_lines 
-            if l.get('game_id') is not None and int(l.get('game_id')) == game_id_int
-        ]
-        
-        # Create minimal predictions with very low confidence
-        predictions = {}
-        market_edges = []
-        
-        # Try to create basic predictions from betting lines if available
-        for line in game_lines:
-            bet_type = line.get('bet_type', '').lower()
-            if bet_type == 'spread' and 'spread' not in predictions:
-                predictions['spread'] = {
-                    "projected_line": "Data unavailable",
-                    "projected_margin": 0.0,
-                    "model_confidence": 0.1  # Very low confidence
-                }
-            elif bet_type == 'total' and 'total' not in predictions:
-                predictions['total'] = {
-                    "projected_total": line.get('line', 0.0),
-                    "model_confidence": 0.1
-                }
-            elif bet_type == 'moneyline' and 'moneyline' not in predictions:
-                predictions['moneyline'] = {
-                    "team_probabilities": {
-                        "away": 0.5,
-                        "home": 0.5
-                    },
-                    "model_confidence": 0.1
-                }
-        
-        # If no lines available, create minimal structure
-        if not predictions:
-            predictions['spread'] = {
-                "projected_line": "Data unavailable",
-                "projected_margin": 0.0,
-                "model_confidence": 0.1
-            }
-        
-        # Try to estimate predicted score from total if available
-        predicted_score = {"away_score": 0.0, "home_score": 0.0}
-        if "total" in predictions:
-            total_data = predictions["total"]
-            # Handle both formats: total as float or dict with projected_total
-            if isinstance(total_data, dict):
-                total = total_data.get("projected_total", 0.0)
-            elif isinstance(total_data, (int, float)):
-                total = total_data
-            else:
-                total = 0.0
-            if total > 0:
-                # Simple estimate: split total evenly (can be improved later)
-                predicted_score = {"away_score": total / 2, "home_score": total / 2}
-        
-        return {
-            "game_id": str(game_id_int) if game_id_int is not None else str(game_id),
-            "league": game.get('league', 'UNKNOWN'),
-            "predictions": predictions,
-            "predicted_score": predicted_score,
-            "market_edges": market_edges,
-            "model_notes": "CRITICAL: Model data unavailable. This game was not successfully modeled. Picker should use minimal/default values. President should NOT request revision for this game as it will cause infinite loops."
-        }

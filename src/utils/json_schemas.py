@@ -162,7 +162,23 @@ def get_modeler_schema() -> dict:
                                     "properties": {
                                         "spread": {"type": "object"},
                                         "total": {"type": "object"},
-                                        "moneyline": {"type": "object"}
+                                        "moneyline": {"type": "object"},
+                                        "confidence": {"type": "number"},
+                                        "margin": {"type": "number"},
+                                        "scores": {
+                                            "type": "object",
+                                            "properties": {
+                                                "away": {"type": "number"},
+                                                "home": {"type": "number"}
+                                            }
+                                        },
+                                        "win_probs": {
+                                            "type": "object",
+                                            "properties": {
+                                                "away": {"type": "number"},
+                                                "home": {"type": "number"}
+                                            }
+                                        }
                                     }
                                 },
                                 "predicted_score": {
