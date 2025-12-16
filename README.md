@@ -41,7 +41,7 @@ graph TD
 - **Unit Assignment**: President assigns decimal betting units (0.5, 1.0, 2.5, etc.) to each pick
 - **Best Bet Selection**: President selects up to 5 best bets from all picks
 - **Performance Tracking**: Daily reports with insights and recommendations
-- **Model Optimization**: Different OpenAI models per agent for cost efficiency
+- **Model Optimization**: Different Google Gemini models per agent for cost efficiency
 - **One Pick Per Game**: Picker makes exactly one pick per game with detailed reasoning
 - **Batch Processing**: Efficient processing of games in batches with retry logic
 - **Caching**: Smart caching for betting lines (1 hour) and research (24 hours)
@@ -52,7 +52,7 @@ graph TD
 
 - Python 3.11 or higher
 - pip (Python package manager)
-- OpenAI API key (for LLM agents)
+- Google Gemini API key (for LLM agents)
 - The Odds API key (optional, for real betting lines)
 - Google Cloud Project credentials (optional, for Google Sheets)
 
@@ -86,8 +86,8 @@ touch .env
 Add your API keys to `.env`:
 
 ```bash
-# OpenAI API (required)
-OPENAI_API_KEY=your_openai_api_key_here
+# Gemini API (required)
+GEMINI_API_KEY=your_gemini_api_key_here
 
 # Betting Lines API (optional - for real betting lines)
 THE_ODDS_API_KEY=your_odds_api_key_here
@@ -205,14 +205,14 @@ The system uses optimized models per agent for cost efficiency (configurable in 
 
 ```yaml
 llm:
-  model: "gpt-5-mini"  # Default model
+  model: "gemini-3-flash"  # Default model
   
   agent_models:
-    president: "gpt-5.1"     # High reasoning capability
-    modeler: "gpt-5.1"       # Strong math/logic capability
-    researcher: "gpt-4o-mini"# Efficient for many tool calls
-    picker: "gpt-5-mini"     # Standard reasoning
-    auditor: "gpt-4o-mini"   # Summarization focus
+    president: "gemini-3-pro"     # High reasoning capability
+    modeler: "gemini-3-pro"       # Strong math/logic capability
+    researcher: "gemini-3-flash"  # Efficient for many tool calls
+    picker: "gemini-3-pro"        # Standard reasoning
+    auditor: "gemini-3-flash"     # Summarization focus
 ```
 
 ### Email Configuration
@@ -306,9 +306,9 @@ terrarium/
 - Check `EMAIL_SENDER` and `EMAIL_PASSWORD` env vars.
 - See [EMAIL_SETUP.md](EMAIL_SETUP.md).
 
-### OpenAI API Errors
-- Check Quota/Billing on OpenAI platform.
-- Verify `OPENAI_API_KEY` is correct.
+### Gemini API Errors
+- Check Quota/Billing on Google Cloud Console.
+- Verify `GEMINI_API_KEY` is correct.
 
 ## License
 

@@ -63,6 +63,28 @@ class PersistenceService:
             game.team2, cleaned_team2, game.team1, session
         )
         
+        # CRITICAL: Validate that teams are using normalized names (no mascots)
+        # This ensures games are ALWAYS saved with normalized team names
+        if team1_model.normalized_team_name != cleaned_team1:
+            logger.error(
+                f"CRITICAL: Team1 model has non-normalized name '{team1_model.normalized_team_name}' "
+                f"but expected '{cleaned_team1}'. This violates the normalization requirement."
+            )
+            raise ValueError(
+                f"Team1 must use normalized name without mascots. "
+                f"Found: '{team1_model.normalized_team_name}', Expected: '{cleaned_team1}'"
+            )
+        
+        if team2_model.normalized_team_name != cleaned_team2:
+            logger.error(
+                f"CRITICAL: Team2 model has non-normalized name '{team2_model.normalized_team_name}' "
+                f"but expected '{cleaned_team2}'. This violates the normalization requirement."
+            )
+            raise ValueError(
+                f"Team2 must use normalized name without mascots. "
+                f"Found: '{team2_model.normalized_team_name}', Expected: '{cleaned_team2}'"
+            )
+        
         # Check if game exists by team_ids and date
         existing = session.query(GameModel).filter_by(
             team1_id=team1_model.id,
@@ -182,12 +204,16 @@ class PersistenceService:
         finally:
             session.close()
     
-    def save_pick(self, pick: Pick) -> None:
+    def save_pick(self, pick: Pick, target_date: Optional[date] = None) -> None:
         """
         Save pick to database using upsert pattern.
         
         CRITICAL: Database unique constraint on (game_id, pick_date) ensures only one pick per game per day.
         This method updates existing pick or creates new one. No manual duplicate handling needed.
+        
+        Args:
+            pick: Pick object to save
+            target_date: Optional target date for the pick. If not provided, uses pick.created_at.date() or date.today()
         """
         if not self.db:
             return
@@ -219,8 +245,13 @@ class PersistenceService:
                     f"Rationale: {pick.rationale[:100] if pick.rationale else 'None'}"
                 )
             
-            # Get the date for this pick (use today if not set)
-            pick_date = pick.created_at.date() if pick.created_at else date.today()
+            # Get the date for this pick - prefer explicit target_date, then pick.created_at, then today
+            if target_date:
+                pick_date = target_date
+            elif pick.created_at:
+                pick_date = pick.created_at.date()
+            else:
+                pick_date = date.today()
             
             # Get game model to validate team_id matches game teams
             game_model = session.query(GameModel).filter_by(id=pick.game_id).first()
@@ -253,7 +284,9 @@ class PersistenceService:
                 if team_id_from_game:
                     # Use the game's team_id
                     team_id = team_id_from_game
-                    team_name_for_lookup = pick.team_name
+                    # Use the normalized team name from database for betting line lookup consistency
+                    team = session.query(TeamModel).filter_by(id=team_id).first()
+                    team_name_for_lookup = team.normalized_team_name if team else pick.team_name
                 else:
                     # Team name doesn't match game teams - this is an error
                     logger.error(
@@ -291,54 +324,16 @@ class PersistenceService:
                 if team:
                     team_name_for_lookup = team.normalized_team_name
             
-            # CRITICAL: Look up the betting line from the database to get the correct line value
-            # This ensures we use the actual line from the betting market, not parsed from text
-            betting_line = None
+            # Use line and odds from pick (already parsed when creating Pick object)
             line_from_db = pick.line
             odds_from_db = pick.odds
             
-            if pick.game_id and pick.bet_type and pick.book:
-                # game_model already queried above
-                game_display = f"game_id={pick.game_id}"
-                if game_model:
-                    team1_name = game_model.team1_ref.normalized_team_name if game_model.team1_ref else "Unknown"
-                    team2_name = game_model.team2_ref.normalized_team_name if game_model.team2_ref else "Unknown"
-                    game_display = f"{team1_name} vs {team2_name} (game_id={pick.game_id})"
-                
-                # Build query for betting line lookup
-                line_query = session.query(BettingLineModel).filter(
-                    BettingLineModel.game_id == pick.game_id,
-                    BettingLineModel.bet_type == pick.bet_type,
-                    BettingLineModel.book == pick.book.lower()
-                )
-                
-                # For spread/moneyline, try to match by team
-                if pick.bet_type in [BetType.SPREAD, BetType.MONEYLINE] and team_name_for_lookup:
-                    from src.utils.team_normalizer import are_teams_matching
-                    # Try to find betting line by matching team name
-                    all_lines = line_query.all()
-                    for line in all_lines:
-                        if line.team and are_teams_matching(team_name_for_lookup, line.team):
-                            betting_line = line
-                            break
-                elif pick.bet_type == BetType.TOTAL:
-                    # For totals, any line from this book should work (they're all the same total)
-                    betting_line = line_query.first()
-                else:
-                    # Try to get first matching line
-                    betting_line = line_query.first()
-                
-                if betting_line:
-                    line_from_db = betting_line.line
-                    odds_from_db = betting_line.odds
-                    logger.debug(
-                        f"Found betting line for pick (game_id={pick.game_id}, bet_type={pick.bet_type}, "
-                        f"book={pick.book}): line={line_from_db}, odds={odds_from_db}"
-                    )
-                else:
-                    # No betting line found - skip saving this pick
-                    logger.warning(f"No betting line found for {game_display}, not making a pick")
-                    return
+            # For moneylines, extract odds from selection_text if needed (odds might be in selection_text like "ML +500")
+            if pick.bet_type == BetType.MONEYLINE and pick.selection_text and odds_from_db == -110:
+                import re
+                match = re.search(r'ML\s*([+-]?\d+)', pick.selection_text, re.IGNORECASE)
+                if match:
+                    odds_from_db = int(match.group(1))
             
             # Check if pick already exists (upsert pattern)
             existing = session.query(PickModel).filter_by(
@@ -504,8 +499,21 @@ class PersistenceService:
                 ambiguous_variants = variants
                 break
         
-        # Standard lookup first
-        # normalized_name should already have mascot removed, so just do exact match
+        # CRITICAL: normalized_name must already have mascot removed
+        # Validate this before proceeding
+        test_cleaned = remove_mascot_from_team_name(normalized_name)
+        if test_cleaned != normalized_name:
+            logger.error(
+                f"CRITICAL: normalized_name '{normalized_name}' still contains mascots. "
+                f"Cleaned version: '{test_cleaned}'. This should not happen."
+            )
+            raise ValueError(
+                f"normalized_name '{normalized_name}' must not contain mascots. "
+                f"Use remove_mascot_from_team_name() before calling this function."
+            )
+        
+        # Standard lookup: ONLY look for teams with normalized names (no mascots)
+        # This ensures we never match teams with mascots in their names
         team_model = session.query(TeamModel).filter_by(normalized_team_name=normalized_name).first()
         
         if needs_disambiguation and team_model:
@@ -566,12 +574,54 @@ class PersistenceService:
                         f"This might indicate a normalization issue."
                     )
             
-            # normalized_name should already have mascot removed, so use it directly
+            # CRITICAL: normalized_name must have mascot removed - validate one more time
+            final_cleaned = remove_mascot_from_team_name(normalized_name)
+            if final_cleaned != normalized_name:
+                logger.error(
+                    f"CRITICAL: Attempting to create team with non-normalized name '{normalized_name}'. "
+                    f"Cleaned version: '{final_cleaned}'. Rejecting team creation."
+                )
+                raise ValueError(
+                    f"Cannot create team with mascots in name. "
+                    f"Input: '{normalized_name}', Cleaned: '{final_cleaned}'"
+                )
+            
+            # Create team with normalized name (no mascots) - this is the ONLY allowed format
             team_model = TeamModel(normalized_team_name=normalized_name)
             session.add(team_model)
             session.flush()
-            logger.info(f"Created new team: '{original_team_name}' -> '{normalized_name}'")
+            logger.info(f"Created new team: '{original_team_name}' -> '{normalized_name}' (normalized, no mascots)")
         else:
+            # CRITICAL: Validate that existing team has normalized name (no mascots) and matches expected name
+            # If it has mascots or doesn't match, this is a data integrity issue
+            existing_cleaned = remove_mascot_from_team_name(team_model.normalized_team_name)
+            
+            # Check if existing team has mascots
+            if existing_cleaned != team_model.normalized_team_name:
+                logger.error(
+                    f"CRITICAL: Found existing team '{team_model.normalized_team_name}' with mascots in database. "
+                    f"This violates normalization requirements. Cleaned version: '{existing_cleaned}'. "
+                    f"Original input: '{original_team_name}', Expected normalized: '{normalized_name}'"
+                )
+                # Update the team name to the expected normalized name (not just remove mascots)
+                logger.warning(
+                    f"Fixing team name: '{team_model.normalized_team_name}' -> '{normalized_name}'"
+                )
+                team_model.normalized_team_name = normalized_name
+                session.flush()
+            # Check if existing team name matches expected normalized name
+            elif team_model.normalized_team_name != normalized_name:
+                logger.error(
+                    f"CRITICAL: Found existing team '{team_model.normalized_team_name}' but expected '{normalized_name}'. "
+                    f"This indicates a normalization mismatch. Original input: '{original_team_name}'"
+                )
+                # Update to expected normalized name
+                logger.warning(
+                    f"Fixing team name mismatch: '{team_model.normalized_team_name}' -> '{normalized_name}'"
+                )
+                team_model.normalized_team_name = normalized_name
+                session.flush()
+            
             # Log when we're using an existing team for debugging
             if needs_disambiguation:
                 logger.debug(

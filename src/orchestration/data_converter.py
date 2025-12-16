@@ -166,17 +166,29 @@ class DataConverter:
                 odds_str = str(pick_data.get("odds", "-110"))
                 odds = DataConverter.parse_odds(odds_str)
                 
-                # Get line from pick_data (required - should come from betting lines)
-                # Line will be looked up from betting line database when saving the pick
-                line = pick_data.get("line", 0.0)
+                # Get line from pick_data, or parse from selection_text
                 selection_text = pick_data.get("selection", "")
+                line = pick_data.get("line", 0.0)
                 
-                # Require line to be provided - no fallback parsing from text
-                if not line:
-                    logger.warning(
-                        f"Pick for game_id={game_id} missing 'line' field. "
-                        f"Line will be looked up from betting line database when saving."
-                    )
+                # If line is missing or 0.0, try to parse it from selection_text
+                if not line or line == 0.0:
+                    if selection_text:
+                        if bet_type == BetType.TOTAL:
+                            # For totals, look for "Over/Under NUMBER"
+                            match = re.search(r'(?:over|under)\s+(\d+\.?\d*)', selection_text, re.IGNORECASE)
+                            if match:
+                                line = float(match.group(1))
+                        elif bet_type == BetType.SPREAD:
+                            # For spreads, look for "+/-NUMBER" pattern (e.g., "+13.5", "-15.5")
+                            match = re.search(r'([+-]?\d+\.?\d*)', selection_text)
+                            if match:
+                                line = float(match.group(1))
+                        # For moneylines, line stays 0.0 (odds are in the odds field, not line)
+                    
+                    if not line or line == 0.0:
+                        logger.warning(
+                            f"Pick for game_id={game_id} missing 'line' field and could not parse from selection_text: {selection_text}"
+                        )
                 
                 # Extract team_name/team_id from pick data (for spread/moneyline bets)
                 # Picker should provide "team_name" field, or we can extract from "selection"

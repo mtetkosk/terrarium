@@ -109,8 +109,14 @@ def get_researcher_schema() -> dict:
                                     "type": "object",
                                     "properties": {
                                         "src": {"type": "integer"},
-                                        "home_spread": {"type": "number"},
-                                        "lean_total": {"type": "string"},
+                                        "spread_pick": {
+                                            "type": "string",
+                                            "description": "Consensus spread pick with team name AND line (e.g., 'Kentucky -4.5' or 'Michigan State +4.5')"
+                                        },
+                                        "total_pick": {
+                                            "type": "string",
+                                            "description": "Consensus total pick with direction AND line (e.g., 'Over 153.5' or 'Under 145.5')"
+                                        },
                                         "scores": {
                                             "type": "array",
                                             "items": {"type": "string"}
@@ -163,14 +169,18 @@ def get_modeler_schema() -> dict:
                                         "spread": {"type": "object"},
                                         "total": {"type": "object"},
                                         "moneyline": {"type": "object"},
-                                        "confidence": {"type": "number"},
+                                        "confidence": {
+                                            "type": "number",
+                                            "description": "Model confidence 0.0-1.0 based on data quality and model certainty"
+                                        },
                                         "margin": {"type": "number"},
                                         "scores": {
                                             "type": "object",
                                             "properties": {
                                                 "away": {"type": "number"},
                                                 "home": {"type": "number"}
-                                            }
+                                            },
+                                            "required": ["away", "home"]
                                         },
                                         "win_probs": {
                                             "type": "object",
@@ -179,7 +189,8 @@ def get_modeler_schema() -> dict:
                                                 "home": {"type": "number"}
                                             }
                                         }
-                                    }
+                                    },
+                                    "required": ["confidence", "margin", "scores"]
                                 },
                                 "predicted_score": {
                                     "type": "object",

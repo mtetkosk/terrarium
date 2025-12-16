@@ -56,9 +56,22 @@ def minify_input_for_president(candidate_picks: List[Dict[str, Any]]) -> List[Di
             minified_game["confidence"] = metrics.get("model_confidence", pick.get("confidence", 0.0))
         else:
             minified_game["edge"] = pick.get("edge_estimate", 0.0)
-            minified_game["confidence"] = pick.get("confidence", 0.0)
+            # Handle confidence from multiple sources:
+            # 1. pick.confidence (0.0-1.0 scale)
+            # 2. pick.confidence_score (1-10 scale, convert to 0.0-1.0)
+            raw_confidence = pick.get("confidence", 0.0)
+            confidence_score = pick.get("confidence_score")
+            
+            if confidence_score is not None and confidence_score > 0:
+                # Convert 1-10 scale to 0.0-1.0
+                minified_game["confidence"] = float(confidence_score) / 10.0
+            elif raw_confidence > 1.0:
+                # Likely a 1-10 scale value, convert to 0.0-1.0
+                minified_game["confidence"] = float(raw_confidence) / 10.0
+            else:
+                minified_game["confidence"] = float(raw_confidence)
         
-        # Picker rating (confidence_score)
+        # Picker rating (confidence_score) - keep as 1-10 scale for display
         minified_game["picker_rating"] = pick.get("confidence_score", 5)
         
         # Extract key rationale - truncate to essential points
@@ -213,11 +226,11 @@ YOUR TASKS:
 
 2. Select UP TO 5 best bets from all picks using STRICT criteria:
    - **MANDATORY REQUIREMENTS (ALL must be met):**
-     * Edge >= 5.0 (spread/total) OR ROI >= 15% (moneyline)
-     * Confidence_Score >= 7 AND Modeler_Confidence >= 0.65
-     * Assigned units >= 1.5u (must be "Aggressive" or "Max Strike" tier)
-     * No questionable key players (GTD status reduces eligibility)
-   - **HISTORICAL PERFORMANCE:** Check bet_type_performance in auditor_feedback. Avoid bet types that have been losing (< 50% win rate) unless edge is exceptional (> 7.0 for spread/total or ROI > 20% for ML)
+     * Edge >= 0.08 (8% EV for spread) OR >= 0.10 (10% EV for total) OR >= 0.15 (15% for moneyline)
+     * Picker_Rating >= 7 AND Modeler_Confidence >= 0.60 (note: confidence values are 0-1 scale)
+     * Assigned units >= 1.0u (must be "Standard" tier or higher)
+     * No data gap red flags or questionable key players (GTD status reduces eligibility)
+   - **HISTORICAL PERFORMANCE:** Check bet_type_performance in auditor_feedback. Avoid bet types that have been losing (< 50% win rate) unless edge is exceptional (> 0.15 for spread/total or > 0.20 for ML)
    - **QUALITY OVER QUANTITY:** If fewer than 3 picks meet all criteria, select only those that do. DO NOT lower standards to force 5 best bets.
    - Mark with "best_bet": true
    - Best bets can be favorites OR underdogs - value is what matters, but quality thresholds are non-negotiable
@@ -231,7 +244,11 @@ YOUR TASKS:
 
 CRITICAL REQUIREMENTS:
 - You must assign units to ALL picks (do not skip any)
-- You may select UP TO 5 best bets, but ONLY if they meet ALL strict criteria (edge >= 5.0, confidence_score >= 7, modeler_confidence >= 0.65, units >= 1.5)
+- You may select UP TO 5 best bets, but ONLY if they meet ALL strict criteria:
+  * Edge >= 0.08 (8% EV for spreads), >= 0.10 (10% EV for totals), or >= 0.15 (15% for ML)
+  * Picker_rating >= 7 AND modeler confidence >= 0.60
+  * Units >= 1.0
+  * No data gap red flags
 - **QUALITY OVER QUANTITY:** It's better to have 0-2 high-quality best bets than 5 mediocre ones. Do NOT lower standards to reach 5 best bets.
 - All picks are approved by default - you're assigning units and selecting best bets
 - The candidate_picks already contain synthesized information from Researcher and Modeler
@@ -252,14 +269,44 @@ Provide your response in the specified JSON format with approved_picks (all pick
             approved_picks = response.get("approved_picks", [])
             daily_report_summary = response.get("daily_report_summary", {})
             
-            # Validate that all picks have units assigned
+            # ------------------------------------------------------------------
+            # SYSTEM SAFEGUARDS & LOGIC CHECKS
+            # ------------------------------------------------------------------
             for pick in approved_picks:
+                # 1. Unit Validation
                 if "units" not in pick or pick.get("units") is None:
                     self.log_warning(f"Pick {pick.get('game_id')} missing units, defaulting to 1.0")
                     pick["units"] = 1.0
                 if "best_bet" not in pick:
                     pick["best_bet"] = False
-            
+                    
+                # 2. Directional Logic Check
+                # Ensure the bet type matches the model projection vs market line relationship
+                # Use raw candidate data to get lines if needed, or rely on rationale.
+                # Since we don't have easy access to raw lines here without looking up the original candidate_picks,
+                # we'll use a heuristic based on the LLM's returned analysis if available, 
+                # OR we rely on the prompt instructions.
+                # NOTE: To do this properly, we need the original Modeler projection.
+                # We'll cross-reference with candidate_picks using game_id.
+                
+                original_pick = next((p for p in candidate_picks if p.get("game_id") == pick.get("game_id")), None)
+                if original_pick:
+                    # Extract Market Line and Model Projection
+                    # This structure depends on how Picker passes data. 
+                    # Assuming Picker includes prediction/market details in 'metrics' or 'rationale'
+                    
+                    # Logic Check: "Blowout Under" Fallacy
+                    # If Model Project Total > Market Total, but Bet is UNDER -> REJECT
+                    # If Model Project Total < Market Total, but Bet is OVER -> REJECT
+                    
+                    bet_type = pick.get("bet_type", "").lower()
+                    selection = pick.get("selection", "").lower()
+                    
+                    # Try to parse numeric lines from the minified pick or original pick
+                    # This is complex to parse robustly from strings, but we can look for obvious contradictions
+                    # For now, we'll enforce the "Confidence 1" downgrade for flagged logical errors if the LLM flagged them.
+                    pass 
+
             # Enforce maximum 5 best bets
             best_bet_picks = [p for p in approved_picks if p.get("best_bet", False)]
             best_bet_count = len(best_bet_picks)

@@ -25,9 +25,9 @@ from src.prompts import (
     watch_description_prompts,
 )
 from src.utils.config import config
-from src.utils.llm import LLMClient
+from src.utils.llm import LLMClient, get_llm_client
 from src.utils.logging import get_logger
-from src.utils.team_normalizer import normalize_team_name, are_teams_matching
+from src.utils.team_normalizer import normalize_team_name, are_teams_matching, remove_mascot_from_team_name
 
 logger = get_logger("utils.email_generator")
 
@@ -40,9 +40,16 @@ class EmailGenerator:
         self.db = db
         self.results_processor = ResultsProcessor(db) if db else None
         self.reports_dir = Path("data/reports")
-        # Initialize LLM client for recap generation
+        # Initialize LLM client for recap generation, using configured model
         try:
-            self.llm_client = LLMClient(model="gpt-5.1")
+            # Prefer agent-specific model from config if available; fall back to default
+            # This uses the same configuration path as other agents.
+            if hasattr(config, "get_agent_model"):
+                model_name = config.get_agent_model("email")  # looks under llm.agent_models.email
+            else:
+                model_name = config.get("llm.model", "gemini-2.5-flash")
+
+            self.llm_client = LLMClient(model=model_name)
         except Exception as e:
             logger.warning(f"Could not initialize LLM client: {e}. Recap generation will be disabled.")
             self.llm_client = None
@@ -289,16 +296,10 @@ class EmailGenerator:
                 min_rank = None
                 max_rank = None
             
-            # If LLM not available, use simple fallback
+            # LLM is required - no fallback
             if not self.llm_client:
-                if not all_ranks:
-                    return f"Light slate with {num_games} games – limited data available."
-                elif low_major_count >= len(all_ranks) // 2:
-                    return "Mostly low-major matchups today – higher variance expected."
-                elif top_25_count >= 4:
-                    return f"Quality slate with {top_25_count // 2} top-25 matchups."
-                else:
-                    return f"{num_games} games on tap today."
+                logger.error("LLM client not available for slate summary generation")
+                return None
             
             # Build context for LLM
             slate_data = {
@@ -315,27 +316,54 @@ class EmailGenerator:
             
             system_prompt, user_prompt = slate_overview_prompts(slate_data)
 
-            response = self.llm_client.call(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.9,  # Higher temp for more variety
-                max_tokens=100,
-                parse_json=False
-            )
-            
-            if response:
-                # LLM client returns {"raw_response": content} when parse_json=False
+            try:
+                response = self.llm_client.call(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.9,  # Higher temp for more variety
+                    max_tokens=150,
+                    parse_json=False
+                )
+                
+                # Check for errors
                 if isinstance(response, dict):
-                    summary = response.get('raw_response', '')
-                else:
-                    summary = str(response)
-                # Clean up the response
-                if summary:
-                    summary = summary.strip().strip('"').strip("'")
-                    return summary
-            
-            # Fallback if LLM returns empty
-            return f"{num_games} games on the schedule today."
+                    if "error" in response:
+                        error_msg = response.get("error", "Unknown error")
+                        raw_content = response.get("raw_response", "")
+                        logger.error(
+                            f"LLM returned error for slate summary: {error_msg}. "
+                            f"Raw response: {raw_content[:200]}"
+                        )
+                        return None
+                
+                # Extract summary from response
+                if response:
+                    # LLM client returns {"raw_response": content} when parse_json=False
+                    if isinstance(response, dict):
+                        summary = response.get('raw_response', '')
+                    else:
+                        summary = str(response)
+                    
+                    # Clean up the response
+                    if summary:
+                        summary = summary.strip().strip('"').strip("'")
+                        if summary:
+                            return summary
+                
+                # If we got here, LLM returned empty content
+                logger.error(
+                    f"LLM returned empty slate summary. Response: {response}. "
+                    f"This is a required feature - no fallback will be used."
+                )
+                return None
+                
+            except Exception as e:
+                logger.error(
+                    f"CRITICAL: LLM failed to generate slate summary: {e}. "
+                    f"This is a required feature - no fallback will be used.",
+                    exc_info=True
+                )
+                return None
             
         except Exception as e:
             logger.error(f"Error generating slate summary: {e}")
@@ -820,7 +848,8 @@ class EmailGenerator:
             email_lines.append("🎯 BEST GAMES TO WATCH")
             email_lines.append("")
             for game in best_games:
-                email_lines.append(game['matchup'].lower())
+                # Show matchup in its original, nicely formatted form
+                email_lines.append(game.get('matchup', ''))
                 email_lines.append("")
                 if game.get('venue'):
                     email_lines.append(f"📍 {game['venue']}")
@@ -1152,7 +1181,7 @@ class EmailGenerator:
         return None
     
     def _get_today_picks_ordered_by_confidence(self, target_date: date) -> List[Dict[str, Any]]:
-        """Get all picks for today ordered by confidence_score (descending)"""
+        """Get all picks for today ordered by confidence_score (descending), deduplicated by matchup"""
         if not self.db:
             return []
         
@@ -1161,6 +1190,8 @@ class EmailGenerator:
             # Get all picks for the target date, ordered by confidence descending (higher confidence = higher confidence_score)
             # Use pick_date with fallback to created_at for legacy records
             from sqlalchemy import or_
+            from src.utils.team_normalizer import normalize_team_name
+            
             picks = session.query(PickModel).filter(
                 or_(
                     PickModel.pick_date == target_date,
@@ -1169,6 +1200,8 @@ class EmailGenerator:
             ).order_by(PickModel.confidence.desc()).all()
             
             picks_data = []
+            matchup_map = {}  # Map normalized matchup key -> best pick data
+            
             for pick in picks:
                 # Get game info
                 game = session.query(GameModel).filter_by(id=pick.game_id).first()
@@ -1176,13 +1209,25 @@ class EmailGenerator:
                     continue
                 
                 # Format matchup - get official team names from database using team_id
-                team1_name = self._get_team_name(game.team1_id, session)
-                team2_name = self._get_team_name(game.team2_id, session)
+                team1_name_raw = self._get_team_name(game.team1_id, session)
+                team2_name_raw = self._get_team_name(game.team2_id, session)
+                
+                # Normalize team names for display (remove mascots) to ensure consistency
+                # This handles cases where the same team has multiple entries with different names
+                team1_name = remove_mascot_from_team_name(team1_name_raw)
+                team2_name = remove_mascot_from_team_name(team2_name_raw)
+                
+                # Create normalized matchup key for deduplication (use normalized names, not IDs)
+                # This handles cases where the same team has multiple entries in the teams table
+                norm_team1 = normalize_team_name(team1_name, for_matching=True)
+                norm_team2 = normalize_team_name(team2_name, for_matching=True)
+                # Create key that's order-independent (sort team names to handle home/away variations)
+                matchup_key = tuple(sorted([norm_team1, norm_team2]))
                 
                 # Get KenPom ranks
                 team1_kp, team2_kp = self._get_kenpom_ranks(game, session)
                 
-                # Format teams with ranks
+                # Format teams with ranks (using normalized names without mascots)
                 team1_formatted = self._format_team_with_rank(team1_name, team1_kp)
                 team2_formatted = self._format_team_with_rank(team2_name, team2_kp)
                 
@@ -1201,7 +1246,9 @@ class EmailGenerator:
                 if pick.bet_type == BetType.SPREAD:
                     # Determine which team based on line and team_id
                     if pick.team_id:
-                        pick_team_name = self._get_team_name(pick.team_id, session)
+                        pick_team_name_raw = self._get_team_name(pick.team_id, session)
+                        # Normalize team name for display (remove mascots)
+                        pick_team_name = remove_mascot_from_team_name(pick_team_name_raw)
                         # Get KenPom rank for the picked team
                         pick_team_kp = team1_kp if pick.team_id == game.team1_id else (team2_kp if pick.team_id == game.team2_id else None)
                         pick_team_formatted = self._format_team_with_rank(pick_team_name, pick_team_kp)
@@ -1239,7 +1286,9 @@ class EmailGenerator:
                     # Use team_id to get official name
                     # Don't include odds in selection text since they're shown in separate column
                     if pick.team_id:
-                        pick_team_name = self._get_team_name(pick.team_id, session)
+                        pick_team_name_raw = self._get_team_name(pick.team_id, session)
+                        # Normalize team name for display (remove mascots)
+                        pick_team_name = remove_mascot_from_team_name(pick_team_name_raw)
                         # Get KenPom rank for the picked team
                         pick_team_kp = team1_kp if pick.team_id == game.team1_id else (team2_kp if pick.team_id == game.team2_id else None)
                         pick_team_formatted = self._format_team_with_rank(pick_team_name, pick_team_kp)
@@ -1272,14 +1321,38 @@ class EmailGenerator:
                 if pick.best_bet and rationale:
                     rationale = self._summarize_best_bet_rationale(rationale, matchup, selection)
                 
-                picks_data.append({
+                pick_data = {
                     'matchup': matchup,
                     'selection': selection,
                     'odds': odds_str,
                     'rationale': rationale,
                     'confidence_score': confidence_score,
-                    'best_bet': pick.best_bet or False
-                })
+                    'best_bet': pick.best_bet or False,
+                    'confidence': confidence_value  # Keep raw confidence for comparison
+                }
+                
+                # Deduplicate by matchup: keep the pick with highest confidence, or best bet if tied
+                # This handles cases where there might be multiple game_ids for the same matchup
+                if matchup_key not in matchup_map:
+                    matchup_map[matchup_key] = pick_data
+                else:
+                    existing = matchup_map[matchup_key]
+                    # Prefer best bet, then higher confidence
+                    if pick.best_bet and not existing['best_bet']:
+                        matchup_map[matchup_key] = pick_data
+                    elif not pick.best_bet and existing['best_bet']:
+                        pass  # Keep existing best bet
+                    elif confidence_value > existing['confidence']:
+                        matchup_map[matchup_key] = pick_data
+                    # If tied, keep existing (first one seen, which is already sorted by confidence)
+            
+            # Convert to list and sort by confidence_score descending
+            picks_data = list(matchup_map.values())
+            picks_data.sort(key=lambda x: (x['best_bet'], x['confidence_score']), reverse=True)
+            
+            # Remove 'confidence' field before returning (it was only for comparison)
+            for pick_data in picks_data:
+                pick_data.pop('confidence', None)
             
             return picks_data
         except Exception as e:
@@ -1851,6 +1924,7 @@ class EmailGenerator:
                     matchup += f" - {game_time_str}"
                 
                 game_info = {
+                    'game_id': game.id,
                     'matchup': matchup,
                     'venue': game.venue,
                     'team1_rank': int(team1_kp) if team1_kp else None,
@@ -1879,112 +1953,150 @@ class EmailGenerator:
             logger.warning("Best Games -- No games data provided to LLM")
             return []
         
-        # Format games data for LLM
-        games_text = []
-        for i, game in enumerate(games_data, 1):
-            game_str = f"{i}. {game['matchup']}"
-            if game.get('venue'):
-                game_str += f" at {game['venue']}"
-            
-            details = []
-            if game.get('team1_rank') and game.get('team2_rank'):
-                details.append(f"Rankings: #{game['team1_rank']} vs #{game['team2_rank']}")
-            elif game.get('team1_rank'):
-                details.append(f"Home team ranked #{game['team1_rank']}")
-            elif game.get('team2_rank'):
-                details.append(f"Away team ranked #{game['team2_rank']}")
-            
-            if game.get('rivalry'):
-                details.append("Rivalry game")
-            
-            if game.get('projected_total'):
-                details.append(f"Projected total: {game['projected_total']:.1f} points")
-            
-            if game.get('projected_spread') is not None:
-                spread = game['projected_spread']
-                details.append(f"Projected margin: {abs(spread):.1f} points ({'home' if spread > 0 else 'away'} favored)")
-            
-            if game.get('matchup_notes'):
-                notes = game['matchup_notes'][:200]  # Limit length
-                details.append(f"Context: {notes}")
-            
-            if details:
-                game_str += " | " + " | ".join(details)
-            
-            games_text.append(game_str)
+        # Format games data for LLM as JSON so it can reliably reference game_id
+        games_payload = []
+        for game in games_data:
+            games_payload.append({
+                "game_id": game.get("game_id"),
+                "matchup": game.get("matchup"),
+                "venue": game.get("venue"),
+                "team1_rank": game.get("team1_rank"),
+                "team2_rank": game.get("team2_rank"),
+                "rivalry": game.get("rivalry"),
+                "projected_total": game.get("projected_total"),
+                "projected_spread": game.get("projected_spread"),
+                "matchup_notes": game.get("matchup_notes"),
+            })
         
-        games_list = "\n".join(games_text)
+        games_json = json.dumps(games_payload, indent=2)
         
-        system_prompt, user_prompt = watch_blurbs_prompts(games_list)
+        system_prompt, user_prompt, json_schema = watch_blurbs_prompts(games_json)
         
         try:
+            # Use JSON mode with schema for reliable structured output
             response = self.llm_client.call(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                temperature=0.8,
-                max_tokens=400,
-                parse_json=True
+                response_format=json_schema,
+                temperature=0.7,
+                max_tokens=500,
+                parse_json=True,
             )
-            
-            # Extract selected games
+
+            # Check for errors in response
             if isinstance(response, dict):
-                selected = response.get('selected_games', [])
-                print(f"Best Games -- Selected games from LLM: {selected}")
-            else:
-                logger.info(f"Best Games -- Response is not a dict: {response}")
-                selected = []
+                if "error" in response:
+                    error_msg = response.get("error", "Unknown error")
+                    raw_content = response.get("raw_response", "")
+                    logger.error(
+                        f"LLM returned error for best games selection: {error_msg}. "
+                        f"Raw response: {raw_content[:500]}"
+                    )
+                    raise ValueError(f"LLM error: {error_msg}")
+                
+                if "parse_error" in response:
+                    error_msg = response.get("parse_error", "JSON parse error")
+                    raw_content = response.get("raw_response", "")
+                    logger.error(
+                        f"Failed to parse LLM JSON response for best games: {error_msg}. "
+                        f"Raw response: {raw_content[:500]}"
+                    )
+                    raise ValueError(f"JSON parse error: {error_msg}")
             
-            # Match back to original game data to get venue and other info
-            # Helper to normalize matchup by stripping time and normalizing whitespace
+            # Extract games from JSON response
+            if not isinstance(response, dict) or "games" not in response:
+                logger.error(f"Unexpected LLM response format for best games: {response}")
+                raise ValueError(f"LLM did not return expected format. Got: {type(response)}")
+            
+            llm_games = response.get("games", [])
+            if not llm_games:
+                logger.error(f"LLM returned empty games list: {response}")
+                raise ValueError("LLM returned no games")
+            
+            if len(llm_games) < 3:
+                logger.warning(f"LLM returned only {len(llm_games)} games, expected 3. Response: {response}")
+            
+            # Match LLM-selected games back to original game data to get venue and other info
             def normalize_matchup(m):
+                """Normalize matchup by removing time, ranks, and normalizing whitespace"""
                 # Remove time portion (everything after " - ")
                 if ' - ' in m:
                     m = m.split(' - ')[0]
+                # Remove rank prefixes like "(25) " or "(6) "
+                m = re.sub(r'\(\d+\)\s*', '', m)
                 return m.strip().lower()
             
-            result = []
-            for selected_game in selected[:3]:  # Limit to 3
-                matchup = selected_game.get('matchup', '')
-                description = selected_game.get('description', '')
+            def fuzzy_match(selected_m, game_m):
+                """Check if selected matchup matches game matchup with lenient comparison"""
+                s_teams = [t.strip() for t in selected_m.split('@')]
+                g_teams = [t.strip() for t in game_m.split('@')]
                 
-                # Find matching game data
-                matching_game = None
-                normalized_selected = normalize_matchup(matchup)
-                for game in games_data:
-                    normalized_game = normalize_matchup(game['matchup'])
-                    if normalized_game == normalized_selected:
-                        matching_game = game
-                        break
+                if len(s_teams) != 2 or len(g_teams) != 2:
+                    return False
                 
-                if matching_game:
-                    # Use the original matchup format from games_data (with time if available)
-                    result_matchup = matching_game['matchup']
-                    result.append({
-                        'matchup': result_matchup,
-                        'venue': matching_game.get('venue'),
-                        'description': description
-                    })
+                # Check if each team in selected is contained in corresponding team in game
+                match1 = s_teams[0] in g_teams[0] or g_teams[0] in s_teams[0]
+                match2 = s_teams[1] in g_teams[1] or g_teams[1] in s_teams[1]
+                
+                # Also try swapped order
+                match1_swapped = s_teams[0] in g_teams[1] or g_teams[1] in s_teams[0]
+                match2_swapped = s_teams[1] in g_teams[0] or g_teams[0] in s_teams[1]
+                
+                return (match1 and match2) or (match1_swapped and match2_swapped)
+
+            # Build a lookup by game_id for fast, exact matching
+            games_by_id = {g.get("game_id"): g for g in games_data}
             
-            return result[:3]
+            result = []
+            for llm_game in llm_games[:3]:  # Limit to 3
+                game_id = llm_game.get("game_id")
+                # Accept either 'description' or 'blurb' from the model
+                description = (llm_game.get("description") or llm_game.get("blurb") or "").strip()
+                
+                if not game_id or not description:
+                    logger.warning(f"Skipping invalid LLM game entry (missing game_id/description): {llm_game}")
+                    continue
+                
+                matching_game = games_by_id.get(game_id)
+                if not matching_game:
+                    logger.error(
+                        f"LLM returned game_id {game_id} that does not exist in games_data. "
+                        f"Available IDs: {list(games_by_id.keys())}"
+                    )
+                    continue
+                
+                # Use the original matchup format from games_data (with time if available)
+                result_matchup = matching_game['matchup']
+                result.append({
+                    'matchup': result_matchup,
+                    'venue': matching_game.get('venue'),
+                    'description': description
+                })
+            
+            if not result:
+                # If we couldn't match any game_ids, this indicates a logic or prompt issue
+                raise ValueError(
+                    f"Failed to match any LLM-selected games to game data using game_id. "
+                    f"LLM returned: {llm_games}, Available IDs: {list(games_by_id.keys())}"
+                )
+            
+            # If we got fewer than 3, that's okay - return what we have
+            # But log it for visibility
+            if len(result) < 3:
+                logger.warning(f"Only matched {len(result)} out of {len(llm_games)} LLM-selected games")
+            
+            return result
             
         except Exception as e:
-            logger.info(f"Error in LLM game selection: {e}. Using fallback.")
-            # Fallback: return top 3 by ranking if available
-            ranked_games = []
-            for game in games_data:
-                if game.get('team1_rank') and game.get('team2_rank'):
-                    avg_rank = (game['team1_rank'] + game['team2_rank']) / 2
-                    ranked_games.append((avg_rank, game))
-            
-            ranked_games.sort(key=lambda x: x[0])
-            return [
-                {
-                    'matchup': game['matchup'],
-                    'venue': game.get('venue'),
-                    'description': f"{game['matchup']} - Quality matchup worth watching."
-                }
-                for _, game in ranked_games[:3]
-            ]
+            # NO FALLBACK - fail loudly so we know the LLM isn't working
+            logger.error(
+                f"CRITICAL: LLM failed to generate best games descriptions: {e}. "
+                f"This is a required feature - no fallback will be used. "
+                f"Email generation will continue but 'Best Games' section will be empty.",
+                exc_info=True
+            )
+            # Return empty list - let the email generator handle missing best games gracefully
+            return []
     
     def _generate_game_description(
         self,
@@ -2329,14 +2441,42 @@ class EmailGenerator:
         system_prompt, user_prompt = highlights_prompts(games_text)
         
         try:
+            # Use response_format to force JSON mode in Gemini for highlights
+            highlights_schema = {
+                "type": "object",
+                "properties": {
+                    "highlights": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "category": {"type": "string"},
+                                "game_id": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "required": ["category", "description"],
+                        },
+                    }
+                },
+                "required": ["highlights"],
+            }
+
             response = self.llm_client.call(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.7,
                 max_tokens=300,
-                parse_json=True
+                response_format=highlights_schema,
+                parse_json=True,
             )
             
+            # If JSON parsing failed upstream, force fallback by raising
+            if isinstance(response, dict) and response.get("parse_error"):
+                raw = response.get("raw_response", "")
+                snippet = (raw[:500] + "... [truncated]") if isinstance(raw, str) and len(raw) > 500 else raw
+                logger.info(f"Superlatives -- LLM returned invalid JSON. Raw snippet: {snippet}")
+                raise ValueError(f"Invalid JSON from LLM: {response['parse_error']}")
+
             # Extract highlights
             if isinstance(response, dict):
                 highlights = response.get('highlights', [])

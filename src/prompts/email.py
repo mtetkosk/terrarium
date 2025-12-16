@@ -44,43 +44,92 @@ Write 1-2 sentences summarizing the quality of today's games. Be natural and var
     return system_prompt, user_prompt
 
 
-def watch_blurbs_prompts(games_list: str) -> Tuple[str, str]:
-    system_prompt = """You are a sports writer selecting the most exciting games to watch for a daily betting email newsletter.
+def watch_blurbs_prompts(games_json: str) -> Tuple[str, str, Dict[str, Any]]:
+    """
+    Returns (system_prompt, user_prompt, json_schema) for structured JSON output
+    """
+    system_prompt = """You are a sharp, punchy sports writer selecting the most exciting games to watch for a daily betting email newsletter.
 
-Your task: Select the 3 most exciting/compelling games from the list and write a short, engaging blurb (1-2 sentences, max 120 characters) for each explaining why it's worth watching.
+Your task: Select the 3 most exciting/compelling games from the list and write a snappy, high-energy blurb (1-2 sentences, max 120 characters) for each.
+
+Style Guide:
+- Be punchy and energetic (e.g. "Hoops at The Palestra always pops", "Trap-watch blowout alert", "Sneaky tight clash")
+- Use active betting/sports language (e.g. "razor-thin", "shootout", "desperate squad", "bouncing back")
+- Focus on the *narrative* of the matchup (styles clashing, venue atmosphere, rankings)
+- Avoid dry, generic descriptions like "This will be a good game."
 
 Selection criteria (prioritize in this order):
 1. Top-ranked matchups (both teams in top 50)
 2. Rivalry games
-3. Historic/notable venues
+3. Historic/notable venues (e.g. The Palestra, Hinkle Fieldhouse, Cameron Indoor)
 4. Extremely close projected games (margin ≤ 2 points)
-5. High-scoring shootouts (projected total ≥ 170) or defensive battles (≤ 115)
+5. High-scoring shootouts (projected total ≥ 170)
 6. Games with interesting context/storylines
 
-For each selected game, write a unique, specific blurb that:
-- Explains what makes THIS game special
-- Avoids generic phrases unless truly exceptional
-- Is conversational and exciting
-- Varies language across games (don't repeat the same phrases)
+CRITICAL:
+- You are given a JSON array of games. Each game has a unique `game_id` and a `matchup` string.
+- You MUST pick exactly 3 games from that list.
+- In your output, always refer to games by their `game_id` from the input JSON (do NOT invent new IDs).
+- Your output MUST be valid JSON only."""
 
-Output format (JSON):
-{
-  "selected_games": [
-    {
-      "matchup": "Team A @ Team B",
-      "description": "Your engaging 1-2 sentence blurb here"
-    },
+    user_prompt = f"""You are given today's slate of games as a JSON array. Each game has:
+- game_id (integer)
+- matchup (string)
+- venue, rankings, rivalry flag, projected totals/spread, and notes
+
+Games JSON:
+{games_json}
+
+Your task:
+- Select EXACTLY 3 games from this list.
+- For each selected game, return a short, punchy, high-energy description of why it's worth watching.
+
+Output format (valid JSON only, no extra text):
+{{
+  "games": [
+    {{
+      "game_id": <game_id from input>,
+      "description": "<1-2 sentence blurb, max 120 characters>"
+    }},
     ...
   ]
-}"""
+}}"""
 
-    user_prompt = f"""Select the 3 most exciting games from today's slate and write engaging blurbs:
+    # JSON schema for structured output
+    # Note: Gemini Schema proto doesn't support minItems/maxItems, so we enforce in prompt
+    json_schema = {
+        "type": "object",
+        "properties": {
+            "games": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "game_id": {
+                            "type": "integer",
+                            "description": "The game_id from the input games JSON"
+                        },
+                        "matchup": {
+                            "type": "string",
+                            "description": "Optional: matchup in format 'Team A @ Team B'"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "A punchy, engaging 1-2 sentence description (max 120 characters) explaining why this game is worth watching"
+                        },
+                        "blurb": {
+                            "type": "string",
+                            "description": "Optional alternative field name for description"
+                        }
+                    },
+                    "required": ["game_id", "description"]
+                }
+            }
+        },
+        "required": ["games"]
+    }
 
-{games_list}
-
-Return exactly 3 games in JSON format with matchup and description."""
-
-    return system_prompt, user_prompt
+    return system_prompt, user_prompt, json_schema
 
 
 def watch_description_prompts(matchup: str, context: str) -> Tuple[str, str]:
