@@ -10,7 +10,7 @@ agents:
   researcher:
     enabled: true
   modeler:
-    batch_size: 5  # Process 5 games per batch (increased from 3 for better efficiency)
+    batch_size: 5  # Process 5 games per batch
   picker:
     batch_size: 12  # Process 12 games per batch
   auditor:
@@ -20,28 +20,30 @@ agents:
 
 llm:
   # Default model (used if agent-specific model not specified)
-  model: "gpt-5-mini"  # Options: gpt-4o-mini (cheapest), gpt-4o, gpt-4-turbo
+  model: "gpt-4o-mini"  # Using OpenAI as default (fast and reliable)
   
   # Per-agent model optimization
-  # Model mapping: gpt-5-mini → gpt-4o-mini, gpt-5.1 → gpt-4o, gpt-5-nano → gpt-4o-mini
   agent_models:
     # Planning/Coordinator (Medium importance, 1x per run)
-    coordinator: "gpt-5-mini"  # gpt-5-mini equivalent
+    coordinator: "gpt-4o-mini"
     
-    # President (Very High importance, final gatekeeper, 1x per run)
-    president: "gpt-5.1"  # gpt-5.1 equivalent - best reasoning where it counts most
+    # President (Very High importance, final gatekeeper, 1x per run) - requires thinking
+    president: "gpt-5.2" 
     
     # Researcher (High importance, many calls per run)
-    researcher: "gpt-4o-mini"  # gpt-5-mini equivalent - tool use + web, good reasoning, cheaper
+    researcher: "gpt-4o-mini"  
     
-    # Modeler (High importance, per game)
-    modeler: "gpt-5.1"  # gpt-5-mini equivalent - numbers + probabilities, heavy math in code
+    # Modeler (High importance, per game) - requires thinking
+    modeler: "gpt-5.2"  
     
-    # Picker (High importance, 1-2x per run)
-    picker: "gpt-5-mini"  # gpt-5-mini equivalent - filters edges into picks
+    # Picker (High importance, 1-2x per run) - requires thinking
+    picker: "gpt-5.2" 
     
     # Auditor (Medium importance, 1x per day/week)
-    auditor: "gpt-4o-mini"  # gpt-5-nano equivalent - summarization + pattern spotting
+    auditor: "gpt-4o-mini"
+    
+    # Email Generator (Creative writing, needs better instruction following) - requires thinking
+    email: "gpt-5.2"
 
 scheduler:
   run_time: "09:00"  # Daily run time
@@ -59,4 +61,3 @@ email:
   # EMAIL_RECIPIENTS - comma-separated list of recipient emails
   # Or specify recipients in config below
   sender_name: "Terrarium Betting"  # Display name for sender
-

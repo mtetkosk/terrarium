@@ -280,71 +280,36 @@ Provide clear, detailed justification for each pick that explains:
 - What contextual factors (injuries, recent form, matchups) influenced the decision
 - How historical performance patterns informed this selection"""
         
-        # Estimate prompt tokens
+        # Call LLM directly without complex token counting (Gemini has 1M+ context)
         import json
         from src.agents.base import _make_json_serializable
         
         serializable_data = _make_json_serializable(input_data)
         
-        try:
-            import tiktoken
-            encoding = tiktoken.encoding_for_model(self.llm_client.model)
-            formatted_prompt = f"""{user_prompt}
+        full_user_prompt = f"""{user_prompt}
 
 Input data:
 {json.dumps(serializable_data, indent=2)}"""
-            prompt_tokens_estimate = len(encoding.encode(self.system_prompt)) + len(encoding.encode(formatted_prompt))
-        except (ImportError, KeyError, Exception):
-            formatted_prompt = f"""{user_prompt}
-
-Input data:
-{json.dumps(serializable_data, indent=2)}"""
-            prompt_tokens_estimate = (len(self.system_prompt) + len(formatted_prompt)) // 4
         
-        # Determine context window size and calculate max_completion_tokens
-        CONTEXT_WINDOW = 128000
-        SAFETY_BUFFER = 2000
-        remaining_space = CONTEXT_WINDOW - prompt_tokens_estimate - SAFETY_BUFFER
+        self.log_info(f"Calling LLM for batch {batch_num} ({num_games} games)")
         
-        if remaining_space < 16000:
-            max_completion = 16000
-            self.log_warning(
-                f"⚠️  Very large prompt in batch {batch_num} ({prompt_tokens_estimate:,} tokens, {num_games} games), "
-                f"only {remaining_space:,} tokens remaining. Setting max_completion_tokens to {max_completion:,}"
-            )
-        else:
-            # Use remaining space, but cap based on game count
-            if num_games > 40:
-                max_completion = min(remaining_space, 50000)
-            elif num_games > 20:
-                max_completion = min(remaining_space, 40000)
-            else:
-                max_completion = min(remaining_space, 30000)
-            
-            if prompt_tokens_estimate > 80000:
-                self.log_info(
-                    f"Large prompt in batch {batch_num} ({prompt_tokens_estimate:,} tokens, {num_games} games), "
-                    f"setting max_completion_tokens to {max_completion:,} (remaining space: {remaining_space:,})"
-                )
+        # Get usage stats before call
+        usage_before = self.llm_client.get_usage_stats()
         
-        # Call LLM
-        if hasattr(self.llm_client, 'client') and self.llm_client.client is not None:
-            response = self._call_llm_with_max_tokens(
-                user_prompt=user_prompt,
-                input_data=input_data,
-                temperature=0.5,
-                parse_json=True,
-                response_format=get_picker_schema(),
-                max_tokens=max_completion
-            )
-        else:
-            response = self.call_llm(
-                user_prompt=user_prompt,
-                input_data=input_data,
-                temperature=0.5,
-                parse_json=True,
-                response_format=get_picker_schema()
-            )
+        response = self.llm_client.call(
+            system_prompt=self.system_prompt,
+            user_prompt=full_user_prompt,
+            temperature=0.5,
+            parse_json=True,
+            response_format=get_picker_schema(),
+            max_tokens=8192  # Gemini max output tokens
+        )
+        
+        # Log usage
+        usage_after = self.llm_client.get_usage_stats()
+        tokens_used = usage_after["total_tokens"] - usage_before["total_tokens"]
+        if tokens_used > 0:
+             self.log_info(f"💰 Picker batch {batch_num} token usage: {tokens_used:,}")
         
         picks = response.get("candidate_picks", [])
         
@@ -358,172 +323,3 @@ Input data:
         
         response["candidate_picks"] = picks
         return response
-    
-    def _call_llm_with_max_tokens(
-        self,
-        user_prompt: str,
-        input_data: Optional[Dict[str, Any]] = None,
-        temperature: float = 0.7,
-        parse_json: bool = True,
-        response_format: Optional[Dict[str, Any]] = None,
-        max_tokens: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """
-        Call LLM with explicit max_tokens parameter
-        
-        This is a wrapper around call_llm that adds max_tokens support for large inputs
-        """
-        if not self.system_prompt:
-            raise ValueError(f"Agent {self.name} has no system prompt defined")
-        
-        # Format user prompt with input data if provided
-        from src.agents.base import _make_json_serializable
-        import json
-        
-        if input_data:
-            serializable_data = _make_json_serializable(input_data)
-            formatted_prompt = f"""{user_prompt}
-
-Input data:
-{json.dumps(serializable_data, indent=2)}"""
-        else:
-            formatted_prompt = user_prompt
-        
-        self.logger.debug(f"Calling LLM for {self.name} with max_tokens={max_tokens}")
-        
-        # Get usage stats before call
-        usage_before = self.llm_client.get_usage_stats()
-        
-        # Build messages
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": formatted_prompt}
-        ]
-        
-        # Prepare kwargs for OpenAI API
-        kwargs = {
-            "model": self.llm_client.model,
-            "messages": messages,
-        }
-        
-        # Only add temperature if model is not gpt-5 (gpt-5 models don't support temperature)
-        if not self.llm_client.model.startswith("gpt-5"):
-            kwargs["temperature"] = temperature
-        
-        # Set max_tokens or max_completion_tokens based on model
-        if max_tokens:
-            if self.llm_client.model.startswith("gpt-5"):
-                kwargs["max_completion_tokens"] = max_tokens
-            else:
-                kwargs["max_tokens"] = max_tokens
-        
-        # Add response_format if provided (structured output)
-        if response_format:
-            kwargs["response_format"] = response_format
-        
-        try:
-            response = self.llm_client.client.chat.completions.create(**kwargs)
-        except Exception as api_error:
-            error_msg = str(api_error)
-            # Check if error is due to unsupported response_format
-            if "response_format" in error_msg.lower() or "structured output" in error_msg.lower():
-                self.logger.warning(
-                    f"Model {self.llm_client.model} may not support structured output. "
-                    f"Falling back to regular JSON parsing. Error: {error_msg}"
-                )
-                # Retry without response_format
-                if "response_format" in kwargs:
-                    kwargs.pop("response_format", None)
-                    response = self.llm_client.client.chat.completions.create(**kwargs)
-            else:
-                raise
-        
-        # Extract and log token usage
-        usage = response.usage
-        if usage:
-            prompt_tokens = usage.prompt_tokens or 0
-            completion_tokens = usage.completion_tokens or 0
-            total_tokens = usage.total_tokens or 0
-            
-            # Track totals
-            self.llm_client.total_prompt_tokens += prompt_tokens
-            self.llm_client.total_completion_tokens += completion_tokens
-            self.llm_client.total_tokens_used += total_tokens
-            
-            # Log token usage
-            self.logger.info(
-                f"📊 Token usage ({self.llm_client.model}): "
-                f"Prompt: {prompt_tokens:,} | "
-                f"Completion: {completion_tokens:,} | "
-                f"Total: {total_tokens:,}"
-            )
-        
-        # Get usage stats after call and log delta
-        usage_after = self.llm_client.get_usage_stats()
-        tokens_used = usage_after["total_tokens"] - usage_before["total_tokens"]
-        prompt_tokens_delta = usage_after["prompt_tokens"] - usage_before["prompt_tokens"]
-        completion_tokens_delta = usage_after["completion_tokens"] - usage_before["completion_tokens"]
-        
-        if tokens_used > 0:
-            self.logger.info(
-                f"💰 {self.name} token usage: "
-                f"{tokens_used:,} total ({prompt_tokens_delta:,} prompt + {completion_tokens_delta:,} completion)"
-            )
-        
-        # Check for truncation
-        choice = response.choices[0]
-        finish_reason = choice.finish_reason
-        
-        if finish_reason == "length":
-            current_max = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens", "unknown")
-            self.logger.error("⚠️  Response was TRUNCATED due to max_tokens limit!")
-            self.logger.error(f"Current max_tokens/max_completion_tokens: {current_max}")
-            self.logger.error(f"Prompt tokens: {usage.prompt_tokens if usage else 'unknown'}")
-            self.logger.error(f"Completion tokens used: {usage.completion_tokens if usage else 'unknown'}")
-            self.logger.error("⚠️  Some picks may be missing - response was truncated before completion")
-        
-        # Handle response
-        message = response.choices[0].message
-        content = message.content
-        
-        if parse_json:
-            try:
-                parsed = json.loads(content)
-                # Validate that we have candidate_picks
-                if "candidate_picks" not in parsed:
-                    self.logger.warning("LLM response missing 'candidate_picks' field")
-                    return {"candidate_picks": []}
-                
-                # Check if response was truncated and warn if picks are missing
-                picks = parsed.get("candidate_picks", [])
-                if finish_reason == "length" and len(input_data.get("researcher_output", {}).get("games", [])) > len(picks):
-                    expected_games = len(input_data.get("researcher_output", {}).get("games", []))
-                    self.logger.error(
-                        f"⚠️  TRUNCATION DETECTED: Expected picks for {expected_games} games, "
-                        f"but only received {len(picks)} picks. Response was truncated."
-                    )
-                
-                return parsed
-            except json.JSONDecodeError as e:
-                self.logger.warning(f"JSON parsing error: {e}")
-                self.logger.debug(f"Response content (first 500 chars): {content[:500] if content else 'None'}")
-                
-                # Try to extract JSON from markdown code blocks
-                if content and "```json" in content:
-                    json_start = content.find("```json") + 7
-                    json_end = content.find("```", json_start)
-                    if json_end > json_start:
-                        json_str = content[json_start:json_end].strip()
-                        try:
-                            return json.loads(json_str)
-                        except json.JSONDecodeError:
-                            pass
-                
-                return {
-                    "candidate_picks": [],
-                    "parse_error": str(e),
-                    "raw_response": content[:500] if content else None
-                }
-        else:
-            return {"raw_response": content}
-    

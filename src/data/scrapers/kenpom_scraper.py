@@ -322,25 +322,11 @@ class KenPomScraper:
                 elif header_lower == 'ortg' and 'adj_offense' not in col_indices:
                     col_indices['adj_offense'] = i
                     # Don't store duplicate 'ortg' key - only use 'adj_offense'
-                # Defensive Rating (DRtg)
-                # KenPom has two possible table structures:
-                # 1. Simple structure (test/simplified): DRtg column (first) = AdjD value
-                # 2. Complex structure (real KenPom): 
-                #    - Column 6: DRtg (first) = rank (not the AdjD value)
-                #    - Column 11: DRtg (second) = change/delta value (NOT the AdjD value!)
-                #    - Column 15: Actual AdjD value (no header - it's in an unlabeled column)
-                elif header_lower == 'drtg':
-                    drtg_occurrence_count += 1
-                    if drtg_occurrence_count == 1:
-                        # First occurrence - could be AdjD value (simple structure) or rank (complex structure)
-                        # We'll check the value later to determine which it is
-                        col_indices['_drtg_first_col'] = i  # Store for later processing
-                    elif drtg_occurrence_count == 2:
-                        # Second occurrence - this is the CHANGE value in complex structure
-                        # Store this index so we can find the AdjD value column after it
-                        col_indices['_drtg_change_col'] = i  # Store change column for reference
-                        # Mark that we have complex structure
-                        col_indices['_has_complex_structure'] = True
+                # Defensive Rating (DRtg) - the AdjD value is in the first DRtg column
+                # KenPom might label it as "DRtg", "DRtg.", "Def", "Def.", etc.
+                elif header_lower in ['drtg', 'drtg.', 'def', 'def.', 'defensive', 'defensive rating']:
+                    if '_drtg_first_col' not in col_indices:
+                        col_indices['_drtg_first_col'] = i
                 # Adjusted Tempo (AdjT)
                 # In simple structure: AdjT column contains AdjT value
                 # In complex structure: AdjT column header contains DRtg value, actual AdjT is in second NetRtg
@@ -352,14 +338,10 @@ class KenPomScraper:
                     # If we don't have complex structure yet, assume simple structure and use this for AdjT
                     if not col_indices.get('_has_complex_structure', False):
                         col_indices['adj_tempo'] = i
-                # Luck
-                # In complex structure: Luck value is in the second DRtg column (column 11), not the Luck header column (column 8)
-                # The Luck header column contains a rank, not the actual Luck value
+                # Luck - always store the Luck header column index
+                # The Luck value is in the column after the Luck header (header = rank, next = value)
                 elif header_lower == 'luck':
-                    # Store this for simple structure, but in complex structure we'll use the second DRtg column
-                    if not col_indices.get('_has_complex_structure', False):
-                        col_indices['luck'] = i
-                    # In complex structure, we'll extract Luck from the second DRtg column (change column)
+                    col_indices['luck'] = i
                 # NetRtg occurrences:
                 # - First NetRtg (column 4) = Net Rating value
                 # - Second NetRtg (column 9) = AdjT value (not NetRtg!)
@@ -492,38 +474,35 @@ class KenPomScraper:
                             team_stats['adj_offense'] = safe_float(cells[idx].get_text(strip=True))
                             # Don't create duplicate 'ortg' field - only use 'adj_offense'
                     
-                    # AdjD parsing - handle both simple and complex table structures
+                    # AdjD parsing - the AdjD value is in the first DRtg column
+                    # In KenPom's table: Rank, Team, Conf, W-L, NetRtg, AdjO, AdjO Rank, AdjD, AdjD Rank, ...
+                    # So AdjD is typically 2 columns after AdjO (AdjO, AdjO Rank, AdjD)
                     adjd_value = None
-                    has_complex = col_indices.get('_has_complex_structure', False)
-                    change_col = col_indices.get('_drtg_change_col')
                     drtg_first_col = col_indices.get('_drtg_first_col')
                     
-                    if has_complex and change_col is not None:
-                        # Complex structure: Scan columns after the change column
-                        for offset in [3, 4, 5, 6]:
-                            scan_idx = change_col + offset
-                            if scan_idx < len(cells):
-                                test_value = safe_float(cells[scan_idx].get_text(strip=True))
-                                if test_value is not None and 70 <= test_value <= 130:
-                                    adjd_value = test_value
-                                    logger.debug(f"Found AdjD value {adjd_value} for {team_name} at column {scan_idx} (complex structure)")
-                                    break
-                    elif drtg_first_col is not None:
-                        # Simple structure: First DRtg column contains the AdjD value
-                        if drtg_first_col < len(cells):
-                            test_value = safe_float(cells[drtg_first_col].get_text(strip=True))
+                    # Method 1: Try the DRtg column if we found it
+                    if drtg_first_col is not None and drtg_first_col < len(cells):
+                        test_value = safe_float(cells[drtg_first_col].get_text(strip=True))
+                        if test_value is not None and 70 <= test_value <= 130:
+                            adjd_value = test_value
+                    
+                    # Method 2: If DRtg column not found or value invalid, infer from AdjO position
+                    if adjd_value is None and 'adj_offense' in col_indices:
+                        adjo_col = col_indices['adj_offense']
+                        # AdjD is typically 2 columns after AdjO (AdjO, AdjO Rank, AdjD)
+                        adjd_col = adjo_col + 2
+                        if adjd_col < len(cells):
+                            test_value = safe_float(cells[adjd_col].get_text(strip=True))
                             if test_value is not None and 70 <= test_value <= 130:
                                 adjd_value = test_value
-                                logger.debug(f"Found AdjD value {adjd_value} for {team_name} at column {drtg_first_col} (simple structure)")
+                                logger.debug(f"Found AdjD value {adjd_value} for {team_name} by inferring from AdjO position (column {adjd_col})")
                     
-                    # Validate and store AdjD value
-                    if adjd_value is not None and 70 <= adjd_value <= 130:
+                    if adjd_value is not None:
                         team_stats['adj_defense'] = adjd_value
-                        # Don't create duplicate 'drtg' field - only use 'adj_defense'
-                    elif drtg_first_col is not None or change_col is not None:
+                    else:
                         logger.warning(
-                            f"Could not find AdjD value for {team_name} in expected range (70-130). "
-                            f"First DRtg col: {drtg_first_col}, Change col: {change_col}"
+                            f"Could not find AdjD value for {team_name}. "
+                            f"DRtg col: {drtg_first_col}, AdjO col: {col_indices.get('adj_offense')}"
                         )
                     
                     if 'adj_tempo' in col_indices:
@@ -533,22 +512,39 @@ class KenPomScraper:
                             team_stats['adj_tempo'] = safe_float(cells[idx].get_text(strip=True))
                             # Don't create duplicate 'adjt' field - only use 'adj_tempo'
                     
-                    # Luck parsing - handle both simple and complex structures
-                    has_complex = col_indices.get('_has_complex_structure', False)
-                    change_col = col_indices.get('_drtg_change_col')
+                    # Luck parsing - in KenPom table: AdjT, AdjT Rank, Luck, Luck Rank, ...
+                    # So Luck is 2 columns after AdjT (AdjT, AdjT Rank, Luck)
+                    luck_value = None
                     
-                    if has_complex and change_col is not None:
-                        # Complex structure: Luck value is in the second DRtg column (change column)
-                        if change_col < len(cells):
-                            luck_value = safe_float(cells[change_col].get_text(strip=True))
-                            if luck_value is not None:
-                                team_stats['luck'] = luck_value
-                                logger.debug(f"Found Luck value {luck_value} for {team_name} at change column {change_col} (complex structure)")
-                    elif 'luck' in col_indices:
-                        # Simple structure: Luck is in the Luck column
+                    # Method 1: Try the Luck column if we found it
+                    if 'luck' in col_indices:
                         idx = col_indices['luck']
-                        if idx < len(cells):
-                            team_stats['luck'] = safe_float(cells[idx].get_text(strip=True))
+                        # The Luck value is in the column after the Luck header
+                        # (Luck header column = rank, next column = actual luck value)
+                        if idx + 1 < len(cells):
+                            test_value = safe_float(cells[idx + 1].get_text(strip=True))
+                            # Luck values are small decimals like 0.037, not large numbers like 70.0 or 113
+                            if test_value is not None and -0.5 <= test_value <= 0.5:
+                                luck_value = test_value
+                    
+                    # Method 2: If Luck column not found or value invalid, infer from AdjT position
+                    if luck_value is None and 'adj_tempo' in col_indices:
+                        adjt_col = col_indices['adj_tempo']
+                        # Luck is 2 columns after AdjT (AdjT, AdjT Rank, Luck)
+                        luck_col = adjt_col + 2
+                        if luck_col < len(cells):
+                            test_value = safe_float(cells[luck_col].get_text(strip=True))
+                            if test_value is not None and -0.5 <= test_value <= 0.5:
+                                luck_value = test_value
+                                logger.debug(f"Found Luck value {luck_value} for {team_name} by inferring from AdjT position (column {luck_col})")
+                    
+                    if luck_value is not None:
+                        team_stats['luck'] = luck_value
+                    else:
+                        logger.warning(
+                            f"Could not find Luck value for {team_name}. "
+                            f"Luck col: {col_indices.get('luck')}, AdjT col: {col_indices.get('adj_tempo')}"
+                        )
                     
                     # SOS (Strength of Schedule) - in unlabeled column 1 after third NetRtg
                     # Note: third NetRtg column contains NCSOS, but we're removing NCSOS from output
@@ -598,21 +594,24 @@ class KenPomScraper:
         if target_date is None:
             target_date = date.today()
         
-        if not self.authenticated:
-            logger.warning("Not authenticated with KenPom, cannot fetch team stats")
-            return None
-        
         # Check if cache is for the correct date - refresh if not matching
         if not self._is_cache_for_date(target_date) or not self._team_cache:
-            if not self._is_cache_for_date(target_date):
-                logger.info(f"KenPom cache is for {self._cache_date}, but need {target_date}. Refreshing...")
+            if self.authenticated:
+                if not self._is_cache_for_date(target_date):
+                    logger.info(f"KenPom cache is for {self._cache_date}, but need {target_date}. Refreshing...")
+                else:
+                    logger.info("KenPom cache is empty, refreshing from homepage...")
+                
+                if not self._refresh_homepage_cache(target_date):
+                    logger.warning("Failed to refresh KenPom cache")
             else:
-                logger.info("KenPom cache is empty, refreshing from homepage...")
-            
-            if not self._refresh_homepage_cache(target_date):
-                logger.warning("Failed to refresh KenPom cache")
-                if not self._team_cache:
-                    return None
+                logger.debug("Not authenticated, skipping KenPom cache refresh (will use existing cache)")
+        
+        # If cache is still empty, we can't do anything
+        if not self._team_cache:
+            if not self.authenticated:
+                logger.warning("No KenPom cache available and not authenticated")
+            return None
         
         # CRITICAL: Normalize input team name FIRST before any matching
         # This ensures matching happens on normalized names on BOTH sides
@@ -622,6 +621,7 @@ class KenPomScraper:
         canonical_name = map_team_name_to_canonical(team_name)
         
         logger.debug(f"Looking up team '{team_name}' -> normalized: '{normalized}', canonical: '{canonical_name}'")
+        logger.debug(f"Cache has {len(self._team_cache)} teams. Sample keys: {list(self._team_cache.keys())[:5]}")
         
         # Step 3: Try direct lookup with canonical name (primary lookup)
         # Cache keys are already normalized from cache building, so this matches normalized to normalized
@@ -652,92 +652,29 @@ class KenPomScraper:
                 logger.debug(f"Found KenPom stats for '{team_name}' (normalized: '{normalized}') via variation normalized: '{lookup_normalized}'")
                 return stats
         
-        # If still not found, use LLM for fuzzy matching
-        # Log normalized name so it's clear what we're trying to match
-        logger.info(f"No direct or partial match found for '{team_name}' (normalized: '{normalized}'), trying LLM fuzzy matching...")
-        matched_team = self._llm_fuzzy_match_team(team_name)
-        if matched_team:
-            # Normalize and map the LLM-matched team name
-            matched_normalized = normalize_team_name_for_lookup(matched_team)
-            matched_canonical = map_team_name_to_canonical(matched_team)
-            
-            # Try canonical name first
-            if matched_canonical in self._team_cache:
-                logger.debug(f"Found KenPom stats for {team_name} via LLM fuzzy match (canonical): {matched_canonical}")
-                return self._team_cache[matched_canonical].copy()
-            # Try normalized name
-            if matched_normalized in self._team_cache:
-                logger.debug(f"Found KenPom stats for {team_name} via LLM fuzzy match (normalized): {matched_normalized}")
-                return self._team_cache[matched_normalized].copy()
-        
-        logger.warning(f"Could not find KenPom stats for '{team_name}' (normalized: '{normalized}') in cache (tried direct, partial, and LLM matching)")
+        # If still not found, log warning with more details to help debug
+        logger.warning(
+            f"Could not find KenPom stats for '{team_name}' (normalized: '{normalized}', canonical: '{canonical_name}') in cache. "
+            f"Cache has {len(self._team_cache)} teams. "
+            f"Checking if 'syracuse' is in cache: {'syracuse' in self._team_cache}. "
+            f"Skipping fuzzy match to avoid hallucinations."
+        )
         return None
     
     def _llm_fuzzy_match_team(self, team_name: str) -> Optional[str]:
         """
-        Use LLM to fuzzy match a team name to a KenPom team name
+        DEPRECATED: Use LLM to fuzzy match a team name to a KenPom team name.
+        
+        This method is deprecated because it can produce hallucinations (e.g. matching "Iowa Hawkeyes" to a random rank).
+        It is better to fail and log a warning than to return incorrect data.
         
         Args:
-            team_name: Team name to match (e.g., "Rice Owls", "Tennessee Volunteers")
+            team_name: Team name to match
             
         Returns:
-            Matched KenPom team name or None if no match found
+            None (always returns None to disable this feature)
         """
-        try:
-            from src.utils.llm import get_llm_client
-            
-            # Get list of available team names from cache (limit to top 100 for efficiency)
-            available_teams = []
-            for cached_name, stats in self._team_cache.items():
-                # Only include entries that look like team names (have rank, not normalized keys)
-                if stats.get('kenpom_rank') is not None and stats.get('team'):
-                    # Use the canonical team name from stats
-                    canonical_name = stats.get('team', cached_name)
-                    if canonical_name and canonical_name not in available_teams:
-                        available_teams.append(canonical_name)
-                        if len(available_teams) >= 100:  # Limit to avoid token limits
-                            break
-            
-            if not available_teams:
-                logger.warning("No teams available in cache for LLM matching")
-                return None
-            
-            # Sort by rank to prioritize better teams
-            available_teams.sort(key=lambda t: next(
-                (s.get('kenpom_rank', 9999) for s in self._team_cache.values() if s.get('team') == t),
-                9999
-            ))
-            
-            llm_client = get_llm_client("Researcher")  # Use Researcher's model (usually cheapest)
-            system_prompt, user_prompt = kenpom_match_prompts(team_name, available_teams)
-            
-            try:
-                response = llm_client.call(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    temperature=0.1,  # Low temperature for deterministic matching
-                    max_tokens=50,
-                    parse_json=True
-                )
-                
-                matched_team = response.get('matched_team')
-                if matched_team and matched_team != "null":
-                    logger.info(f"LLM matched '{team_name}' to '{matched_team}'")
-                    return matched_team
-                else:
-                    logger.debug(f"LLM found no match for '{team_name}'")
-                    return None
-                    
-            except Exception as e:
-                logger.warning(f"LLM fuzzy matching failed for {team_name}: {e}")
-                return None
-                
-        except ImportError:
-            logger.warning("LLM client not available for fuzzy matching")
-            return None
-        except Exception as e:
-            logger.warning(f"Error in LLM fuzzy matching for {team_name}: {e}")
-            return None
+        return None
     
     def _find_team_url(self, team_name: str) -> Optional[str]:
         """Find the KenPom URL for a team by searching the teams page"""
@@ -983,14 +920,14 @@ class KenPomScraper:
         if target_date is None:
             target_date = date.today()
         
-        if not self.authenticated:
-            logger.warning("Not authenticated with KenPom, cannot fetch rankings")
-            return None
-        
-        # Ensure cache is for the correct date
+        # Ensure cache is for the correct date (if possible)
         if not self._is_cache_for_date(target_date) or not self._team_cache:
-            if not self._refresh_homepage_cache(target_date):
-                return None
+            if self.authenticated:
+                self._refresh_homepage_cache(target_date)
+        
+        # If cache is empty, we can't do anything
+        if not self._team_cache:
+            return None
         
         # Convert cache dict to list format
         rankings = []

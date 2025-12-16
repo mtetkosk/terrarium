@@ -1147,17 +1147,21 @@ class ReportGenerator:
             lines.append("")
             for i, game in enumerate(games, 1):
                 lines.append(f"GAME #{i}")
+                lines.append("=" * 70)
                 game_id = game.get("game_id", "N/A")
                 teams = game.get("teams", {})
                 away = teams.get("away", "N/A")
                 home = teams.get("home", "N/A")
                 lines.append(f"  Game ID: {game_id}")
                 lines.append(f"  Matchup: {away} @ {home}")
+                lines.append(f"  League: {game.get('league', 'N/A')}")
                 lines.append(f"  Start Time: {game.get('start_time', 'N/A')}")
                 
+                # Market Data
                 market = game.get("market", {})
                 if market:
-                    lines.append("  Market Data:")
+                    lines.append("")
+                    lines.append("  📈 MARKET DATA:")
                     if market.get("spread"):
                         lines.append(f"    Spread: {market['spread']}")
                     if market.get("total"):
@@ -1166,45 +1170,194 @@ class ReportGenerator:
                         ml = market["moneyline"]
                         lines.append(f"    Moneyline: Away {ml.get('away', 'N/A')} / Home {ml.get('home', 'N/A')}")
                 
-                # Check new schema first, fallback to old for compatibility
+                # Advanced Stats (KenPom/Torvik) - THE KEY DATA
+                adv = game.get("adv", {})
+                if adv and not adv.get("data_unavailable"):
+                    lines.append("")
+                    lines.append("  📊 ADVANCED STATS (KenPom/Torvik):")
+                    
+                    # Away team stats
+                    away_stats = adv.get("away", {})
+                    if away_stats:
+                        lines.append(f"    {away} (Away):")
+                        if away_stats.get("kp_rank"):
+                            lines.append(f"      KenPom Rank: #{away_stats['kp_rank']}")
+                        if away_stats.get("torvik_rank"):
+                            lines.append(f"      Torvik Rank: #{away_stats['torvik_rank']}")
+                        if away_stats.get("adjo") is not None:
+                            lines.append(f"      AdjO (Offense): {away_stats['adjo']:.1f}")
+                        if away_stats.get("adjd") is not None:
+                            lines.append(f"      AdjD (Defense): {away_stats['adjd']:.1f}")
+                        if away_stats.get("adjt") is not None:
+                            lines.append(f"      AdjT (Tempo): {away_stats['adjt']:.1f}")
+                        if away_stats.get("net") is not None:
+                            lines.append(f"      Net Rating: {away_stats['net']:+.1f}")
+                        if away_stats.get("conference"):
+                            lines.append(f"      Conference: {away_stats['conference']}")
+                        if away_stats.get("w_l"):
+                            lines.append(f"      Record: {away_stats['w_l']}")
+                        elif away_stats.get("wins") is not None and away_stats.get("losses") is not None:
+                            lines.append(f"      Record: {away_stats['wins']}-{away_stats['losses']}")
+                        if away_stats.get("sos") is not None:
+                            lines.append(f"      SOS (Strength of Schedule): {away_stats['sos']:.1f}")
+                        if away_stats.get("ncsos") is not None:
+                            lines.append(f"      NCSOS (Non-Conf SOS): {away_stats['ncsos']:.1f}")
+                        if away_stats.get("luck") is not None:
+                            lines.append(f"      Luck: {away_stats['luck']:+.1f}")
+                    
+                    # Home team stats
+                    home_stats = adv.get("home", {})
+                    if home_stats:
+                        lines.append(f"    {home} (Home):")
+                        if home_stats.get("kp_rank"):
+                            lines.append(f"      KenPom Rank: #{home_stats['kp_rank']}")
+                        if home_stats.get("torvik_rank"):
+                            lines.append(f"      Torvik Rank: #{home_stats['torvik_rank']}")
+                        if home_stats.get("adjo") is not None:
+                            lines.append(f"      AdjO (Offense): {home_stats['adjo']:.1f}")
+                        if home_stats.get("adjd") is not None:
+                            lines.append(f"      AdjD (Defense): {home_stats['adjd']:.1f}")
+                        if home_stats.get("adjt") is not None:
+                            lines.append(f"      AdjT (Tempo): {home_stats['adjt']:.1f}")
+                        if home_stats.get("net") is not None:
+                            lines.append(f"      Net Rating: {home_stats['net']:+.1f}")
+                        if home_stats.get("conference"):
+                            lines.append(f"      Conference: {home_stats['conference']}")
+                        if home_stats.get("w_l"):
+                            lines.append(f"      Record: {home_stats['w_l']}")
+                        elif home_stats.get("wins") is not None and home_stats.get("losses") is not None:
+                            lines.append(f"      Record: {home_stats['wins']}-{home_stats['losses']}")
+                        if home_stats.get("sos") is not None:
+                            lines.append(f"      SOS (Strength of Schedule): {home_stats['sos']:.1f}")
+                        if home_stats.get("ncsos") is not None:
+                            lines.append(f"      NCSOS (Non-Conf SOS): {home_stats['ncsos']:.1f}")
+                        if home_stats.get("luck") is not None:
+                            lines.append(f"      Luck: {home_stats['luck']:+.1f}")
+                    
+                    # Matchup analysis
+                    matchup = adv.get("matchup", [])
+                    if matchup:
+                        lines.append("    Matchup Analysis:")
+                        for m in matchup:
+                            lines.append(f"      • {m}")
+                elif adv.get("data_unavailable"):
+                    lines.append("")
+                    lines.append("  📊 ADVANCED STATS: Data unavailable")
+                
+                # Injuries
                 injuries = game.get("injuries") or game.get("key_injuries", [])
                 if injuries:
-                    lines.append(f"  Key Injuries ({len(injuries)}):")
-                    for injury in injuries[:5]:  # Limit to 5
+                    lines.append("")
+                    lines.append(f"  🏥 INJURIES ({len(injuries)}):")
+                    for injury in injuries:
                         if isinstance(injury, dict):
+                            team = injury.get('team', '')
                             player = injury.get('player', 'Unknown')
+                            pos = injury.get('pos', '')
                             status = injury.get('status', 'Unknown')
                             notes = injury.get('notes', '')
-                            lines.append(f"    - {player} ({status}): {notes}")
+                            pos_str = f" ({pos})" if pos else ""
+                            team_str = f"[{team}] " if team else ""
+                            lines.append(f"    - {team_str}{player}{pos_str}: {status}" + (f" - {notes}" if notes else ""))
                         else:
                             lines.append(f"    - {injury}")
                 
+                # Recent Form
                 recent = game.get("recent") or {}
                 if recent:
-                    away_rec = recent.get('away', {}).get('rec', '')
-                    home_rec = recent.get('home', {}).get('rec', '')
-                    away_notes = recent.get('away', {}).get('notes', '')
-                    home_notes = recent.get('home', {}).get('notes', '')
-                    if away_rec or home_rec:
-                        lines.append(f"  Recent Form: Away {away_rec}" + (f" ({away_notes})" if away_notes else ""))
-                        lines.append(f"                Home {home_rec}" + (f" ({home_notes})" if home_notes else ""))
+                    lines.append("")
+                    lines.append("  📅 RECENT FORM:")
+                    away_recent = recent.get('away', {})
+                    home_recent = recent.get('home', {})
+                    
+                    if away_recent:
+                        rec = away_recent.get('rec', 'N/A')
+                        notes = away_recent.get('notes', '')
+                        pace_trend = away_recent.get('pace_trend', '')
+                        last_3_avg = away_recent.get('last_3_avg_score')
+                        lines.append(f"    {away} (Away): {rec}")
+                        if notes:
+                            lines.append(f"      Notes: {notes}")
+                        if pace_trend:
+                            lines.append(f"      Pace Trend: {pace_trend}")
+                        if last_3_avg:
+                            lines.append(f"      Last 3 Avg Score: {last_3_avg:.1f}")
+                    
+                    if home_recent:
+                        rec = home_recent.get('rec', 'N/A')
+                        notes = home_recent.get('notes', '')
+                        pace_trend = home_recent.get('pace_trend', '')
+                        last_3_avg = home_recent.get('last_3_avg_score')
+                        lines.append(f"    {home} (Home): {rec}")
+                        if notes:
+                            lines.append(f"      Notes: {notes}")
+                        if pace_trend:
+                            lines.append(f"      Pace Trend: {pace_trend}")
+                        if last_3_avg:
+                            lines.append(f"      Last 3 Avg Score: {last_3_avg:.1f}")
                 elif game.get("recent_form_summary"):
-                    lines.append(f"  Recent Form: {game['recent_form_summary']}")
+                    lines.append("")
+                    lines.append(f"  📅 RECENT FORM: {game['recent_form_summary']}")
                 
+                # Expert Predictions
+                experts = game.get("experts", {})
+                if experts and (experts.get("src") or experts.get("scores") or experts.get("reason") or experts.get("spread_pick") or experts.get("total_pick")):
+                    lines.append("")
+                    lines.append("  🎯 EXPERT PREDICTIONS:")
+                    if experts.get("src"):
+                        lines.append(f"    Sources Consulted: {experts['src']}")
+                    # New format: spread_pick as string (e.g., "Kentucky -4.5")
+                    if experts.get("spread_pick"):
+                        lines.append(f"    Consensus Spread Pick: {experts['spread_pick']}")
+                    # Legacy format: home_spread as count (deprecated)
+                    elif experts.get("home_spread") is not None:
+                        try:
+                            # If it's a number, show as count
+                            home_spread = float(experts['home_spread'])
+                            lines.append(f"    Expert Spread Votes: {int(home_spread)} for home")
+                        except (ValueError, TypeError):
+                            # If it's a string, show as-is
+                            lines.append(f"    Consensus Spread Pick: {experts['home_spread']}")
+                    # New format: total_pick as string (e.g., "Over 153.5")
+                    if experts.get("total_pick"):
+                        lines.append(f"    Consensus Total Pick: {experts['total_pick']}")
+                    # Legacy format: lean_total
+                    elif experts.get("lean_total"):
+                        lines.append(f"    Total Lean: {experts['lean_total'].upper()}")
+                    if experts.get("scores"):
+                        lines.append(f"    Predicted Scores: {', '.join(experts['scores'])}")
+                    if experts.get("reason"):
+                        lines.append(f"    Key Reasoning: {experts['reason']}")
+                
+                # Common Opponents
+                common_opp = game.get("common_opp", [])
+                if common_opp:
+                    lines.append("")
+                    lines.append("  🔄 COMMON OPPONENTS:")
+                    for opp in common_opp:
+                        lines.append(f"    • {opp}")
+                
+                # Notable Context
                 context = game.get("context") or game.get("notable_context", [])
                 if context:
-                    lines.append(f"  Notable Context ({len(context)}):")
-                    for ctx in context[:5]:  # Limit to 5
-                        lines.append(f"    - {ctx}")
+                    lines.append("")
+                    lines.append(f"  📝 CONTEXT ({len(context)}):")
+                    for ctx in context:
+                        lines.append(f"    • {ctx}")
                 
+                # Data Quality Notes
                 dq = game.get("dq") or []
                 if dq:
-                    lines.append(f"  Data Quality Notes ({len(dq)}):")
-                    for note in dq[:5]:  # Limit to 5
-                        lines.append(f"    - {note}")
+                    lines.append("")
+                    lines.append(f"  ⚠️  DATA QUALITY NOTES ({len(dq)}):")
+                    for note in dq:
+                        lines.append(f"    • {note}")
                 elif game.get("data_quality_notes"):
-                    lines.append(f"  Data Quality Notes: {game['data_quality_notes']}")
+                    lines.append("")
+                    lines.append(f"  ⚠️  DATA QUALITY: {game['data_quality_notes']}")
                 
+                lines.append("")
+                lines.append("-" * 70)
                 lines.append("")
         
         elif agent_name.lower() == "modeler":
@@ -1228,18 +1381,31 @@ class ReportGenerator:
                         projected_line = spread.get('projected_line')  # Check for this key too
                         
                         # Determine spread line format - prioritize projected_line if available
+                        # Convert to float if string (API sometimes returns strings)
+                        def to_float(val):
+                            if val is None:
+                                return None
+                            try:
+                                return float(val)
+                            except (ValueError, TypeError):
+                                return None
+                        
+                        away_line_f = to_float(away_line)
+                        home_line_f = to_float(home_line)
+                        projected_margin_f = to_float(projected_margin)
+                        
                         if projected_line is not None:
                             spread_line = str(projected_line)
-                        elif away_line is not None:
-                            spread_line = f"Away {away_line:+.1f}"
-                        elif home_line is not None:
-                            spread_line = f"Home {home_line:+.1f}"
-                        elif projected_margin is not None:
-                            spread_line = f"{projected_margin:+.1f}"
+                        elif away_line_f is not None:
+                            spread_line = f"Away {away_line_f:+.1f}"
+                        elif home_line_f is not None:
+                            spread_line = f"Home {home_line_f:+.1f}"
+                        elif projected_margin_f is not None:
+                            spread_line = f"{projected_margin_f:+.1f}"
                         else:
                             spread_line = "N/A"
                         
-                        margin_display = f"{projected_margin:.1f}" if projected_margin is not None else "N/A"
+                        margin_display = f"{projected_margin_f:.1f}" if projected_margin_f is not None else "N/A"
                         # If we have margin but no explicit line, just show margin
                         if spread_line == "N/A" and projected_margin is not None:
                             lines.append(f"    Spread: {margin_display}")
@@ -1247,19 +1413,28 @@ class ReportGenerator:
                             lines.append(f"    Spread: {spread_line} (Margin: {margin_display})")
                         
                         # Get confidence - check both 'confidence' and 'model_confidence' for backward compatibility
-                        spread_confidence = spread.get('confidence') or spread.get('model_confidence', 0) or 0
+                        spread_confidence = to_float(spread.get('confidence') or spread.get('model_confidence', 0)) or 0
                         lines.append(f"    Confidence: {spread_confidence:.1%}")
                     # Check for total - handle both formats:
                     # 1. predictions.total as dict with projected_total (old format)
                     # 2. predictions.total as float + predictions.total_details as dict (new format)
                     total_data = predictions.get("total_details") or predictions.get("total")
                     if total_data is not None:
+                        # Helper to safely convert to float
+                        def to_float_total(val):
+                            if val is None:
+                                return None
+                            try:
+                                return float(val)
+                            except (ValueError, TypeError):
+                                return None
+                        
                         if isinstance(total_data, dict):
                             projected_total = total_data.get('projected_total', 'N/A')
-                            total_confidence = total_data.get('confidence') or total_data.get('model_confidence', 0) or 0
+                            total_confidence = to_float_total(total_data.get('confidence') or total_data.get('model_confidence', 0)) or 0
                         elif isinstance(total_data, (int, float)):
                             projected_total = total_data
-                            total_confidence = predictions.get('confidence', 0) or 0
+                            total_confidence = to_float_total(predictions.get('confidence', 0)) or 0
                         else:
                             projected_total = 'N/A'
                             total_confidence = 0
@@ -1289,20 +1464,37 @@ class ReportGenerator:
                                 away_prob = probs.get('away')
                                 home_prob = probs.get('home')
                         
-                        # Default to 0 if still not found
-                        away_prob = away_prob if away_prob is not None else 0
-                        home_prob = home_prob if home_prob is not None else 0
+                        # Default to 0 if still not found, ensuring float type
+                        def to_float_ml(val):
+                            if val is None:
+                                return 0
+                            try:
+                                return float(val)
+                            except (ValueError, TypeError):
+                                return 0
+                        
+                        away_prob = to_float_ml(away_prob)
+                        home_prob = to_float_ml(home_prob)
                         
                         lines.append(f"    Moneyline Probabilities: Away {away_prob:.1%} / Home {home_prob:.1%}")
                         
                         # Get confidence - check both 'confidence' and 'model_confidence' for backward compatibility
-                        ml_confidence = ml.get('confidence') or ml.get('model_confidence', 0) or 0
+                        ml_confidence = to_float_ml(ml.get('confidence') or ml.get('model_confidence', 0))
                         lines.append(f"    Confidence: {ml_confidence:.1%}")
+                
+                # Helper to safely convert to float for scores/edges
+                def safe_float(val, default=0):
+                    if val is None:
+                        return None if default is None else default
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return default
                 
                 predicted_score = model.get("predicted_score", {})
                 if predicted_score:
-                    away_score = predicted_score.get('away_score')
-                    home_score = predicted_score.get('home_score')
+                    away_score = safe_float(predicted_score.get('away_score'), None)
+                    home_score = safe_float(predicted_score.get('home_score'), None)
                     if away_score is not None and home_score is not None:
                         lines.append(f"  Predicted Score: Away {away_score:.1f} - Home {home_score:.1f}")
                 
@@ -1310,11 +1502,11 @@ class ReportGenerator:
                 if edges:
                     lines.append(f"  Market Edges ({len(edges)}):")
                     for edge in edges:
-                        edge_value = edge.get('edge')
+                        edge_value = safe_float(edge.get('edge'), None)
                         edge_str = f"{edge_value:.3f}" if edge_value is not None else "N/A"
-                        edge_confidence = edge.get('edge_confidence', 0) or 0
-                        model_prob = edge.get('model_estimated_probability', 0) or 0
-                        implied_prob = edge.get('implied_probability', 0) or 0
+                        edge_confidence = safe_float(edge.get('edge_confidence', 0))
+                        model_prob = safe_float(edge.get('model_estimated_probability', 0))
+                        implied_prob = safe_float(edge.get('implied_probability', 0))
                         lines.append(f"    {edge.get('market_type', 'N/A').upper()}: Edge {edge_str} "
                                    f"(Confidence: {edge_confidence:.1%})")
                         lines.append(f"      Market Line: {edge.get('market_line', 'N/A')}")

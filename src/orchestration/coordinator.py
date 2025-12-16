@@ -234,6 +234,10 @@ class Coordinator:
         games = self.games_scraper.scrape_games(target_date)
         games = self.persistence_service.save_games(games)
         
+        # CRITICAL: Deduplicate games by normalized matchup to ensure only one game per unique matchup
+        # This prevents duplicate games from being passed to modeler/picker/president
+        games = self._deduplicate_games_by_matchup(games)
+        
         # Filter to single game if specified
         if single_game_id is not None:
             original_count = len(games)
@@ -587,23 +591,125 @@ class Coordinator:
         """Step 7: Save betting card and place bets"""
         # Update picks with units and best_bet flags from President response
         approved_picks_data = president_response.get("approved_picks", [])
-        approved_by_game_id = {p.get("game_id"): p for p in approved_picks_data}
+        # Match by both game_id and bet_type to avoid mismatches
+        from src.data.models import BetType
+        from src.orchestration.data_converter import DataConverter
+        
+        approved_by_key = {}
+        for p in approved_picks_data:
+            game_id_str = str(p.get("game_id", ""))
+            bet_type_str = p.get("bet_type", "").lower()
+            try:
+                bet_type = DataConverter.parse_bet_type(bet_type_str)
+                key = (game_id_str, bet_type.value if hasattr(bet_type, 'value') else str(bet_type))
+                approved_by_key[key] = p
+            except (ValueError, AttributeError) as e:
+                logger.warning(f"Could not parse bet_type '{bet_type_str}' for game_id {game_id_str}: {e}")
+                # Fallback to game_id-only matching if bet_type parsing fails
+                approved_by_key[game_id_str] = p
+        
+        # Log all approved picks from president for debugging
+        logger.info(f"President approved {len(approved_picks_data)} picks")
+        for p in approved_picks_data:
+            logger.debug(f"  President approved: game_id={p.get('game_id')}, bet_type={p.get('bet_type')}, best_bet={p.get('best_bet')}, units={p.get('units')}")
+        
+        # Log all picks in the picks list for debugging
+        logger.info(f"Processing {len(picks)} picks from picker")
+        for pick in picks:
+            logger.debug(f"  Picker pick: game_id={pick.game_id}, bet_type={pick.bet_type.value}, selection_text={pick.selection_text}")
         
         # Update picks with units and best_bet from President
+        # Match by (game_id, bet_type) exactly - this is the only safe way
+        matched_count = 0
         for pick in picks:
-            president_pick = approved_by_game_id.get(str(pick.game_id))
+            bet_type_str = pick.bet_type.value if hasattr(pick.bet_type, 'value') else str(pick.bet_type)
+            key = (str(pick.game_id), bet_type_str)
+            president_pick = approved_by_key.get(key)
+            
             if president_pick:
+                # Exact match - update this pick
+                old_best_bet = pick.best_bet
+                old_units = pick.stake_units
                 pick.stake_units = president_pick.get("units", 1.0)
                 pick.best_bet = president_pick.get("best_bet", False)
+                # Update selection_text from president's response if available
+                if president_pick.get("selection"):
+                    pick.selection_text = president_pick.get("selection")
                 # Update rationale with President's reasoning if available
                 if president_pick.get("final_decision_reasoning"):
                     pick.rationale = f"{pick.rationale}\n\nPresident's Analysis: {president_pick.get('final_decision_reasoning')}"
+                matched_count += 1
+                logger.info(
+                    f"Matched pick game_id={pick.game_id} bet_type={bet_type_str}: "
+                    f"best_bet={old_best_bet}->{pick.best_bet}, units={old_units}->{pick.stake_units}"
+                )
+            else:
+                # No exact match found - this pick was not approved by president
+                # Set best_bet to False to ensure it's not marked as a best bet
+                if pick.best_bet:
+                    logger.warning(
+                        f"Pick game_id={pick.game_id} bet_type={bet_type_str} was not matched to any president approval. "
+                        f"Setting best_bet=False to avoid data corruption."
+                    )
+                    pick.best_bet = False
+        
+        # Check for president approvals that didn't match any picks
+        unmatched_president_picks = []
+        for key, president_pick in approved_by_key.items():
+            if isinstance(key, tuple):
+                game_id_str, bet_type_str = key
+                # Check if any pick matched this
+                matched = any(
+                    str(pick.game_id) == game_id_str and 
+                    (pick.bet_type.value if hasattr(pick.bet_type, 'value') else str(pick.bet_type)) == bet_type_str
+                    for pick in picks
+                )
+                if not matched:
+                    unmatched_president_picks.append(president_pick)
+        
+        if unmatched_president_picks:
+            unmatched_details = [
+                f"game_id={p.get('game_id')} bet_type={p.get('bet_type')}"
+                for p in unmatched_president_picks
+            ]
+            logger.error(
+                f"CRITICAL: {len(unmatched_president_picks)} president-approved picks did not match any picker picks! "
+                f"This indicates a data integrity issue. Unmatched picks: {unmatched_details}"
+            )
+        
+        logger.info(f"Matched {matched_count}/{len(picks)} picks to president approvals")
         
         # Save all picks to database
+        # Log what we're about to save for debugging
+        logger.info(f"Saving {len(picks)} picks to database:")
         for pick in picks:
-            self.persistence_service.save_pick(pick)
+            logger.info(
+                f"  Saving pick: game_id={pick.game_id}, bet_type={pick.bet_type.value}, "
+                f"best_bet={pick.best_bet}, units={pick.stake_units}, "
+                f"selection_text={pick.selection_text}"
+            )
+        
+        for pick in picks:
+            self.persistence_service.save_pick(pick, target_date=target_date)
             if pick.id:
                 self.persistence_service.update_pick_stakes(pick)
+        
+        # Verify what was actually saved (query back from database)
+        if self.db:
+            session = self.db.get_session()
+            try:
+                from src.data.storage import PickModel
+                saved_picks = session.query(PickModel).filter(
+                    PickModel.pick_date == target_date
+                ).all()
+                logger.info(f"Verified {len(saved_picks)} picks in database after saving:")
+                for saved_pick in saved_picks:
+                    logger.info(
+                        f"  DB pick: game_id={saved_pick.game_id}, bet_type={saved_pick.bet_type.value}, "
+                        f"best_bet={saved_pick.best_bet}, selection_text={saved_pick.selection_text}"
+                    )
+            finally:
+                session.close()
         
         if review.approved:
             # All picks are approved, but only best bets are placed
@@ -733,6 +839,74 @@ class Coordinator:
             logger.info("=" * 80)
         else:
             logger.info("📊 No token usage recorded (all agents may have used cache)")
+    
+    def _deduplicate_games_by_matchup(self, games: List[Game]) -> List[Game]:
+        """
+        Deduplicate games by normalized matchup to ensure only one game per unique matchup.
+        
+        This prevents duplicate games from being passed downstream to modeler/picker/president
+        when the same game exists with different team_ids (e.g., due to duplicate team entries).
+        
+        Args:
+            games: List of games to deduplicate
+            
+        Returns:
+            Deduplicated list of games (one per unique matchup)
+        """
+        from src.utils.team_normalizer import normalize_team_name, remove_mascot_from_team_name
+        from collections import defaultdict
+        
+        if not games:
+            return games
+        
+        # Group games by normalized matchup (order-independent)
+        matchup_map = defaultdict(list)  # matchup_key -> list of games
+        
+        for game in games:
+            # Normalize team names for matching
+            team1_name = game.team1 if game.team1 else ""
+            team2_name = game.team2 if game.team2 else ""
+            
+            # Remove mascots and normalize
+            norm_team1 = normalize_team_name(team1_name, for_matching=True)
+            norm_team2 = normalize_team_name(team2_name, for_matching=True)
+            cleaned_team1 = remove_mascot_from_team_name(norm_team1)
+            cleaned_team2 = remove_mascot_from_team_name(norm_team2)
+            
+            # Create order-independent matchup key
+            matchup_key = tuple(sorted([cleaned_team1, cleaned_team2]))
+            matchup_map[matchup_key].append(game)
+        
+        # For each matchup, keep only one game (prefer lowest game_id, or first if no IDs)
+        deduplicated = []
+        duplicates_found = 0
+        
+        for matchup_key, game_list in matchup_map.items():
+            if len(game_list) > 1:
+                duplicates_found += len(game_list) - 1
+                # Sort by game_id (None last), then keep the first one
+                game_list.sort(key=lambda g: (g.id is None, g.id if g.id is not None else float('inf')))
+                kept_game = game_list[0]
+                duplicate_ids = [g.id for g in game_list[1:] if g.id]
+                
+                logger.warning(
+                    f"Found {len(game_list)} duplicate games for matchup {matchup_key}: "
+                    f"keeping game_id={kept_game.id} ({kept_game.team1} vs {kept_game.team2}), "
+                    f"removing duplicates: {duplicate_ids}"
+                )
+                deduplicated.append(kept_game)
+            else:
+                deduplicated.append(game_list[0])
+        
+        if duplicates_found > 0:
+            logger.warning(
+                f"⚠️  Deduplicated {duplicates_found} duplicate game(s). "
+                f"Returning {len(deduplicated)} unique games (from {len(games)} total)."
+            )
+        else:
+            logger.debug(f"✅ No duplicate games found. All {len(games)} games are unique.")
+        
+        return deduplicated
     
     def close(self):
         """Close database connection"""

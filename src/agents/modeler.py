@@ -286,14 +286,8 @@ class Modeler(BaseAgent):
                 failed_batches.append(batch_num)
                 self.log_warning(f"⚠️  Batch {batch_num} failed to generate predictions")
         
-        # CRITICAL: Create fallback entries for any games that failed to process
-        # This ensures ALL games are passed to the next agent, even if data is unavailable
+        # Track which games failed to process (no fallbacks - only primary models)
         missing_games = []
-        # Collect all betting lines for fallback creation
-        all_betting_lines = []
-        for game_id in lines_by_game:
-            all_betting_lines.extend(lines_by_game[game_id])
-        
         for game in games:
             game_id = game.get('game_id')
             if game_id is None:
@@ -304,25 +298,22 @@ class Modeler(BaseAgent):
                 logger.warning(f"Invalid game_id type: {game_id} (type: {type(game_id)})")
                 continue
             if game_id_str not in processed_game_ids:
-                # Create fallback entry with minimal predictions
-                fallback_model = self._create_fallback_model(game, all_betting_lines)
-                all_game_models.append(fallback_model)
                 missing_games.append(game_id_str)
-                self.log_warning(f"⚠️  Created fallback model for game {game_id_str} (data unavailable)")
+                self.log_warning(f"⚠️  No model generated for game {game_id_str} (LLM processing failed)")
         
         result = {"game_models": all_game_models}
         
         if failed_batches or missing_games:
-            self.log_warning(f"⚠️  {len(failed_batches)} batch(es) failed, {len(missing_games)} games needed fallback entries")
-            self.log_warning(f"Total models: {len(all_game_models)}/{len(games)} games (all games included, some with limited data)")
+            self.log_warning(f"⚠️  {len(failed_batches)} batch(es) failed, {len(missing_games)} games have no models")
+            self.log_warning(f"Total models: {len(all_game_models)}/{len(games)} games (only successfully processed games included)")
         else:
             self.log_info(f"✅ Successfully generated predictions for all {len(all_game_models)} games")
         
-        # Validate that we have models for all games
+        # Warn if we don't have models for all games (expected when some batches fail)
         if len(all_game_models) != len(games):
-            self.log_error(
-                f"CRITICAL: Game count mismatch! Expected {len(games)} games, got {len(all_game_models)} models. "
-                f"This should not happen - all games should have entries."
+            self.log_warning(
+                f"Game count mismatch: Expected {len(games)} games, got {len(all_game_models)} models. "
+                f"Missing {len(missing_games)} games due to processing failures."
             )
         
         # Cache the results (even if incomplete, to avoid re-processing successful batches)
@@ -403,16 +394,30 @@ CRITICAL: You MUST return predictions for every single game in the input data. T
 - Confidence is low
 - The game seems less important
 
+REQUIRED OUTPUT FIELDS FOR EACH GAME:
+1. predictions: scores, margin, total, win_probs, confidence
+2. market_edges: REQUIRED - Calculate and include edges for ALL available betting markets:
+   - Spread markets (both home and away sides)
+   - Total markets (both over and under)
+   - Moneyline markets (both home and away if available)
+   - For each edge, provide: market_type, market_line, model_estimated_probability, implied_probability, edge, edge_confidence
+3. model_notes: REQUIRED - Provide a detailed, verbose explanation of your modeling process including:
+   - Base pace calculation: (Away_AdjT + Home_AdjT) / 2
+   - Pace trend adjustments applied
+   - Final pace value
+   - Efficiency baseline selection (109.0 or 104.0) and reasoning
+   - Points per 100 calculations for both teams
+   - Any context adjustments (injuries, mismatch penalty, turnstile, elite offense tax)
+   - Raw scores and margins before calibration
+   - Total calibration vs market (regression if |diff| > 6)
+   - Blowout effects if applicable
+   - Discrepancy shrinkage factors
+   - Confidence tier selection and reasoning
+   - Any data quality concerns or limitations
+
 For games with limited data, use lower confidence scores (e.g., 0.3-0.5) and clearly note the data limitations in model_notes.
 
-For each game, provide:
-- Win probabilities for each side
-- Expected scoring margin (for spreads)
-- Expected total points (for totals)
-- Market edges (your probability vs implied probability from odds)
-- Confidence levels based on data quality
-
-Be explicit, quantitative, and cautious. If data is thin or noisy, lower your confidence and explain why in model_notes."""
+Be explicit, quantitative, and verbose in model_notes. The model_notes field should read like a detailed report explaining your entire modeling process and rationale."""
         
         try:
             response = self.call_llm(
@@ -534,7 +539,62 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
             for model in game_models:
                 self._transform_predictions_format(model)
             
-            return game_models
+            # CRITICAL: Validate that every model has confidence assigned
+            validated_models = []
+            for model in game_models:
+                game_id = model.get('game_id', 'unknown')
+                predictions = model.get('predictions', {})
+                
+                # Check all possible locations for confidence
+                confidence = predictions.get('confidence')
+                if confidence is None:
+                    spread_data = predictions.get('spread', {})
+                    if isinstance(spread_data, dict):
+                        confidence = spread_data.get('model_confidence')
+                
+                if confidence is None:
+                    total_data = predictions.get('total', {})
+                    if isinstance(total_data, dict):
+                        confidence = total_data.get('model_confidence')
+                
+                if confidence is None:
+                    moneyline_data = predictions.get('moneyline', {})
+                    if isinstance(moneyline_data, dict):
+                        confidence = moneyline_data.get('model_confidence')
+                
+                if confidence is None:
+                    self.log_error(
+                        f"CRITICAL: Model for game_id={game_id} is missing confidence. "
+                        f"Expected in predictions.confidence or predictions.{{spread|total|moneyline}}.model_confidence. "
+                        f"Rejecting this model - LLM must provide confidence for all predictions."
+                    )
+                    continue  # Skip this model - confidence is required
+                
+                # Validate that market_edges and model_notes are present (warn if missing)
+                market_edges = model.get('market_edges', [])
+                if not market_edges:
+                    self.log_warning(
+                        f"⚠️  Model for game_id={game_id} is missing market_edges. "
+                        f"This field is required for verbose reporting. LLM should calculate edges for all available betting markets."
+                    )
+                
+                model_notes = model.get('model_notes', '')
+                if not model_notes or len(model_notes.strip()) < 50:
+                    self.log_warning(
+                        f"⚠️  Model for game_id={game_id} has missing or insufficient model_notes "
+                        f"(length: {len(model_notes) if model_notes else 0}). "
+                        f"This field is required for verbose reporting and should explain the modeling rationale in detail."
+                    )
+                
+                validated_models.append(model)
+            
+            if len(validated_models) < len(game_models):
+                self.log_warning(
+                    f"Rejected {len(game_models) - len(validated_models)} model(s) due to missing confidence. "
+                    f"Only {len(validated_models)}/{len(game_models)} models passed validation."
+                )
+            
+            return validated_models
             
         except Exception as e:
             self.log_error(f"Error in batch LLM modeling: {e}", exc_info=True)
@@ -542,3 +602,62 @@ Be explicit, quantitative, and cautious. If data is thin or noisy, lower your co
     
     def _transform_predictions_format(self, model: Dict[str, Any]) -> None:
         """Normalize predictions to provide both flat and nested formats."""
+        if not model:
+            return
+
+        predictions = model.get("predictions", {})
+        if not predictions:
+            return
+
+        # 1. Handle Spread/Margin
+        if "spread" not in predictions:
+            predictions["spread"] = {}
+        
+        # Move top-level margin to spread.projected_margin
+        if "margin" in predictions:
+            predictions["spread"]["projected_margin"] = predictions["margin"]
+            
+        # Ensure confidence is in spread if not already there
+        if "confidence" in predictions and "model_confidence" not in predictions["spread"]:
+            predictions["spread"]["model_confidence"] = predictions["confidence"]
+
+        # 2. Handle Scores and Total
+        scores = predictions.get("scores", {})
+        if scores and "away" in scores and "home" in scores:
+            try:
+                away_score = float(scores["away"])
+                home_score = float(scores["home"])
+                calculated_total = away_score + home_score
+                
+                # Ensure predicted_score exists at top level (for report generator)
+                if "predicted_score" not in model:
+                    model["predicted_score"] = {
+                        "away_score": away_score,
+                        "home_score": home_score
+                    }
+                
+                # Update total prediction
+                if "total" not in predictions:
+                    predictions["total"] = {}
+                
+                # If total is a dict (expected)
+                if isinstance(predictions["total"], dict):
+                    if "projected_total" not in predictions["total"]:
+                        predictions["total"]["projected_total"] = calculated_total
+                    if "model_confidence" not in predictions["total"] and "confidence" in predictions:
+                        predictions["total"]["model_confidence"] = predictions["confidence"]
+            except (ValueError, TypeError):
+                pass
+
+        # 3. Handle Moneyline/Win Probs
+        if "moneyline" not in predictions:
+            predictions["moneyline"] = {}
+            
+        win_probs = predictions.get("win_probs", {})
+        if win_probs:
+            predictions["moneyline"]["away_win_prob"] = win_probs.get("away")
+            predictions["moneyline"]["home_win_prob"] = win_probs.get("home")
+            
+        if "confidence" in predictions and "model_confidence" not in predictions["moneyline"]:
+            predictions["moneyline"]["model_confidence"] = predictions["confidence"]
+    

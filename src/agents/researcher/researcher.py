@@ -291,11 +291,17 @@ class Researcher(BaseAgent):
         games_data = []
         all_teams = set()
         
+        # CRITICAL: Populate KenPom stats programmatically BEFORE sending to LLM
+        # This ensures accurate stats and prevents LLM from hallucinating
+        kenpom_scraper = None
+        if hasattr(self, 'web_browser') and self.web_browser and hasattr(self.web_browser, 'kenpom_scraper'):
+            kenpom_scraper = self.web_browser.kenpom_scraper
+        
         for game in games:
             all_teams.add(game.team1)
             all_teams.add(game.team2)
             
-            # Format game data for LLM
+            # Create template data structure with all required fields
             game_data = {
                 "game_id": str(game.id) if game.id else f"{game.team1}_{game.team2}_{game.date}",
                 "teams": {
@@ -304,8 +310,53 @@ class Researcher(BaseAgent):
                 },
                 "date": game.date.isoformat() if isinstance(game.date, date) else str(game.date),
                 "venue": game.venue,
-                "status": game.status.value if hasattr(game.status, 'value') else str(game.status)
+                "status": game.status.value if hasattr(game.status, 'value') else str(game.status),
+                # Initialize adv structure - will be populated programmatically and by LLM
+                "adv": {
+                    "away": {},
+                    "home": {},
+                    "matchup": []
+                }
             }
+            
+            # PROGRAMMATIC: Populate KenPom stats from cache
+            # These fields are populated programmatically and should NOT be changed by LLM
+            if kenpom_scraper:
+                for team_name, team_key in [(game.team2, "away"), (game.team1, "home")]:
+                    kenpom_stats = kenpom_scraper.get_team_stats(team_name, target_date=target_date)
+                    if kenpom_stats:
+                        # Populate programmatic fields - these are authoritative
+                        team_adv = game_data["adv"][team_key]
+                        if 'kenpom_rank' in kenpom_stats:
+                            team_adv['kp_rank'] = kenpom_stats['kenpom_rank']
+                        if 'adj_offense' in kenpom_stats:
+                            team_adv['adjo'] = kenpom_stats['adj_offense']
+                        if 'adj_defense' in kenpom_stats:
+                            team_adv['adjd'] = kenpom_stats['adj_defense']
+                        if 'adj_tempo' in kenpom_stats:
+                            team_adv['adjt'] = kenpom_stats['adj_tempo']
+                        if 'net_rating' in kenpom_stats:
+                            team_adv['net'] = kenpom_stats['net_rating']
+                        if 'conference' in kenpom_stats:
+                            team_adv['conference'] = kenpom_stats['conference']
+                        if 'wins' in kenpom_stats and 'losses' in kenpom_stats:
+                            team_adv['wins'] = kenpom_stats['wins']
+                            team_adv['losses'] = kenpom_stats['losses']
+                            team_adv['w_l'] = f"{kenpom_stats['wins']}-{kenpom_stats['losses']}"
+                        if 'luck' in kenpom_stats:
+                            team_adv['luck'] = kenpom_stats['luck']
+                        if 'sos' in kenpom_stats:
+                            team_adv['sos'] = kenpom_stats['sos']
+                        if 'ncsos' in kenpom_stats:
+                            team_adv['ncsos'] = kenpom_stats['ncsos']
+                        
+                        self.logger.info(
+                            f"✅ Programmatically populated KenPom stats for {team_name} ({team_key}): "
+                            f"Rank={kenpom_stats.get('kenpom_rank')}, AdjO={kenpom_stats.get('adj_offense')}, "
+                            f"AdjD={kenpom_stats.get('adj_defense')}"
+                        )
+                    else:
+                        self.logger.warning(f"⚠️  Could not find KenPom stats for {team_name} ({team_key})")
             
             # Add betting lines for this game
             game_lines = [l for l in betting_lines if l.game_id == game.id]
@@ -525,6 +576,7 @@ CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE EXACTLY:
 4. DO NOT write "Now searching..." or "Calling..." - just return the JSON directly.
 5. Your response must be a valid JSON object starting with {{ and ending with }}.
 6. Return game insights for ALL {len(games)} games in the "games" array.
+7. **CRITICAL: If adv.away or adv.home fields already have values (kp_rank, adjo, adjd, adjt, net, conference, wins, losses, w_l, luck, sos, ncsos), DO NOT CHANGE THEM. These are pre-populated programmatically and are authoritative. Only add missing fields or populate fields that are empty.**
 
 Return your JSON response now:"""
                 
@@ -541,6 +593,10 @@ Return your JSON response now:"""
             if "games" not in response:
                 self.log_warning("LLM response missing 'games' field, creating fallback")
                 response = {"games": []}
+            
+            # CRITICAL: Preserve programmatic fields (KenPom stats) from games_data
+            # Merge LLM response with programmatic data, ensuring programmatic fields are never overwritten
+            response = self._preserve_programmatic_fields(response, games_data)
             
             games_count = len(response.get('games', []))
             if games_count == 0:
@@ -561,6 +617,79 @@ Return your JSON response now:"""
             self.log_error(f"Error in batch LLM research: {e}", exc_info=True)
             # Return empty response on error (will trigger retry)
             return {"games": []}, input_data
+    
+    def _preserve_programmatic_fields(
+        self, 
+        llm_response: Dict[str, Any], 
+        games_data: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Preserve programmatic fields (KenPom stats) from games_data in LLM response.
+        
+        Programmatic fields that should NEVER be overwritten by LLM:
+        - adv.away.kp_rank, adjo, adjd, adjt, net, conference, wins, losses, w_l, luck, sos, ncsos
+        - adv.home.kp_rank, adjo, adjd, adjt, net, conference, wins, losses, w_l, luck, sos, ncsos
+        
+        Args:
+            llm_response: LLM response with game insights
+            games_data: Original game data with programmatic fields
+            
+        Returns:
+            Response with programmatic fields preserved
+        """
+        if "games" not in llm_response:
+            return llm_response
+        
+        # Create a map of game_id to programmatic adv data
+        programmatic_adv = {}
+        for game_data in games_data:
+            game_id = game_data.get('game_id', '')
+            if game_id and 'adv' in game_data:
+                programmatic_adv[game_id] = game_data['adv']
+        
+        # Merge LLM response with programmatic data
+        for game in llm_response.get('games', []):
+            game_id = game.get('game_id', '')
+            if game_id in programmatic_adv:
+                prog_adv = programmatic_adv[game_id]
+                
+                # Ensure adv structure exists
+                if 'adv' not in game:
+                    game['adv'] = {}
+                
+                # Preserve programmatic fields for away team
+                if 'away' in prog_adv:
+                    if 'away' not in game['adv']:
+                        game['adv']['away'] = {}
+                    # Override LLM values with programmatic values (programmatic is authoritative)
+                    for key in ['kp_rank', 'adjo', 'adjd', 'adjt', 'net', 'conference', 'wins', 'losses', 'w_l', 'luck', 'sos', 'ncsos']:
+                        if key in prog_adv['away']:
+                            old_value = game['adv']['away'].get(key)
+                            new_value = prog_adv['away'][key]
+                            game['adv']['away'][key] = new_value
+                            if old_value is not None and old_value != new_value:
+                                self.logger.warning(
+                                    f"⚠️  Preserved programmatic {key} for away team in game {game_id}: "
+                                    f"LLM had {old_value}, programmatic has {new_value}"
+                                )
+                
+                # Preserve programmatic fields for home team
+                if 'home' in prog_adv:
+                    if 'home' not in game['adv']:
+                        game['adv']['home'] = {}
+                    # Override LLM values with programmatic values (programmatic is authoritative)
+                    for key in ['kp_rank', 'adjo', 'adjd', 'adjt', 'net', 'conference', 'wins', 'losses', 'w_l', 'luck', 'sos', 'ncsos']:
+                        if key in prog_adv['home']:
+                            old_value = game['adv']['home'].get(key)
+                            new_value = prog_adv['home'][key]
+                            game['adv']['home'][key] = new_value
+                            if old_value is not None and old_value != new_value:
+                                self.logger.warning(
+                                    f"⚠️  Preserved programmatic {key} for home team in game {game_id}: "
+                                    f"LLM had {old_value}, programmatic has {new_value}"
+                                )
+        
+        return llm_response
     
     def _create_fallback_insight(self, game: Game, target_date: Optional[date], betting_lines: Optional[List]) -> Dict[str, Any]:
         """
@@ -973,296 +1102,40 @@ Input data:
         # Add tool result messages
         if tool_messages:
             messages.extend(tool_messages)
+            
+        self.logger.debug(f"Calling LLM for {self.name} with tool results")
         
-        # Call OpenAI API directly with messages
-        # For batches, we can use smaller max_tokens since we're processing fewer games
-        kwargs = {
-            "model": self.llm_client.model,
-            "messages": messages,
-        }
+        # Get usage stats before call
+        usage_before = self.llm_client.get_usage_stats()
         
-        # Only add temperature if model is not gpt-5 (gpt-5 models don't support temperature)
-        if not self.llm_client.model.startswith("gpt-5"):
-            kwargs["temperature"] = temperature
-        
-        # Calculate max_tokens dynamically based on prompt size
-        # Estimate prompt tokens (roughly 4 chars per token for English text)
+        # Determine response format
+        response_format = None
+        if not tools:
+             # When tools are disabled, use structured output schema to enforce valid JSON
+            response_format = get_researcher_schema()
+
         try:
-            import tiktoken
-            encoding = tiktoken.encoding_for_model(self.llm_client.model)
-            prompt_tokens_estimate = sum(len(encoding.encode(str(msg.get("content", "")))) for msg in messages)
-        except (ImportError, KeyError, Exception):
-            # Fallback: rough estimate (4 chars per token for English text)
-            # This is a conservative estimate - actual tokens may be slightly different
-            prompt_tokens_estimate = sum(len(str(msg.get("content", ""))) // 4 for msg in messages)
-        
-        # Set max_tokens based on prompt size
-        # For large prompts (>20K tokens), allow more completion tokens
-        if prompt_tokens_estimate > 20000:
-            max_completion = 16000  # Allow 16K tokens for completion
-            self.logger.warning(
-                f"⚠️  Large prompt detected ({prompt_tokens_estimate:,} tokens), "
-                f"increasing max_completion_tokens to {max_completion:,}"
+            # Call LLM via call_chat
+            response = self.llm_client.call_chat(
+                messages=messages,
+                temperature=temperature,
+                parse_json=True,
+                tools=tools,
+                response_format=response_format,
+                max_tokens=16000  # Gemini 1.5 has large window
             )
-        elif prompt_tokens_estimate > 10000:
-            max_completion = 12000  # Allow 12K tokens for completion
-        else:
-            max_completion = 8000  # Default for smaller prompts
-        
-        if not self.llm_client.model.startswith("gpt-5"):
-            kwargs["max_tokens"] = max_completion
-        else:
-            # GPT-5 models use max_completion_tokens instead of max_tokens
-            kwargs["max_completion_tokens"] = max_completion
-        
-        if tools:
-            kwargs["tools"] = tools
-            # If tools are provided, allow the LLM to use them
-        else:
-            # If tools is None, we don't set tool_choice (API doesn't allow it without tools)
-            # When tools are disabled, use structured output schema to enforce valid JSON
-            kwargs["response_format"] = get_researcher_schema()
-        
-        try:
-            self.logger.debug(f"Calling LLM for {self.name} with tool results")
-            
-            # Get usage stats before call
-            usage_before = self.llm_client.get_usage_stats()
-            
-            try:
-                response = self.llm_client.client.chat.completions.create(**kwargs)
-            except Exception as api_error:
-                error_msg = str(api_error)
-                # Check if error is due to unsupported response_format
-                if "response_format" in error_msg.lower() or "structured output" in error_msg.lower():
-                    self.logger.warning(
-                        f"Model {self.llm_client.model} may not support structured output. "
-                        f"Falling back to regular JSON parsing. Error: {error_msg}"
-                    )
-                    # Retry without response_format
-                    if "response_format" in kwargs:
-                        kwargs.pop("response_format", None)
-                        response = self.llm_client.client.chat.completions.create(**kwargs)
-                else:
-                    raise
-            
-            # Extract and log token usage
-            usage = response.usage
-            if usage:
-                prompt_tokens = usage.prompt_tokens or 0
-                completion_tokens = usage.completion_tokens or 0
-                total_tokens = usage.total_tokens or 0
-                
-                # Track totals
-                self.llm_client.total_prompt_tokens += prompt_tokens
-                self.llm_client.total_completion_tokens += completion_tokens
-                self.llm_client.total_tokens_used += total_tokens
-                
-                # Log token usage
-                self.logger.info(
-                    f"📊 Token usage ({self.llm_client.model}): "
-                    f"Prompt: {prompt_tokens:,} | "
-                    f"Completion: {completion_tokens:,} | "
-                    f"Total: {total_tokens:,}"
-                )
             
             # Get usage stats after call and log delta
             usage_after = self.llm_client.get_usage_stats()
             tokens_used = usage_after["total_tokens"] - usage_before["total_tokens"]
-            prompt_tokens_delta = usage_after["prompt_tokens"] - usage_before["prompt_tokens"]
-            completion_tokens_delta = usage_after["completion_tokens"] - usage_before["completion_tokens"]
             
             if tokens_used > 0:
                 self.logger.info(
-                    f"💰 {self.name} token usage (tool results): "
-                    f"{tokens_used:,} total ({prompt_tokens_delta:,} prompt + {completion_tokens_delta:,} completion)"
+                    f"💰 {self.name} token usage (tool results): {tokens_used:,}"
                 )
-            
-            # Check response structure
-            choice = response.choices[0]
-            finish_reason = choice.finish_reason
-            content = choice.message.content
-            
-            # Log response details for debugging
-            self.logger.debug(f"Response finish_reason: {finish_reason}")
-            self.logger.debug(f"Response has content: {content is not None}")
-            self.logger.debug(f"Response has tool_calls: {hasattr(choice.message, 'tool_calls') and choice.message.tool_calls is not None}")
-            
-            # Check if response was truncated
-            if finish_reason == "length":
-                self.logger.error(f"⚠️  Response was truncated due to max_tokens limit! This likely caused empty content.")
-                self.logger.error(f"📊 Token usage: {usage.total_tokens if usage else 'unknown'} tokens")
-                # Try to parse whatever we got
-                if content:
-                    self.logger.warning(f"Attempting to parse truncated content (first 2000 chars): {content[:2000]}")
-            
-            # Check if LLM is trying to use tools again (shouldn't happen after tool results)
-            if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
-                self.logger.warning(f"⚠️  LLM requested additional tool calls after receiving tool results. This may indicate the prompt is unclear.")
-                self.logger.warning(f"Tool calls requested: {len(choice.message.tool_calls)}")
-            
-            # Parse JSON response
-            if content:
-                # Clean content - remove any leading/trailing whitespace and explanatory text
-                content_cleaned = content.strip()
                 
-                # If structured output was requested, the response should be pure JSON
-                # But sometimes LLMs include explanatory text - try to extract JSON
-                try:
-                    # First, try parsing the content directly
-                    parsed = json.loads(content_cleaned)
-                    # Validate that we have games
-                    if "games" not in parsed:
-                        self.logger.warning(f"LLM response missing 'games' field. Response keys: {list(parsed.keys())}")
-                        self.logger.debug(f"Response content: {content[:500]}")
-                        return {"games": []}
-                    # Check if games array is empty
-                    if isinstance(parsed.get("games"), list) and len(parsed["games"]) == 0:
-                        self.logger.warning("LLM returned empty games array. This may indicate an issue with the response format.")
-                        self.logger.debug(f"Full response: {content[:1000]}")
-                    return parsed
-                except json.JSONDecodeError as e:
-                    self.logger.warning(f"JSON parsing error in call_llm_with_tool_results: {e}")
-                    
-                    # Try to find the actual data JSON (skip schema definitions)
-                    # Look for JSON that starts with {"games": (the actual data)
-                    games_start = content_cleaned.find('{"games":')
-                    if games_start >= 0:
-                        # Find the matching closing brace for this JSON object
-                        brace_count = 0
-                        json_end = games_start
-                        for i in range(games_start, len(content_cleaned)):
-                            if content_cleaned[i] == '{':
-                                brace_count += 1
-                            elif content_cleaned[i] == '}':
-                                brace_count -= 1
-                                if brace_count == 0:
-                                    json_end = i + 1
-                                    break
-                        
-                        if json_end > games_start:
-                            json_str = content_cleaned[games_start:json_end]
-                            try:
-                                parsed = json.loads(json_str)
-                                if "games" not in parsed:
-                                    self.logger.warning("Extracted JSON missing 'games' field")
-                                    return {"games": []}
-                                self.logger.info(f"Successfully extracted data JSON from response (removed {games_start} chars before)")
-                                return parsed
-                            except json.JSONDecodeError as e2:
-                                self.logger.warning(f"Failed to parse extracted JSON: {e2}")
-                    
-                    # Fallback: Try to find JSON object in the content (look for first { and last })
-                    # But skip if it looks like a schema definition
-                    first_brace = content_cleaned.find('{')
-                    last_brace = content_cleaned.rfind('}')
-                    
-                    if first_brace >= 0 and last_brace > first_brace:
-                        # Extract the JSON portion
-                        json_str = content_cleaned[first_brace:last_brace + 1]
-                        # Skip if it looks like a schema definition (contains "type":"object" and "properties")
-                        if '"type":"object"' in json_str and '"properties"' in json_str and '"games"' not in json_str:
-                            # This is likely a schema, try to find the actual data after it
-                            data_start = content_cleaned.find('{"games":', first_brace + 1)
-                            if data_start > first_brace:
-                                # Found data JSON after schema
-                                brace_count = 0
-                                json_end = data_start
-                                for i in range(data_start, len(content_cleaned)):
-                                    if content_cleaned[i] == '{':
-                                        brace_count += 1
-                                    elif content_cleaned[i] == '}':
-                                        brace_count -= 1
-                                        if brace_count == 0:
-                                            json_end = i + 1
-                                            break
-                                
-                                if json_end > data_start:
-                                    json_str = content_cleaned[data_start:json_end]
-                        
-                        try:
-                            parsed = json.loads(json_str)
-                            if "games" not in parsed:
-                                self.logger.warning("Extracted JSON missing 'games' field")
-                                return {"games": []}
-                            self.logger.info(f"Successfully extracted JSON from response (removed {first_brace} chars before, {len(content_cleaned) - json_end} chars after)")
-                            return parsed
-                        except json.JSONDecodeError as e2:
-                            self.logger.warning(f"Failed to parse extracted JSON: {e2}")
-                    
-                    # Try to extract JSON from markdown code blocks
-                    if "```json" in content_cleaned:
-                        json_start = content_cleaned.find("```json") + 7
-                        json_end = content_cleaned.find("```", json_start)
-                        if json_end > json_start:
-                            json_str = content_cleaned[json_start:json_end].strip()
-                            try:
-                                parsed = json.loads(json_str)
-                                if "games" not in parsed:
-                                    self.logger.warning("Extracted JSON missing 'games' field")
-                                    return {"games": []}
-                                return parsed
-                            except json.JSONDecodeError as e2:
-                                self.logger.warning(f"Failed to parse extracted JSON: {e2}")
-                    elif "```" in content_cleaned:
-                        json_start = content_cleaned.find("```") + 3
-                        json_end = content_cleaned.find("```", json_start)
-                        if json_end > json_start:
-                            json_str = content_cleaned[json_start:json_end].strip()
-                            try:
-                                parsed = json.loads(json_str)
-                                if "games" not in parsed:
-                                    self.logger.warning("Extracted JSON missing 'games' field")
-                                    return {"games": []}
-                                return parsed
-                            except json.JSONDecodeError as e2:
-                                self.logger.warning(f"Failed to parse extracted JSON: {e2}")
-                    
-                    # Log the problematic content for debugging with full context
-                    self.logger.error(f"Failed to parse JSON response. Content (first 2000 chars):\n{content[:2000]}")
-                    self.logger.error(f"Full content length: {len(content)} chars")
-                    self.logger.error(f"JSON error position: {e.pos if hasattr(e, 'pos') else 'unknown'}")
-                    self.logger.error(f"JSON error message: {e.msg if hasattr(e, 'msg') else str(e)}")
-                    # Log the content around the error position if available
-                    if hasattr(e, 'pos') and e.pos:
-                        start = max(0, e.pos - 100)
-                        end = min(len(content), e.pos + 100)
-                        self.logger.error(f"Content around error position ({e.pos}):\n{content[start:end]}")
-                    return {"games": [], "parse_error": str(e), "raw_response": content[:500]}
-            else:
-                # Empty content - log detailed diagnostics
-                self.logger.error("⚠️  LLM returned empty content in call_llm_with_tool_results")
-                self.logger.error(f"📊 Finish reason: {finish_reason}")
-                self.logger.error(f"📊 Model used: {self.llm_client.model}")
-                self.logger.error(f"📊 Token usage: {usage.total_tokens if usage else 'unknown'} tokens")
-                
-                # Check if there are tool_calls instead of content
-                if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
-                    self.logger.error(f"⚠️  LLM returned tool_calls instead of content: {len(choice.message.tool_calls)} tool calls")
-                    self.logger.error("This suggests the LLM wants to use tools again, which shouldn't happen after tool results.")
-                    # Log the tool calls for debugging
-                    for i, tc in enumerate(choice.message.tool_calls):
-                        self.logger.error(f"  Tool call {i+1}: {tc.function.name if hasattr(tc, 'function') else 'unknown'}")
-                
-                # Check if response was truncated
-                if finish_reason == "length":
-                    current_max = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens", "unknown")
-                    self.logger.error("⚠️  Response was TRUNCATED due to max_tokens limit!")
-                    self.logger.error(f"Current max_tokens/max_completion_tokens: {current_max}")
-                    self.logger.error(f"Prompt tokens: {usage.prompt_tokens if usage else 'unknown'}")
-                    self.logger.error(f"Completion tokens used: {usage.completion_tokens if usage else 'unknown'}")
-                
-                # Log message structure for debugging
-                if hasattr(choice.message, 'role'):
-                    self.logger.error(f"📋 Message role: {choice.message.role}")
-                if hasattr(choice.message, 'content'):
-                    content_preview = str(choice.message.content)[:500] if choice.message.content else "None"
-                    self.logger.error(f"📋 Message content preview: {content_preview}")
-                if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
-                    self.logger.error(f"📋 Message has {len(choice.message.tool_calls)} tool_calls")
-                
-                return {"games": [], "error": "empty_content", "finish_reason": finish_reason}
-                
+            return response
+
         except Exception as e:
             self.logger.error(f"Error in LLM call with tool results: {e}", exc_info=True)
             raise

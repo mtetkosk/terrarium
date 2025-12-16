@@ -122,11 +122,41 @@ class PredictionPersistenceService:
                 win_probs = {"away": team_probs.get("away", 0.5), "home": team_probs.get("home", 0.5)}
         
         # Extract confidence - try multiple locations
-        confidence = pred_data.get("confidence", 0.5)
-        if confidence == 0.5:
+        # Check all possible locations where confidence might be stored
+        confidence = None
+        
+        # 1. Check top-level confidence
+        if "confidence" in pred_data:
+            confidence = pred_data.get("confidence")
+        
+        # 2. Check spread.model_confidence
+        if confidence is None:
             spread_data = pred_data.get("spread", {})
-            if spread_data.get("model_confidence"):
+            if isinstance(spread_data, dict) and spread_data.get("model_confidence") is not None:
                 confidence = spread_data.get("model_confidence")
+        
+        # 3. Check total.model_confidence
+        if confidence is None:
+            total_data = pred_data.get("total", {})
+            if isinstance(total_data, dict) and total_data.get("model_confidence") is not None:
+                confidence = total_data.get("model_confidence")
+        
+        # 4. Check moneyline.model_confidence
+        if confidence is None:
+            moneyline_data = pred_data.get("moneyline", {})
+            if isinstance(moneyline_data, dict) and moneyline_data.get("model_confidence") is not None:
+                confidence = moneyline_data.get("model_confidence")
+        
+        # 5. CRITICAL: Confidence is required - do not default
+        if confidence is None:
+            logger.error(
+                f"CRITICAL: Confidence not found in any expected location for game_id={game_id}. "
+                f"Modeler output must include confidence. Expected locations: "
+                f"predictions.confidence, predictions.spread.model_confidence, "
+                f"predictions.total.model_confidence, or predictions.moneyline.model_confidence. "
+                f"Skipping save for this prediction."
+            )
+            return  # Skip saving this prediction - confidence is required
         
         # Handle total: it can be a float or a dict with 'projected_total' key
         if total is not None:

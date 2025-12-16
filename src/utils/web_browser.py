@@ -45,8 +45,7 @@ class WebBrowser:
                 if self.kenpom_scraper.is_authenticated():
                     self.logger.info("✓ KenPom scraper initialized and authenticated")
                 else:
-                    self.logger.warning("KenPom scraper initialized but authentication failed")
-                    self.kenpom_scraper = None
+                    self.logger.warning("KenPom scraper initialized but authentication failed - will use cached data if available")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize KenPom scraper: {e}")
                 self.kenpom_scraper = None
@@ -438,7 +437,30 @@ class WebBrowser:
         Returns:
             List of stats information
         """
-        # Try multiple search strategies to find advanced stats
+        # FIRST: Try KenPom scraper via search_advanced_stats logic
+        # This ensures we use the authenticated/cached data if available, even if the LLM calls the wrong tool
+        if self.kenpom_scraper and sport.lower() == "basketball":
+            try:
+                # We can just call search_advanced_stats directly as it handles the lookup
+                advanced_stats = self.search_advanced_stats(team_name, sport)
+                if advanced_stats:
+                    self.logger.info(f"Found KenPom stats via search_team_stats for {team_name}")
+                    return advanced_stats
+                else:
+                    # KenPom lookup failed - don't fall back to web search to avoid hallucinations
+                    self.logger.warning(f"KenPom lookup failed for {team_name} in search_team_stats. Returning empty to prevent hallucinations.")
+                    return []
+            except Exception as e:
+                self.logger.warning(f"Error checking KenPom in search_team_stats: {e}. Returning empty to prevent hallucinations.")
+                return []
+        
+        # For non-basketball sports, we can still do web search
+        # But for basketball, we require KenPom data to avoid hallucinations
+        if sport.lower() == "basketball":
+            self.logger.warning(f"No KenPom scraper available for {team_name}. Returning empty to prevent hallucinations.")
+            return []
+        
+        # Try multiple search strategies to find advanced stats (only for non-basketball)
         queries = [
             f"{team_name} {sport} kenpom",
             f"{team_name} {sport} torvik",
@@ -518,21 +540,26 @@ class WebBrowser:
         """
         advanced_stats_info = []
         
-        # FIRST: Try authenticated KenPom access if available
-        if self.kenpom_scraper and self.kenpom_scraper.is_authenticated():
+        # FIRST: Try KenPom scraper if available (authenticated or cached)
+        if self.kenpom_scraper:
             try:
-                self.logger.info(f"Using authenticated KenPom access for {team_name}")
+                if self.kenpom_scraper.is_authenticated():
+                    self.logger.info(f"Using authenticated KenPom access for {team_name}")
+                else:
+                    self.logger.info(f"Using cached KenPom data for {team_name} (not authenticated)")
+                    
                 kenpom_stats = self.kenpom_scraper.get_team_stats(team_name, target_date=target_date)
                 
                 if kenpom_stats:
                     # Format KenPom stats as content string for LLM processing
-                    # IMPORTANT: Conference must be prominently displayed and accurate
+                    # IMPORTANT: Make rank VERY prominent - put it FIRST and make it impossible to miss
                     content_parts = []
-                    # Put conference FIRST to ensure it's seen and used correctly
+                    # Put rank FIRST and make it very explicit
+                    if 'kenpom_rank' in kenpom_stats:
+                        rank = kenpom_stats['kenpom_rank']
+                        content_parts.append(f"KENPOM RANK: #{rank} (EXACT VALUE - USE THIS NUMBER)")
                     if 'conference' in kenpom_stats:
                         content_parts.append(f"Conference: {kenpom_stats['conference']} (VERIFIED FROM KENPOM)")
-                    if 'kenpom_rank' in kenpom_stats:
-                        content_parts.append(f"Rank: {kenpom_stats['kenpom_rank']}")
                     if 'w_l' in kenpom_stats:
                         content_parts.append(f"W-L: {kenpom_stats['w_l']}")
                     if 'wins' in kenpom_stats and 'losses' in kenpom_stats:
@@ -563,10 +590,14 @@ class WebBrowser:
                     
                     content = "\n".join(content_parts) if content_parts else "KenPom stats available"
                     
+                    # Add a summary line at the very top with the most critical data
+                    summary_line = f"KENPOM DATA FOR {team_name.upper()}: Rank #{kenpom_stats.get('kenpom_rank', 'N/A')}, Conference: {kenpom_stats.get('conference', 'N/A')}"
+                    content = summary_line + "\n\n" + content
+                    
                     advanced_stats_info.append({
                         'source': f"KenPom.com - {team_name}",
                         'url': f"https://kenpom.com/team.php?team={team_name.replace(' ', '%20')}",
-                        'snippet': f"Authenticated KenPom data for {team_name}",
+                        'snippet': f"Authenticated KenPom data for {team_name} - Rank #{kenpom_stats.get('kenpom_rank', 'N/A')}",
                         'content': content,
                         'is_kenpom': True,
                         'is_torvik': False,
@@ -575,93 +606,50 @@ class WebBrowser:
                     })
                     
                     self.logger.info(f"✓ Successfully retrieved KenPom stats for {team_name}")
+                    # Return immediately if we found KenPom stats - no need to fallback
+                    return advanced_stats_info
+                else:
+                    # Log more details to help debug why lookup failed
+                    normalized = None
+                    canonical = None
+                    try:
+                        from src.utils.team_normalizer import normalize_team_name_for_lookup, map_team_name_to_canonical
+                        normalized = normalize_team_name_for_lookup(team_name)
+                        canonical = map_team_name_to_canonical(team_name)
+                    except:
+                        pass
+                    
+                    cache_size = len(self.kenpom_scraper._team_cache) if self.kenpom_scraper else 0
+                    cache_date = self.kenpom_scraper._cache_date if self.kenpom_scraper else None
+                    
+                    self.logger.warning(
+                        f"KenPom scraper returned no stats for '{team_name}' "
+                        f"(normalized: '{normalized}', canonical: '{canonical}'). "
+                        f"Cache has {cache_size} teams (date: {cache_date}). "
+                        f"This may indicate a normalization mismatch or cache issue."
+                    )
             except Exception as e:
                 self.logger.warning(f"Error fetching authenticated KenPom data: {e}, falling back to web search")
+                # Add a visible warning that direct access failed
+                advanced_stats_info.append({
+                    'source': "System Warning",
+                    'url': "",
+                    'snippet': "Authenticated KenPom access failed. Falling back to web search. Data may be less accurate.",
+                    'content': f"WARNING: Direct KenPom access failed (Error: {str(e)}). The following stats are from web search and may be less reliable or from a different date.",
+                    'is_kenpom': False,
+                    'is_torvik': False,
+                    'is_advanced_stats': False
+                })
         
         # FALLBACK: Use web search if KenPom scraper not available or failed
-        if not advanced_stats_info:
-            # Try multiple search queries specifically targeting KenPom/Torvik
-            queries = [
-                f"{team_name} {sport} kenpom",
-                f"{team_name} {sport} bart torvik",
-                f"{team_name} {sport} torvik",
-                f"{team_name} kenpom.com",
-                f"kenpom {team_name} {sport}",
-                f"barttorvik.com {team_name}"
-            ]
-            
-            all_results = []
-            seen_urls = set()
-            
-            # Search with different queries
-            for query in queries:
-                results = self.search_web(query, max_results=5)
-                
-                for result in results:
-                    url = result.get('url', '')
-                    if url and url not in seen_urls:
-                        seen_urls.add(url)
-                        all_results.append(result)
-            
-            # Filter and prioritize KenPom/Torvik URLs
-            kenpom_torvik_results = []
-            
-            for result in all_results:
-                url = result.get('url', '').lower()
-                title = result.get('title', '').lower()
-                snippet = result.get('snippet', '').lower()
-                
-                # Check if this is a KenPom or Torvik page
-                is_kenpom = 'kenpom' in url or 'kenpom' in title
-                is_torvik = 'torvik' in url or 'barttorvik' in url or 'torvik' in title
-                
-                if is_kenpom or is_torvik:
-                    kenpom_torvik_results.append((result, is_kenpom, is_torvik))
-            
-            # Process KenPom/Torvik pages with full content extraction
-            for result, is_kenpom, is_torvik in kenpom_torvik_results[:1]:  # Reduced from 3 to 1 result
-                url = result['url']
-                self.logger.info(f"Fetching advanced stats from {'KenPom' if is_kenpom else 'Torvik'}: {url}")
-                
-                # Fetch content for KenPom/Torvik pages (reduced size to save tokens)
-                content = self.fetch_url(url, max_length=3000)  # Reduced from 8000 to 3000
-                if content:
-                    advanced_stats_info.append({
-                        'source': result['title'],
-                        'url': url,
-                        'snippet': result['snippet'],
-                        'content': content[:1500],  # Limit to 1500 chars (reduced from full content)
-                        'is_kenpom': is_kenpom,
-                        'is_torvik': is_torvik,
-                        'is_advanced_stats': True
-                    })
-            
-            # If no KenPom/Torvik pages found, try broader advanced stats searches
-            if not advanced_stats_info:
-                self.logger.warning(f"No KenPom/Torvik pages found for {team_name}, trying broader search")
-                fallback_queries = [
-                    f"{team_name} {sport} adjusted offense defense",
-                    f"{team_name} {sport} efficiency ratings",
-                    f"{team_name} {sport} advanced metrics"
-                ]
-                
-                for query in fallback_queries[:1]:  # Reduced from 2 to 1 query
-                    results = self.search_web(query, max_results=2)  # Reduced from 3 to 2
-                    for result in results[:1]:
-                        content = self.fetch_url(result['url'], max_length=2000)  # Reduced from 3000 to 2000
-                        if content and any(keyword in content.lower() for keyword in ['adjusted', 'efficiency', 'adj', 'kenpom', 'torvik']):
-                            advanced_stats_info.append({
-                                'source': result['title'],
-                                'url': result['url'],
-                                'snippet': result['snippet'],
-                                'content': content[:1000],  # Reduced from 2000 to 1000
-                                'is_kenpom': False,
-                                'is_torvik': False,
-                                'is_advanced_stats': True
-                            })
-                            break
-        
-        self.logger.info(f"Found {len(advanced_stats_info)} advanced stats sources for {team_name}")
+        # ONLY if explicitly requested, otherwise return empty list to avoid hallucinations
+        # We disable web search fallback for advanced stats to prevent bad data
+        # Only log this warning if we actually tried the KenPom scraper (to avoid noise when scraper isn't configured)
+        if self.kenpom_scraper:
+            self.logger.warning(
+                f"Returning no advanced stats for '{team_name}' because KenPom lookup failed. "
+                f"This prevents hallucination from web search, but indicates a potential bug in team name matching."
+            )
         return advanced_stats_info
     
     def search_game_predictions(self, team1: str, team2: str, sport: str = "basketball", game_date: Optional[date] = None) -> List[Dict[str, Any]]:
@@ -695,14 +683,15 @@ class WebBrowser:
         # For basketball, use more specific terms to avoid football results
         sport_terms = []
         if sport.lower() == "basketball":
-            sport_terms = ["NCAAB", "college basketball", "men's college basketball", "NCAA basketball"]
+            # Explicitly emphasize Men's basketball to avoid Women's/WNBA results
+            sport_terms = ["NCAAB", "men's college basketball", "college basketball", "NCAA men's basketball"]
         else:
             sport_terms = [sport]
         
         # Try multiple search queries to find prediction articles
         # Prioritize queries with sport-specific terms
         queries = []
-        for sport_term in sport_terms[:2]:  # Use first 2 sport terms
+        for sport_term in sport_terms[:3]:  # Use first 3 sport terms
             queries.extend([
                 f"{team1_normalized} vs {team2_normalized}{date_str} {sport_term} prediction",
                 f"{team1_normalized} vs {team2_normalized}{date_str} {sport_term} pick",
@@ -715,7 +704,7 @@ class WebBrowser:
         if sport.lower() == "basketball":
             queries.extend([
                 f"{team1} vs {team2}{date_str} NCAAB prediction",
-                f"{team1} vs {team2}{date_str} college basketball pick",
+                f"{team1} vs {team2}{date_str} men's college basketball pick",
             ])
         
         all_results = []
@@ -734,6 +723,10 @@ class WebBrowser:
                 basketball_keywords = ['basketball', 'ncaab', 'nba', 'hoops', 'cbb']
                 is_basketball = any(keyword in url or keyword in title or keyword in snippet for keyword in basketball_keywords)
                 
+                # Check for Women's basketball keywords (to filter out)
+                womens_keywords = ['women', 'wbb', 'ncaaw', 'wnba', 'lady']
+                is_womens = any(keyword in url.lower() or keyword in title.lower() or keyword in snippet.lower() for keyword in womens_keywords)
+                
                 # Prioritize known good sources
                 good_sources = ['covers.com', 'espn.com', 'draftkings.com', 'winnersandwhiners.com', 
                                'sportsbookreview.com', 'thescore.com', 'actionnetwork.com']
@@ -741,6 +734,11 @@ class WebBrowser:
                 
                 if url and url not in seen_urls:
                     seen_urls.add(url)
+                    
+                    # Skip women's basketball results if we're looking for men's
+                    if sport.lower() == "basketball" and is_womens:
+                        continue
+                        
                     # Add priority score for sorting
                     result['_priority'] = (3 if is_good_source else 0) + (2 if is_basketball else 0)
                     all_results.append(result)
@@ -832,4 +830,3 @@ class WebBrowser:
 def get_web_browser() -> WebBrowser:
     """Get a web browser instance"""
     return WebBrowser()
-

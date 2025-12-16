@@ -2,6 +2,7 @@
 
 import pytest
 import json
+import os
 from datetime import date, datetime
 from typing import Dict, Any, Optional, List
 from unittest.mock import Mock, MagicMock, patch
@@ -69,6 +70,34 @@ class MockLLMClient:
             return response
         
         return {"raw_response": json.dumps(response) if isinstance(response, dict) else str(response)}
+
+    def call_chat(
+        self,
+        messages: List[Dict[str, Any]],
+        response_format: Optional[Dict[str, Any]] = None,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        parse_json: bool = True,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Mock LLM chat call"""
+        # Calculate prompt length from messages
+        prompt_length = sum(len(str(m.get("content", ""))) for m in messages)
+        self.total_prompt_tokens += prompt_length // 4
+        self.total_completion_tokens += 500
+        self.total_tokens_used += self.total_prompt_tokens + self.total_completion_tokens
+        
+        response = self.get_response()
+        
+        # Handle tool calls
+        if tools and response.get("tool_calls"):
+            return response
+            
+        if parse_json and isinstance(response, dict):
+            return response
+            
+        return {"raw_response": json.dumps(response) if isinstance(response, dict) else str(response)}
     
     def get_usage_stats(self) -> Dict[str, int]:
         """Get token usage statistics"""
@@ -96,7 +125,11 @@ def real_llm_client():
     """Fixture providing a real LLM client for integration tests"""
     # Use cheapest model for integration tests to minimize token cost
     try:
-        client = LLMClient(model="gpt-4o-mini")
+        # Check if API key is present
+        if not os.getenv("GEMINI_API_KEY"):
+            pytest.skip("GEMINI_API_KEY not found. Skipping integration test.")
+            
+        client = LLMClient(model="gemini-3-flash")
         yield client
     except Exception as e:
         pytest.skip(f"Could not initialize LLM client: {e}. Skipping integration test.")
@@ -442,4 +475,3 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: marks tests as integration tests (requires real LLM API calls)"
     )
-
