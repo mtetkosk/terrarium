@@ -72,7 +72,18 @@ def minify_input_for_president(candidate_picks: List[Dict[str, Any]]) -> List[Di
                 minified_game["confidence"] = float(raw_confidence)
         
         # Picker rating (confidence_score) - keep as 1-10 scale for display
-        minified_game["picker_rating"] = pick.get("confidence_score", 5)
+        # If confidence_score is missing, derive it from confidence (0.0-1.0)
+        confidence_score = pick.get("confidence_score")
+        if confidence_score is None:
+            # Derive confidence_score (1-10) from confidence (0.0-1.0)
+            confidence_value = pick.get("confidence", 0.5)
+            if confidence_value <= 1.0:
+                # Already in 0.0-1.0 range, convert to 1-10 scale
+                confidence_score = max(1, min(10, int(round(confidence_value * 10))))
+            else:
+                # Likely already in 1-10 scale
+                confidence_score = max(1, min(10, int(confidence_value)))
+        minified_game["picker_rating"] = confidence_score
         
         # Extract key rationale - truncate to essential points
         rationale = pick.get("rationale", {})
@@ -224,36 +235,36 @@ YOUR TASKS:
    - Historical performance patterns
    - Typical range: 0.5 (low confidence/edge) to 3.0 (exceptional value)
 
-2. Select UP TO 5 best bets from all picks using STRICT criteria:
-   - **MANDATORY REQUIREMENTS (ALL must be met):**
-     * Edge >= 0.08 (8% EV for spread) OR >= 0.10 (10% EV for total) OR >= 0.15 (15% for moneyline)
-     * Picker_Rating >= 7 AND Modeler_Confidence >= 0.60 (note: confidence values are 0-1 scale)
-     * Assigned units >= 1.0u (must be "Standard" tier or higher)
-     * No data gap red flags or questionable key players (GTD status reduces eligibility)
-   - **HISTORICAL PERFORMANCE:** Check bet_type_performance in auditor_feedback. Avoid bet types that have been losing (< 50% win rate) unless edge is exceptional (> 0.15 for spread/total or > 0.20 for ML)
-   - **QUALITY OVER QUANTITY:** If fewer than 3 picks meet all criteria, select only those that do. DO NOT lower standards to force 5 best bets.
-   - Mark with "best_bet": true
-   - Best bets can be favorites OR underdogs - value is what matters, but quality thresholds are non-negotiable
+2. Select UP TO 5 best bets representing the games you would personally bet on yourself:
+   - **ONLY CONSTRAINT:** Picks with picker_rating <= 3 are INELIGIBLE for best bets (these are low confidence picks)
+   - **YOUR DISCRETION:** You have full freedom to select best bets based on your judgment. Consider:
+     * Model edge and expected value
+     * Picker confidence (picker_rating) and rationale
+     * Research context (injuries, matchups, situational factors)
+     * Historical performance patterns (if available in auditor_feedback)
+     * Risk/reward balance
+     * Overall portfolio construction
+   - **QUALITY OVER QUANTITY:** Select the games that represent your top opportunities. It's better to have 2-3 strong best bets than 5 mediocre ones.
+   - **NO STRICT THRESHOLDS:** There are no mandatory edge minimums, confidence requirements (beyond excluding low confidence), or unit thresholds. Trust your judgment.
+   - Mark selected picks with "best_bet": true
+   - Best bets can be any bet type (spread, total, moneyline) - choose what you believe are the best opportunities
 
 3. Generate comprehensive reasoning for each pick:
    - Use the Picker's rationale (already synthesized from research and model data)
    - Consider edge, confidence, and picker_rating when assigning units
    - Reference historical performance patterns when available
    - Explain why this specific unit size was assigned
-   - For best bets, explain why they stand out as top opportunities
+   - For best bets, explain why you selected them as your top opportunities
 
 CRITICAL REQUIREMENTS:
 - You must assign units to ALL picks (do not skip any)
-- You may select UP TO 5 best bets, but ONLY if they meet ALL strict criteria:
-  * Edge >= 0.08 (8% EV for spreads), >= 0.10 (10% EV for totals), or >= 0.15 (15% for ML)
-  * Picker_rating >= 7 AND modeler confidence >= 0.60
-  * Units >= 1.0
-  * No data gap red flags
-- **QUALITY OVER QUANTITY:** It's better to have 0-2 high-quality best bets than 5 mediocre ones. Do NOT lower standards to reach 5 best bets.
+- You may select UP TO 5 best bets, but ONLY exclude picks with picker_rating <= 3 (low confidence)
+- **YOUR JUDGMENT MATTERS:** The best bets should represent the games YOU would personally bet on based on all available information. Use your judgment to balance edge, confidence, risk, and value.
+- **HIGH CONFIDENCE TIER:** In addition to best bets, identify picks with picker_rating >= 6.0 as "high_confidence": true. These are strong picks that deserve attention even if not selected as best bets.
 - All picks are approved by default - you're assigning units and selecting best bets
 - The candidate_picks already contain synthesized information from Researcher and Modeler
 - Use the edge, confidence, picker_rating, and key_rationale fields to make decisions
-- **HISTORICAL LEARNING:** Use auditor_feedback to identify which bet types have been profitable vs losing. Prefer bet types with positive historical performance.
+- **HISTORICAL LEARNING:** Use auditor_feedback to inform your decisions, but don't let it override your judgment. Historical patterns are one factor among many.
 
 Provide your response in the specified JSON format with approved_picks (all picks with units and best_bet flags) and daily_report_summary."""
         
@@ -307,6 +318,32 @@ Provide your response in the specified JSON format with approved_picks (all pick
                     # For now, we'll enforce the "Confidence 1" downgrade for flagged logical errors if the LLM flagged them.
                     pass 
 
+            # Filter out low confidence picks from best bets (safeguard)
+            # Low confidence is defined as picker_rating <= 3 (on 1-10 scale)
+            # Create a lookup map from minified_picks for picker_rating
+            picker_rating_map = {p.get("game_id"): p.get("picker_rating") for p in minified_picks if p.get("game_id")}
+            
+            for pick in approved_picks:
+                if pick.get("best_bet", False):
+                    # Get picker_rating from the pick, minified_picks, or original candidate_picks
+                    picker_rating = pick.get("picker_rating")
+                    if picker_rating is None:
+                        game_id = pick.get("game_id")
+                        # Try minified_picks first (what LLM saw)
+                        picker_rating = picker_rating_map.get(game_id)
+                        if picker_rating is None:
+                            # Fallback to original candidate_picks
+                            original_pick = next((p for p in candidate_picks if p.get("game_id") == game_id), None)
+                            if original_pick:
+                                picker_rating = original_pick.get("confidence_score") or original_pick.get("picker_rating")
+                    
+                    if picker_rating is not None and picker_rating <= 3:
+                        self.log_warning(
+                            f"⚠️  Removing best_bet flag from pick {pick.get('game_id')} "
+                            f"due to low confidence (picker_rating={picker_rating} <= 3)"
+                        )
+                        pick["best_bet"] = False
+            
             # Enforce maximum 5 best bets
             best_bet_picks = [p for p in approved_picks if p.get("best_bet", False)]
             best_bet_count = len(best_bet_picks)

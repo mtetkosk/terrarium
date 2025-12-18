@@ -13,17 +13,18 @@ MASCOT_NAMES = [
     # Compound names first (longest)
     'fighting illini', 'fighting irish', 'fighting hawks', 'runnin\' bulldogs',
     'upstate spartans', 'gulf coast eagles', 'crimson tide', 'nittany lions',
-    'golden eagles', 'golden griffins', 'red raiders', 'blue devils', 'tar heels', 'rainbow warriors',
+    'golden eagles', 'golden griffins', 'red raiders', 'blue raiders', 'blue devils', 'blue demons', 'blue hens', 'red foxes', 'tar heels', 'rainbow warriors', 'demon deacons',
     'sea warriors', 'black knights', 'purple eagles', 'screaming eagles',
-    'river hawks', 'skyhawks', 'firehawks', 'red dragons', 'red hawks', 'redhawks', 'red storm',
+    'river hawks', 'skyhawks', 'firehawks', 'red dragons', 'red hawks', 'redhawks', 'red storm', 'red flash',
     'mountaineers', 'leathernecks', 'fighting bees', 'chanticleers',
     'golden gophers', 'sun devils', 'horned frogs', 'cornhuskers', 'boilermakers',
     'thundering herd', 'golden flashes', 'ragin cajuns', 'warhawks', 'red wolves',
-    'blue jays', 'bluejays', 'blue hose', 'mean green', 'green wave', 'golden hurricane',
+    'blue jays', 'bluejays', 'blue hose', 'mean green', 'big green', 'green wave', 'golden hurricane',
     'black bears', 'runnin\' rebels', 'anteaters',
     # Single word mascots
     'roadrunners', 'matadors', 'titans', 'buccaneers', 'yellow jackets', 
-    'crusaders', 'saints', 'redbirds', 'sycamores', 'bison', 'aztecs', 
+    'crusaders', 'saints', 'redbirds', 'sycamores', 'bison', 'bisons', 'aztecs',
+    'raiders', 'rebels', 'texans', 'broncs', 'pioneers', 'vikings', 
     'toreros', 'gators', 'cardinals', 'hilltoppers', 'bobcats', 'broncos', 'chargers', 'hokies',
     'monarchs', 'great danes', 'hawkeyes', 'huskers', 'terrapins', 'terps', 'ducks', 'huskies',
     'trojans', 'bruins', 'beavers', 'buffaloes', 'utes', 'commodores', 'volunteers', 'vols',
@@ -39,11 +40,11 @@ MASCOT_NAMES = [
     'zips', 'rockets', 'bulls', 'chippewas', 'miners', 'dukes', 'blazers',
     'hurricanes', 'cardinal', 'crimson', 'longhorns', 'buckeyes', 
     'wolverines', 'spartans', 'badgers', 'fgcu', 'jayhawks', 'hoosiers', 
-    'demons', 'lopes', 'mustangs', 'jaspers', 'razorbacks', 'quakers', 
+    'demons', 'lopes', 'mustangs', 'jaspers', 'razorbacks', 'quakers', 'vaqueros', 
     'dragons', 'colonels', 'highlanders', 'keydets', 'rams', 'cowboys', 
-    'flyers', 'dolphins', 'stags', 'mavericks', 'spiders',
+    'flyers', 'flames', 'dolphins', 'stags', 'mavericks', 'spiders',
     'friars', 'anteaters', 'peacocks', 'sharks', 'midshipmen', 'hoyas', 
-    'seawolves', 'jaguars', 'griffins', 'lakers', 'cougars', 'cyclones', 'catamounts', 'phoenix'
+    'seawolves', 'jaguars', 'griffins', 'lakers', 'cougars', 'cyclones', 'catamounts', 'phoenix', 'tritons'
 ]
 
 # Special mappings
@@ -81,6 +82,10 @@ TEAM_NAME_MAPPING: Dict[str, str] = {
     'murray st': 'murray st.',
     'murray st.': 'murray st.',
     'murray state': 'murray st.',
+    
+    # California Baptist variations
+    'california baptist': 'cal baptist',
+    'cal baptist': 'cal baptist',
     
     # Add more mappings as needed
 }
@@ -201,6 +206,12 @@ def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
     # Check for UAlbany variations (UAlbany -> Albany)
     if any(term in original_lower for term in ['ualbany', 'u albany']):
         return 'albany'
+    
+    # CRITICAL: Check for USC Upstate FIRST, before any processing
+    # USC Upstate is South Carolina Upstate, NOT University of Southern California
+    # KenPom uses "USC Upstate" for this team
+    if any(term in original_lower for term in ['usc upstate', 'south carolina upstate', 'south carolina upst', 'sc upstate']):
+        return 'usc upstate'
     
     # Remove parenthetical content like "(PA)", "(TN)", etc.
     # BUT preserve parenthetical info for Miami before removing (will handle after)
@@ -324,7 +335,7 @@ def normalize_team_name(team_name: str, for_matching: bool = True) -> str:
         return 'iu indy'
     
     # South Carolina Upstate variations
-    if 'south carolina upstate' in normalized or 'sc upstate' in normalized or 'usc upstate' in normalized:
+    if 'south carolina upstate' in normalized or 'south carolina upst' in normalized or 'sc upstate' in normalized or 'usc upstate' in normalized:
         normalized = 'usc upstate'
     
     # Florida Gulf Coast variations
@@ -668,8 +679,8 @@ def get_team_name_variations(team_name: str) -> List[str]:
             variations.update(['north carolina', 'unc', 'nc'])
     
     # South Carolina Upstate
-    if 'south carolina upstate' in name_lower or 'sc upstate' in name_lower or 'usc upstate' in name_lower:
-        variations.update(['usc upstate', 'south carolina upstate', 'sc upstate'])
+    if 'south carolina upstate' in name_lower or 'south carolina upst' in name_lower or 'sc upstate' in name_lower or 'usc upstate' in name_lower:
+        variations.update(['usc upstate', 'south carolina upstate', 'south carolina upst', 'sc upstate'])
     
     # Florida Gulf Coast
     if 'florida gulf coast' in name_lower or 'fgcu' in name_lower:

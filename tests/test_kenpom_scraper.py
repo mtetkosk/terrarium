@@ -373,4 +373,225 @@ class TestKenPomScraperCache:
             assert result is True
             assert len(scraper._team_cache) >= 3
             assert scraper._cache_date == date.today()
+    
+    @patch('src.data.scrapers.kenpom_scraper.config')
+    def test_parse_four_factors_from_page(self, mock_config):
+        """Test parsing Four Factors from team page HTML"""
+        mock_config.get_kenpom_credentials.return_value = None
+        
+        # Sample HTML with Four Factors table
+        four_factors_html = """
+        <html>
+        <body>
+        <h2>Four Factors</h2>
+        <table>
+            <tr>
+                <th>Factor</th>
+                <th>Off</th>
+                <th>Rank</th>
+                <th>Def</th>
+                <th>Rank</th>
+                <th>Avg</th>
+            </tr>
+            <tr>
+                <td>Effective FG%</td>
+                <td>51.4 166</td>
+                <td></td>
+                <td>47.9 77</td>
+                <td></td>
+                <td>51.1</td>
+            </tr>
+            <tr>
+                <td>Turnover %</td>
+                <td>16.8 136</td>
+                <td></td>
+                <td>22.8 12</td>
+                <td></td>
+                <td>17.6</td>
+            </tr>
+            <tr>
+                <td>Off. Reb. %</td>
+                <td>32.3 146</td>
+                <td></td>
+                <td>27.9 81</td>
+                <td></td>
+                <td>31.2</td>
+            </tr>
+            <tr>
+                <td>FTA/FGA</td>
+                <td>36.9 146</td>
+                <td></td>
+                <td>31.0 86</td>
+                <td></td>
+                <td>35.6</td>
+            </tr>
+        </table>
+        </body>
+        </html>
+        """
+        
+        with patch('src.data.scrapers.kenpom_scraper.KenPomScraper._authenticate'):
+            scraper = KenPomScraper()
+            four_factors = scraper._parse_four_factors_from_page(four_factors_html, "TCU")
+        
+        assert four_factors is not None
+        assert 'efg_pct' in four_factors
+        assert four_factors['efg_pct'] == 51.4
+        assert 'turnover_pct' in four_factors
+        assert four_factors['turnover_pct'] == 16.8
+        assert 'off_reb_pct' in four_factors
+        assert four_factors['off_reb_pct'] == 32.3
+        assert 'fta_per_fga' in four_factors
+        assert four_factors['fta_per_fga'] == 36.9
+    
+    @patch('src.data.scrapers.kenpom_scraper.config')
+    def test_get_four_factors_caching(self, mock_config, tmp_path):
+        """Test that Four Factors are cached per day"""
+        mock_config.get_kenpom_credentials.return_value = {'email': 'test@test.com', 'password': 'test'}
+        
+        cache_file = tmp_path / "kenpom_cache.json"
+        
+        # Sample Four Factors HTML
+        four_factors_html = """
+        <html>
+        <body>
+        <h2>Four Factors</h2>
+        <table>
+            <tr>
+                <th>Factor</th>
+                <th>Off</th>
+                <th>Def</th>
+            </tr>
+            <tr>
+                <td>Effective FG%</td>
+                <td>51.4 166</td>
+                <td>47.9 77</td>
+            </tr>
+            <tr>
+                <td>Turnover %</td>
+                <td>16.8 136</td>
+                <td>22.8 12</td>
+            </tr>
+            <tr>
+                <td>Off. Reb. %</td>
+                <td>32.3 146</td>
+                <td>27.9 81</td>
+            </tr>
+            <tr>
+                <td>FTA/FGA</td>
+                <td>36.9 146</td>
+                <td>31.0 86</td>
+            </tr>
+        </table>
+        </body>
+        </html>
+        """
+        
+        with patch('src.data.scrapers.kenpom_scraper.KenPomScraper._authenticate') as mock_auth:
+            mock_auth.return_value = True
+            
+            scraper = KenPomScraper()
+            scraper.authenticated = True
+            scraper.cache_file = cache_file
+            scraper._team_cache = {'tcu': {'team': 'TCU', 'kenpom_rank': 50}}
+            
+            # Mock _find_team_url and session.get
+            scraper._find_team_url = Mock(return_value="https://kenpom.com/team.php?team=TCU")
+            mock_response = Mock()
+            mock_response.text = four_factors_html
+            mock_response.raise_for_status = Mock()
+            scraper.session.get = Mock(return_value=mock_response)
+            
+            # First call should fetch from page
+            target_date = date.today()
+            four_factors = scraper._get_four_factors_from_team_page("TCU", target_date)
+            
+            assert four_factors is not None
+            assert 'efg_pct' in four_factors
+            assert scraper.session.get.called
+            
+            # Reset mock
+            scraper.session.get.reset_mock()
+            
+            # Second call should use cache (same date)
+            four_factors2 = scraper._get_four_factors_from_team_page("TCU", target_date)
+            
+            assert four_factors2 is not None
+            assert four_factors2['efg_pct'] == four_factors['efg_pct']
+            # Should not call session.get again (using cache)
+            assert not scraper.session.get.called or scraper.session.get.call_count == 0
+    
+    @patch('src.data.scrapers.kenpom_scraper.config')
+    def test_get_team_stats_includes_four_factors(self, mock_config, tmp_path):
+        """Test that get_team_stats includes Four Factors"""
+        mock_config.get_kenpom_credentials.return_value = {'email': 'test@test.com', 'password': 'test'}
+        
+        cache_file = tmp_path / "kenpom_cache.json"
+        
+        # Sample Four Factors HTML
+        four_factors_html = """
+        <html>
+        <body>
+        <h2>Four Factors</h2>
+        <table>
+            <tr>
+                <th>Factor</th>
+                <th>Off</th>
+                <th>Def</th>
+            </tr>
+            <tr>
+                <td>Effective FG%</td>
+                <td>51.4 166</td>
+                <td>47.9 77</td>
+            </tr>
+            <tr>
+                <td>Turnover %</td>
+                <td>16.8 136</td>
+                <td>22.8 12</td>
+            </tr>
+            <tr>
+                <td>Off. Reb. %</td>
+                <td>32.3 146</td>
+                <td>27.9 81</td>
+            </tr>
+            <tr>
+                <td>FTA/FGA</td>
+                <td>36.9 146</td>
+                <td>31.0 86</td>
+            </tr>
+        </table>
+        </body>
+        </html>
+        """
+        
+        with patch('src.data.scrapers.kenpom_scraper.KenPomScraper._authenticate') as mock_auth:
+            mock_auth.return_value = True
+            
+            scraper = KenPomScraper()
+            scraper.authenticated = True
+            scraper.cache_file = cache_file
+            scraper._team_cache = {'tcu': {'team': 'TCU', 'kenpom_rank': 50, 'adj_offense': 110.5}}
+            
+            # Mock _find_team_url and session.get
+            scraper._find_team_url = Mock(return_value="https://kenpom.com/team.php?team=TCU")
+            mock_response = Mock()
+            mock_response.text = four_factors_html
+            mock_response.raise_for_status = Mock()
+            scraper.session.get = Mock(return_value=mock_response)
+            
+            # Get team stats
+            stats = scraper.get_team_stats("TCU")
+            
+            assert stats is not None
+            assert stats['kenpom_rank'] == 50
+            assert stats['adj_offense'] == 110.5
+            # Should include Four Factors
+            assert 'efg_pct' in stats
+            assert stats['efg_pct'] == 51.4
+            assert 'turnover_pct' in stats
+            assert stats['turnover_pct'] == 16.8
+            assert 'off_reb_pct' in stats
+            assert stats['off_reb_pct'] == 32.3
+            assert 'fta_per_fga' in stats
+            assert stats['fta_per_fga'] == 36.9
 
