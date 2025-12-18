@@ -217,8 +217,9 @@ class DataConverter:
                     logger.error(f"Pick for game_id={game_id} has empty rationale! justification={justification}, notes={pick_data.get('notes')}")
                     raise ValueError(f"Pick for game_id={game_id} is missing required rationale field")
                 
-                # Parse best_bet flag
+                # Parse best_bet and high_confidence flags
                 best_bet = pick_data.get("best_bet", False)
+                high_confidence = pick_data.get("high_confidence", False)
                 
                 # Get confidence_score if provided, otherwise derive from confidence (0.0-1.0)
                 confidence_score = pick_data.get("confidence_score")
@@ -270,6 +271,7 @@ class DataConverter:
                     team_name=team_name,  # Keep for backwards compatibility
                     team_id=team_id,  # Will be set when saving to database
                     best_bet=best_bet,
+                    high_confidence=high_confidence,
                     confidence_score=confidence_score,
                     parlay_legs=None  # Will be set later if parlay
                 )
@@ -301,6 +303,7 @@ class DataConverter:
                 "confidence": pick.confidence,
                 "confidence_score": pick.confidence_score,
                 "best_bet": pick.best_bet,
+                "high_confidence": pick.high_confidence,
                 "book": pick.book,
                 "rationale": pick.rationale
             }
@@ -342,6 +345,7 @@ class DataConverter:
                 game_id_str = str(approved_data.get("game_id", ""))
                 bet_type_str = approved_data.get("bet_type", "").lower()
                 best_bet = approved_data.get("best_bet", False)  # Get best_bet flag from President's response
+                high_confidence = approved_data.get("high_confidence", False)  # Get high_confidence flag from President's response
                 
                 # Match pick by game_id and bet_type only (line is stored in pick, not parsed from text)
                 try:
@@ -351,8 +355,9 @@ class DataConverter:
                     matched_pick = pick_map.get(key)
                     if matched_pick and matched_pick.id:
                         approved_pick_ids.append(matched_pick.id)
-                        # Update best_bet flag on the pick object
+                        # Update best_bet and high_confidence flags on the pick object
                         matched_pick.best_bet = best_bet
+                        matched_pick.high_confidence = high_confidence
                         if best_bet:
                             best_bet_pick_ids.add(matched_pick.id)
                 except (ValueError, KeyError) as e:

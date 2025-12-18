@@ -146,6 +146,7 @@ class Pick:
     team_name: Optional[str] = None  # Team name for spread/moneyline bets (null for totals) - deprecated, use team_id
     team_id: Optional[int] = None  # Team ID for spread/moneyline bets (null for totals) - preferred
     best_bet: bool = False  # True if this is a "best bet" (will be reviewed by President)
+    high_confidence: bool = False  # True if picker_rating >= 6.0, indicating a strong pick even if not a best bet
     favorite: bool = False  # Deprecated: use best_bet instead. Kept for backwards compatibility
     confidence_score: int = 5  # 1-10 confidence score (1 = low, 10 = high)
     created_at: datetime = field(default_factory=datetime.now)

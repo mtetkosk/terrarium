@@ -156,6 +156,11 @@ class GamesScraper:
                         for competitor in competitors:
                             team_name = competitor.get('team', {}).get('displayName', '')
                             score = competitor.get('score', 0)
+                            # Convert score to int (ESPN API sometimes returns strings)
+                            try:
+                                score = int(score) if score else 0
+                            except (ValueError, TypeError):
+                                score = 0
                             is_home = competitor.get('homeAway') == 'home'
                             if is_home:
                                 scores['home'] = {'team': team_name, 'score': score}

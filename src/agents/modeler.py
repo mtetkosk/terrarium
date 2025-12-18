@@ -489,12 +489,25 @@ Be explicit, quantitative, and verbose in model_notes. The model_notes field sho
                     predictions = model.get('predictions', {})
                     for pred_type in ['spread', 'total', 'moneyline']:
                         if pred_type in predictions:
-                            current_confidence = predictions[pred_type].get('model_confidence', 1.0)
-                            if current_confidence > 0.3:
-                                predictions[pred_type]['model_confidence'] = 0.3
+                            pred_value = predictions[pred_type]
+                            # Handle case where pred_value might be a float instead of dict
+                            if isinstance(pred_value, dict):
+                                current_confidence = pred_value.get('model_confidence', 1.0)
+                                if current_confidence > 0.3:
+                                    pred_value['model_confidence'] = 0.3
+                                    self.log_warning(
+                                        f"⚠️  Capped model_confidence at 0.3 for {pred_type} in game {game_id} "
+                                        f"(advanced stats unavailable, was {current_confidence:.2f})"
+                                    )
+                            else:
+                                # If it's not a dict (e.g., a float), convert to dict structure
+                                predictions[pred_type] = {
+                                    'model_confidence': 0.3,
+                                    'value': pred_value
+                                }
                                 self.log_warning(
-                                    f"⚠️  Capped model_confidence at 0.3 for {pred_type} in game {game_id} "
-                                    f"(advanced stats unavailable, was {current_confidence:.2f})"
+                                    f"⚠️  Converted {pred_type} from {type(pred_value).__name__} to dict and "
+                                    f"capped model_confidence at 0.3 for game {game_id} (advanced stats unavailable)"
                                 )
                     
                     # Also cap edge_confidence in market_edges

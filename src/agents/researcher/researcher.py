@@ -349,6 +349,15 @@ class Researcher(BaseAgent):
                             team_adv['sos'] = kenpom_stats['sos']
                         if 'ncsos' in kenpom_stats:
                             team_adv['ncsos'] = kenpom_stats['ncsos']
+                        # Four Factors stats
+                        if 'efg_pct' in kenpom_stats:
+                            team_adv['efg_pct'] = kenpom_stats['efg_pct']
+                        if 'turnover_pct' in kenpom_stats:
+                            team_adv['turnover_pct'] = kenpom_stats['turnover_pct']
+                        if 'off_reb_pct' in kenpom_stats:
+                            team_adv['off_reb_pct'] = kenpom_stats['off_reb_pct']
+                        if 'fta_per_fga' in kenpom_stats:
+                            team_adv['fta_per_fga'] = kenpom_stats['fta_per_fga']
                         
                         self.logger.info(
                             f"✅ Programmatically populated KenPom stats for {team_name} ({team_key}): "
@@ -628,7 +637,9 @@ Return your JSON response now:"""
         
         Programmatic fields that should NEVER be overwritten by LLM:
         - adv.away.kp_rank, adjo, adjd, adjt, net, conference, wins, losses, w_l, luck, sos, ncsos
+        - adv.away.efg_pct, turnover_pct, off_reb_pct, fta_per_fga
         - adv.home.kp_rank, adjo, adjd, adjt, net, conference, wins, losses, w_l, luck, sos, ncsos
+        - adv.home.efg_pct, turnover_pct, off_reb_pct, fta_per_fga
         
         Args:
             llm_response: LLM response with game insights
@@ -662,7 +673,8 @@ Return your JSON response now:"""
                     if 'away' not in game['adv']:
                         game['adv']['away'] = {}
                     # Override LLM values with programmatic values (programmatic is authoritative)
-                    for key in ['kp_rank', 'adjo', 'adjd', 'adjt', 'net', 'conference', 'wins', 'losses', 'w_l', 'luck', 'sos', 'ncsos']:
+                    for key in ['kp_rank', 'adjo', 'adjd', 'adjt', 'net', 'conference', 'wins', 'losses', 'w_l', 'luck', 'sos', 'ncsos', 
+                                'efg_pct', 'turnover_pct', 'off_reb_pct', 'fta_per_fga']:
                         if key in prog_adv['away']:
                             old_value = game['adv']['away'].get(key)
                             new_value = prog_adv['away'][key]
@@ -678,7 +690,8 @@ Return your JSON response now:"""
                     if 'home' not in game['adv']:
                         game['adv']['home'] = {}
                     # Override LLM values with programmatic values (programmatic is authoritative)
-                    for key in ['kp_rank', 'adjo', 'adjd', 'adjt', 'net', 'conference', 'wins', 'losses', 'w_l', 'luck', 'sos', 'ncsos']:
+                    for key in ['kp_rank', 'adjo', 'adjd', 'adjt', 'net', 'conference', 'wins', 'losses', 'w_l', 'luck', 'sos', 'ncsos', 
+                                'efg_pct', 'turnover_pct', 'off_reb_pct', 'fta_per_fga']:
                         if key in prog_adv['home']:
                             old_value = game['adv']['home'].get(key)
                             new_value = prog_adv['home'][key]

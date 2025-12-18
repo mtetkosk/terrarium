@@ -50,6 +50,8 @@ class KenPomScraper:
         self.cache_ttl = timedelta(hours=24)  # Cache for 24 hours
         self._team_cache: Dict[str, Dict[str, Any]] = {}
         self._cache_date: Optional[date] = None
+        # Four Factors cache: maps team name -> {four_factors: {...}, cache_date: date}
+        self._four_factors_cache: Dict[str, Dict[str, Any]] = {}
         
         # Load cache
         self._load_cache()
@@ -172,11 +174,21 @@ class KenPomScraper:
                     cache_date_str = cache_data.get('cache_date')
                     if cache_date_str:
                         self._cache_date = date.fromisoformat(cache_date_str)
-                    logger.info(f"Loaded KenPom cache with {len(self._team_cache)} teams (cached on {self._cache_date})")
+                    # Load Four Factors cache
+                    self._four_factors_cache = cache_data.get('four_factors', {})
+                    # Convert cache_date strings to date objects
+                    for team_name, team_data in self._four_factors_cache.items():
+                        if 'cache_date' in team_data and isinstance(team_data['cache_date'], str):
+                            try:
+                                team_data['cache_date'] = date.fromisoformat(team_data['cache_date'])
+                            except (ValueError, TypeError):
+                                pass
+                    logger.info(f"Loaded KenPom cache with {len(self._team_cache)} teams (cached on {self._cache_date}), {len(self._four_factors_cache)} Four Factors entries")
             except Exception as e:
                 logger.warning(f"Failed to load KenPom cache: {e}")
                 self._team_cache = {}
                 self._cache_date = None
+                self._four_factors_cache = {}
     
     def _save_cache(self, target_date: Optional[date] = None) -> None:
         """Save team data to cache file for a specific date
@@ -189,14 +201,23 @@ class KenPomScraper:
         
         try:
             # Only store one day's data at a time - overwrite previous cache
+            # Convert four_factors cache dates to strings for JSON serialization
+            four_factors_for_save = {}
+            for team_name, team_data in self._four_factors_cache.items():
+                team_data_copy = team_data.copy()
+                if 'cache_date' in team_data_copy and isinstance(team_data_copy['cache_date'], date):
+                    team_data_copy['cache_date'] = team_data_copy['cache_date'].isoformat()
+                four_factors_for_save[team_name] = team_data_copy
+            
             cache_data = {
                 'cache_date': target_date.isoformat(),
-                'teams': self._team_cache
+                'teams': self._team_cache,
+                'four_factors': four_factors_for_save
             }
             with open(self.cache_file, 'w') as f:
                 json.dump(cache_data, f, indent=2)
             self._cache_date = target_date
-            logger.info(f"Saved KenPom cache with {len(self._team_cache)} teams for {target_date}")
+            logger.info(f"Saved KenPom cache with {len(self._team_cache)} teams and {len(self._four_factors_cache)} Four Factors entries for {target_date}")
         except Exception as e:
             logger.error(f"Failed to save KenPom cache: {e}")
     
@@ -628,12 +649,37 @@ class KenPomScraper:
         if canonical_name in self._team_cache:
             stats = self._team_cache[canonical_name].copy()
             logger.debug(f"Found KenPom stats for '{team_name}' (normalized: '{normalized}') via canonical name: '{canonical_name}'")
+            
+            # DISABLED: Four Factors fetching to avoid rate limiting
+            # To re-enable, uncomment the code below
+            # # Fetch Four Factors if not already in stats and authenticated
+            # # Check if any Four Factors are missing
+            # four_factors_keys = ['efg_pct', 'turnover_pct', 'off_reb_pct', 'fta_per_fga']
+            # has_four_factors = any(key in stats for key in four_factors_keys)
+            # 
+            # if self.authenticated and not has_four_factors:
+            #     # Get original KenPom team name for fetching
+            #     original_team_name = stats.get('team', team_name)
+            #     four_factors = self._get_four_factors_from_team_page(original_team_name, target_date)
+            #     if four_factors:
+            #         stats.update(four_factors)
+            
             return stats
         
         # Step 4: Try normalized name (in case it's stored as alias)
         if normalized in self._team_cache:
             stats = self._team_cache[normalized].copy()
             logger.debug(f"Found KenPom stats for '{team_name}' (normalized: '{normalized}') via normalized name")
+            
+            # DISABLED: Four Factors fetching to avoid rate limiting
+            # To re-enable, uncomment the code below
+            # if self.authenticated and not any(key.startswith('efg_pct') or key.startswith('turnover_pct') or 
+            #                                  key.startswith('off_reb_pct') or key.startswith('fta_per_fga') for key in stats.keys()):
+            #     original_team_name = stats.get('team', team_name)
+            #     four_factors = self._get_four_factors_from_team_page(original_team_name, target_date)
+            #     if four_factors:
+            #         stats.update(four_factors)
+            
             return stats
         
         # Step 5: Try all variations (for backwards compatibility with old cache entries)
@@ -646,17 +692,37 @@ class KenPomScraper:
             if lookup_canonical in self._team_cache:
                 stats = self._team_cache[lookup_canonical].copy()
                 logger.debug(f"Found KenPom stats for '{team_name}' (normalized: '{normalized}') via variation canonical: '{lookup_canonical}'")
+                
+                # DISABLED: Four Factors fetching to avoid rate limiting
+                # To re-enable, uncomment the code below
+                # if self.authenticated and not any(key.startswith('efg_pct') or key.startswith('turnover_pct') or 
+                #                                  key.startswith('off_reb_pct') or key.startswith('fta_per_fga') for key in stats.keys()):
+                #     original_team_name = stats.get('team', team_name)
+                #     four_factors = self._get_four_factors_from_team_page(original_team_name, target_date)
+                #     if four_factors:
+                #         stats.update(four_factors)
+                
                 return stats
             if lookup_normalized in self._team_cache:
                 stats = self._team_cache[lookup_normalized].copy()
                 logger.debug(f"Found KenPom stats for '{team_name}' (normalized: '{normalized}') via variation normalized: '{lookup_normalized}'")
+                
+                # DISABLED: Four Factors fetching to avoid rate limiting
+                # To re-enable, uncomment the code below
+                # if self.authenticated and not any(key.startswith('efg_pct') or key.startswith('turnover_pct') or 
+                #                                  key.startswith('off_reb_pct') or key.startswith('fta_per_fga') for key in stats.keys()):
+                #     original_team_name = stats.get('team', team_name)
+                #     four_factors = self._get_four_factors_from_team_page(original_team_name, target_date)
+                #     if four_factors:
+                #         stats.update(four_factors)
+                
                 return stats
         
         # If still not found, log warning with more details to help debug
         logger.warning(
             f"Could not find KenPom stats for '{team_name}' (normalized: '{normalized}', canonical: '{canonical_name}') in cache. "
             f"Cache has {len(self._team_cache)} teams. "
-            f"Checking if 'syracuse' is in cache: {'syracuse' in self._team_cache}. "
+            f"Checking if '{normalized}' is in cache: {normalized in self._team_cache}. "
             f"Skipping fuzzy match to avoid hallucinations."
         )
         return None
@@ -736,6 +802,194 @@ class KenPomScraper:
             team_id = normalize_team_name_for_url(team_name)
             return urljoin(self.BASE_URL, f"/team.php?team={team_id}")
     
+    def _get_four_factors_from_team_page(self, team_name: str, target_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
+        """
+        Fetch and cache Four Factors stats from a team's KenPom page
+        
+        Args:
+            team_name: Name of the team (original KenPom name)
+            target_date: Date to cache for (defaults to today)
+            
+        Returns:
+            Dictionary with Four Factors stats or None if error
+        """
+        if target_date is None:
+            target_date = date.today()
+        
+        if not self.authenticated:
+            logger.debug("Not authenticated, cannot fetch Four Factors from team page")
+            return None
+        
+        # Normalize team name for cache lookup
+        normalized = normalize_team_name_for_lookup(team_name)
+        canonical_name = map_team_name_to_canonical(team_name)
+        
+        # Check cache - try canonical_name first, then normalized
+        cache_key = None
+        for key in [canonical_name, normalized]:
+            if key in self._four_factors_cache:
+                cached_data = self._four_factors_cache[key]
+                cached_date = cached_data.get('cache_date')
+                if isinstance(cached_date, str):
+                    try:
+                        cached_date = date.fromisoformat(cached_date)
+                    except (ValueError, TypeError):
+                        cached_date = None
+                
+                if cached_date == target_date and 'four_factors' in cached_data:
+                    logger.debug(f"Using cached Four Factors for {team_name} (cached on {cached_date})")
+                    return cached_data['four_factors']
+                cache_key = key  # Remember which key was found (for storing later)
+                break
+        
+        # Use canonical_name as cache key for storing (consistent with team_cache)
+        cache_key = canonical_name
+        
+        # Need to fetch from team page
+        try:
+            logger.info(f"Fetching Four Factors from team page for {team_name}")
+            team_url = self._find_team_url(team_name)
+            if not team_url:
+                logger.warning(f"Could not find team URL for {team_name}")
+                return None
+            
+            response = self.session.get(team_url, timeout=10)
+            response.raise_for_status()
+            
+            # Parse Four Factors from page
+            four_factors = self._parse_four_factors_from_page(response.text, team_name)
+            
+            if four_factors:
+                # Cache the result
+                self._four_factors_cache[cache_key] = {
+                    'four_factors': four_factors,
+                    'cache_date': target_date
+                }
+                self._save_cache(target_date)
+                logger.info(f"✓ Cached Four Factors for {team_name}")
+                return four_factors
+            else:
+                logger.warning(f"Could not extract Four Factors for {team_name}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error fetching Four Factors for {team_name}: {e}")
+            return None
+    
+    def _parse_four_factors_from_page(self, html: str, team_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse Four Factors from KenPom team page HTML
+        
+        Args:
+            html: HTML content of the team page
+            team_name: Name of the team (for logging)
+            
+        Returns:
+            Dictionary with Four Factors stats or None if not found
+        """
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            four_factors = {}
+            
+            # Find Four Factors table
+            # Look for table with "Four Factors" in header or nearby text
+            tables = soup.find_all('table')
+            
+            for table in tables:
+                # Check if this is the Four Factors table
+                # Look for "Four Factors" text near the table
+                table_text = table.get_text().lower()
+                prev_sibling_text = ''
+                if table.find_previous_sibling():
+                    prev_sibling_text = table.find_previous_sibling().get_text().lower()
+                
+                if 'four factors' in table_text or 'four factors' in prev_sibling_text:
+                    # Found Four Factors table
+                    rows = table.find_all('tr')
+                    
+                    for row in rows:
+                        cells = row.find_all(['td', 'th'])
+                        if len(cells) < 2:
+                            continue
+                        
+                        # First cell contains the stat name
+                        label = cells[0].get_text(strip=True).lower()
+                        # Second cell contains the offensive value (and possibly rank)
+                        value_cell_text = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                        
+                        # Extract numeric value from cell (may contain rank after the value)
+                        # Format is typically "51.4 166" where 51.4 is the value and 166 is the rank
+                        value_match = re.search(r'(\d+\.?\d*)', value_cell_text)
+                        if not value_match:
+                            continue
+                        
+                        try:
+                            value = float(value_match.group(1))
+                            
+                            # Extract four factors based on label
+                            if 'efg%' in label or 'effective' in label or 'efg' in label:
+                                four_factors['efg_pct'] = value
+                                # Also store offensive rank if available
+                                rank_match = re.search(r'\s+(\d+)', value_cell_text)
+                                if rank_match:
+                                    four_factors['efg_pct_rank'] = int(rank_match.group(1))
+                            elif 'to%' in label or 'turnover' in label or 'turn' in label:
+                                four_factors['turnover_pct'] = value
+                                rank_match = re.search(r'\s+(\d+)', value_cell_text)
+                                if rank_match:
+                                    four_factors['turnover_pct_rank'] = int(rank_match.group(1))
+                            elif 'or%' in label or 'offensive rebound' in label or ('off' in label and 'reb' in label):
+                                four_factors['off_reb_pct'] = value
+                                rank_match = re.search(r'\s+(\d+)', value_cell_text)
+                                if rank_match:
+                                    four_factors['off_reb_pct_rank'] = int(rank_match.group(1))
+                            elif 'fta/fga' in label or 'ftr' in label or 'ft rate' in label or ('ft' in label and 'rate' in label):
+                                four_factors['fta_per_fga'] = value
+                                rank_match = re.search(r'\s+(\d+)', value_cell_text)
+                                if rank_match:
+                                    four_factors['fta_per_fga_rank'] = int(rank_match.group(1))
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    # If we found any Four Factors, return them
+                    if four_factors:
+                        logger.info(f"Extracted Four Factors for {team_name}: {list(four_factors.keys())}")
+                        return four_factors
+            
+            # If not found in table, try text patterns as fallback
+            text = soup.get_text()
+            patterns = [
+                (r'Effective\s+FG%[:\s.]+(\d+\.?\d*)', 'efg_pct'),
+                (r'eFG%[:\s.]+(\d+\.?\d*)', 'efg_pct'),
+                (r'Turnover\s+%[:\s.]+(\d+\.?\d*)', 'turnover_pct'),
+                (r'TO%[:\s.]+(\d+\.?\d*)', 'turnover_pct'),
+                (r'Off\.\s+Reb\.\s+%[:\s.]+(\d+\.?\d*)', 'off_reb_pct'),
+                (r'OR%[:\s.]+(\d+\.?\d*)', 'off_reb_pct'),
+                (r'FTA/FGA[:\s.]+(\d+\.?\d*)', 'fta_per_fga'),
+                (r'FTR[:\s.]+(\d+\.?\d*)', 'fta_per_fga'),
+            ]
+            
+            for pattern, key in patterns:
+                if key not in four_factors:  # Only if not already found
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        try:
+                            value = float(match.group(1))
+                            four_factors[key] = value
+                        except (ValueError, TypeError):
+                            pass
+            
+            if four_factors:
+                logger.info(f"Extracted Four Factors from text patterns for {team_name}: {list(four_factors.keys())}")
+                return four_factors
+            
+            logger.warning(f"Could not find Four Factors for {team_name}")
+            return None
+                
+        except Exception as e:
+            logger.error(f"Error parsing Four Factors from page for {team_name}: {e}")
+            return None
+    
     def _parse_team_page(self, html: str, team_name: str) -> Optional[Dict[str, Any]]:
         """Parse team statistics from KenPom team page HTML"""
         try:
@@ -777,35 +1031,54 @@ class KenPomScraper:
                 header_text = ' '.join(headers).lower()
                 
                 # Parse Four Factors table
-                if any(keyword in header_text for keyword in ['efg%', 'to%', 'or%', 'ftr', 'four factors']):
-                    rows = table.find_all('tr')[1:]  # Skip header
+                # Four Factors table format:
+                # Row headers: Stat Name | Offensive Value | Offensive Rank | Defensive Value | Defensive Rank | National Average
+                # We want the offensive values (columns 1-2 after stat name)
+                if any(keyword in header_text for keyword in ['efg%', 'to%', 'or%', 'ftr', 'fta/fga', 'four factors']):
+                    rows = table.find_all('tr')[1:]  # Skip header row
                     for row in rows:
                         cells = row.find_all(['td', 'th'])
-                        if len(cells) >= 2:
-                            label = cells[0].get_text(strip=True).lower()
-                            value = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                        if len(cells) < 2:
+                            continue
+                        
+                        # First cell contains the stat name
+                        label = cells[0].get_text(strip=True).lower()
+                        # Second cell contains the offensive value (and possibly rank)
+                        value_cell_text = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                        
+                        # Extract numeric value from cell (may contain rank after the value)
+                        # Format is typically "51.4 166" where 51.4 is the value and 166 is the rank
+                        value_match = re.search(r'(\d+\.?\d*)', value_cell_text)
+                        if not value_match:
+                            continue
+                        
+                        try:
+                            value = float(value_match.group(1))
                             
-                            # Extract four factors
-                            if 'efg%' in label or 'effective' in label:
-                                try:
-                                    stats['efg_pct'] = float(re.sub(r'[^\d.]', '', value))
-                                except (ValueError, TypeError):
-                                    pass
-                            elif 'to%' in label or 'turnover' in label:
-                                try:
-                                    stats['turnover_pct'] = float(re.sub(r'[^\d.]', '', value))
-                                except (ValueError, TypeError):
-                                    pass
-                            elif 'or%' in label or 'offensive rebound' in label:
-                                try:
-                                    stats['off_reb_pct'] = float(re.sub(r'[^\d.]', '', value))
-                                except (ValueError, TypeError):
-                                    pass
-                            elif 'ftr' in label or 'ft rate' in label:
-                                try:
-                                    stats['ft_rate'] = float(re.sub(r'[^\d.]', '', value))
-                                except (ValueError, TypeError):
-                                    pass
+                            # Extract four factors based on label
+                            if 'efg%' in label or 'effective' in label or 'efg' in label:
+                                stats['efg_pct'] = value
+                                # Also store offensive rank if available
+                                rank_match = re.search(r'\s+(\d+)', value_cell_text)
+                                if rank_match:
+                                    stats['efg_pct_rank'] = int(rank_match.group(1))
+                            elif 'to%' in label or 'turnover' in label or 'turn' in label:
+                                stats['turnover_pct'] = value
+                                rank_match = re.search(r'\s+(\d+)', value_cell_text)
+                                if rank_match:
+                                    stats['turnover_pct_rank'] = int(rank_match.group(1))
+                            elif 'or%' in label or 'offensive rebound' in label or ('off' in label and 'reb' in label):
+                                stats['off_reb_pct'] = value
+                                rank_match = re.search(r'\s+(\d+)', value_cell_text)
+                                if rank_match:
+                                    stats['off_reb_pct_rank'] = int(rank_match.group(1))
+                            elif 'fta/fga' in label or 'ftr' in label or 'ft rate' in label or ('ft' in label and 'rate' in label):
+                                stats['fta_per_fga'] = value
+                                rank_match = re.search(r'\s+(\d+)', value_cell_text)
+                                if rank_match:
+                                    stats['fta_per_fga_rank'] = int(rank_match.group(1))
+                        except (ValueError, TypeError):
+                            continue
                 
                 # Parse overall ratings table
                 elif any(keyword in header_text for keyword in ['adj', 'rating', 'tempo', 'rank']):

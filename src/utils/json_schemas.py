@@ -295,6 +295,7 @@ def get_president_schema() -> dict:
                                 "edge_estimate": {"type": "number"},
                                 "units": {"type": "number", "description": "Decimal betting units (e.g., 0.5, 1.0, 2.5)"},
                                 "best_bet": {"type": "boolean", "description": "True if this is one of the top 5 best bets"},
+                                "high_confidence": {"type": "boolean", "description": "True if picker_rating >= 6.0, indicating a strong pick even if not a best bet"},
                                 "final_decision_reasoning": {"type": "string", "description": "Comprehensive reasoning combining Picker's justification, model edge, research context, and unit assignment rationale"}
                             },
                             "required": ["game_id", "units", "best_bet", "final_decision_reasoning"]

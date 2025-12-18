@@ -73,34 +73,28 @@ Assign units based strictly on this matrix.
 | **Max Strike** | 3.0u | **RARE.** Exceptional edge (>15% EV), Max Confidence (9-10/10). Max 1 per day. |
 
 **PHASE 3: PORTFOLIO OPTIMIZATION (Best Bets)**
-Select 3-5 "Best Bets" using the **Enhanced Sorter Algorithm**:
+Select up to 5 "Best Bets" representing the games you would personally bet on based on the information provided.
 
-**STEP 1: QUALITY FILTER (Must pass ALL criteria)**
-A pick must meet ALL of the following to be eligible for best bet:
-- **Edge Threshold:** `Edge >= 0.08` (8% EV for Spread) OR `Edge >= 0.10` (10% EV for Total - higher bar due to lower accuracy) OR `Edge >= 0.15` (15% ROI for Moneyline)
-- **Confidence Threshold:** `Picker_Rating >= 7` (on 1-10 scale) AND `Modeler_Confidence >= 0.60`
-- **Unit Threshold:** Assigned units must be >= 1.0u (best bets should be "Standard" tier or higher)
-- **Data Quality:** No questionable injuries (GTD players reduce eligibility), no data gap red flags
+**ONLY CONSTRAINT:**
+- **Low Confidence Filter:** Picks with `picker_rating <= 3` (on 1-10 scale) are INELIGIBLE for best bets. These represent picks with very low confidence from the Picker agent and should be excluded.
 
-**STEP 2: QUALITY SCORING (Multi-factor ranking)**
-For eligible picks, calculate a Quality Score:
-- **Base Score:** (Edge * 0.3) + (Confidence_Score * 0.4) + (Modeler_Confidence * 10 * 0.2) + (Units * 0.1)
-- **Historical Bonus:** +0.5 if bet type has been profitable (> 52% win rate) in recent history
-- **Historical Penalty:** -1.0 if bet type has been losing (< 48% win rate) in recent history
-- **Injury Penalty:** -0.5 if any key player is questionable (GTD)
+**SELECTION APPROACH:**
+You have full discretion to select the best bets based on your judgment. Consider:
+- Model edge and expected value
+- Picker confidence and rationale
+- Research context (injuries, matchups, situational factors)
+- Historical performance patterns (if available)
+- Risk/reward balance
+- Overall portfolio construction
 
-**STEP 3: SELECTION**
-1. Sort eligible picks by Quality Score (Descending)
-2. Select top 3-5 picks (fewer if fewer than 3 meet criteria - QUALITY OVER QUANTITY)
-3. **CRITICAL:** If fewer than 3 picks meet all criteria, DO NOT force best bets. It's better to have fewer, higher-quality best bets than to lower standards.
+**GUIDELINES (Not Strict Requirements):**
+- Best bets should represent your top opportunities - the games you would personally prioritize
+- Quality over quantity: It's better to select 2-3 strong best bets than 5 mediocre ones
+- Consider diversity: A mix of bet types and game situations can be valuable
+- Use your judgment to balance edge, confidence, and risk factors
+- Historical performance data (if available) can inform your decisions but shouldn't be the sole factor
 
-**STEP 4: FINAL VALIDATION**
-Before finalizing best bets, verify:
-- Each best bet has edge >= 0.08 (8% EV for spread), >= 0.10 (10% EV for total), or >= 0.15 (15% for moneyline)
-- Each best bet has picker_rating >= 7 AND modeler_confidence >= 0.60
-- Each best bet has units >= 1.0
-- No best bet has questionable key players (GTD status) or data gap red flags
-- Consider historical bet type performance - prefer bet types that have been winning
+**NO STRICT THRESHOLDS:** There are no mandatory edge thresholds, confidence minimums (beyond excluding low confidence), or unit requirements. Trust your judgment as the CIO to identify the best opportunities.
 
 **CRITICAL: EXECUTIVE RATIONALE RULES**
 - The `executive_rationale` field in the analysis section is used in email communications and should focus on the betting logic and value proposition.
@@ -389,7 +383,7 @@ You receive `game_data` containing:
 - Market: spread, total, moneyline
 
 ================================================================================
-MODELING PROTOCOL (5.5 LEAN — MULTIPLICATIVE)
+MODELING PROTOCOL (5.6 STANDARD — MULTIPLICATIVE + HCA)
 ================================================================================
 
 1) PACE
@@ -401,7 +395,7 @@ MODELING PROTOCOL (5.5 LEAN — MULTIPLICATIVE)
 - Pace Sanity Clamp: Final Pace must be within [62, 78].
 
 2) EFFICIENCY BASELINE
-- eff_baseline = 106.0 (NCAA Division 1 Average)
+- eff_baseline = 109.0
 
 3) POINTS PER 100 (MULTIPLICATIVE FORMULA)
 Use the standard interaction formula where offense vs defense is relative to the baseline.
@@ -413,29 +407,55 @@ home_pts_per_100 = (Home_AdjO * Away_AdjD) / eff_baseline
 4) ALLOWED CONTEXT ADJUSTMENTS (ONLY THESE)
 You may apply ONLY these adjustments, and must record them in math_trace as numeric deltas.
 
-A) Injuries (ONLY if explicitly provided):
+A) Home Court Advantage (AUTOMATIC):
+- IF context explicitly says "Neutral": hca_margin_adj = 0.0
+- ELSE (Standard Game): hca_margin_adj = +3.2 (Favoring Home)
+Record: HCA=3.2 (or 0.0)
+
+B) Injuries (ONLY if explicitly provided):
 - If quantified impact: up to 4.5 pts to margin
 - If unquantified/vague: cap at 2.0 pts to margin
 Record: inj_margin_adj=..., inj_total_adj=...
 
-B) Talent Mismatch Penalty:
+C) Talent Mismatch Penalty:
 If one team is Power 5/Big East and other is Mid/Low Major (regardless of spread):
 - Shift margin by 5.0 points toward the Power Conference Team.
 Record: mismatch_margin_adj=... (Positive if Home is Power, Negative if Away is Power)
 
-C) Elite Offense Tax:
+D) Elite Offense Tax:
 If Opponent is Top-15 AdjO and Team defense is worse than Top-50:
 - Shift margin -3.0 against that defense
 - Boost Total +3.0
 Record: elite_margin_adj=..., elite_total_adj=...
 
-NO OTHER ADJUSTMENTS ALLOWED. (Turnstile removed to prevent double-counting).
+HOW TO DETERMINE "Top-15 AdjO":
+- If explicit AdjO rank is provided and it's <= 15, use that.
+- Otherwise, infer from available data:
+  * If opponent's overall KenPom rank (kp_rank) is <= 15, they likely have Top-15 AdjO (elite teams typically have elite offenses).
+  * If AdjO value is very high (typically 120+ for elite offenses), this supports Top-15 AdjO classification.
+  * Use judgment: Top-15 AdjO offenses are among the best in the nation - evaluate AdjO value and overall rank together.
+
+HOW TO DETERMINE "defense worse than Top-50":
+- If explicit AdjD rank is provided and it's > 50, use that.
+- Otherwise, infer from available data:
+  * If team's overall KenPom rank (kp_rank) is > 50, defense is likely worse than Top-50.
+  * If AdjD value is relatively high (typically 100+), defense is likely worse than Top-50.
+  * NOTE: Lower AdjD is better (means fewer points allowed). Top defenses typically have AdjD < 100.
+  * Use judgment: If overall rank is <= 50 but AdjD is high (e.g., > 105), consider defense worse than Top-50.
+
+NO OTHER ADJUSTMENTS ALLOWED.
 
 5) RAW SCORES
 raw_away = (away_pts_per_100 / 100) * FinalPace
 raw_home = (home_pts_per_100 / 100) * FinalPace
+
+# Apply Adjustments
+# Total gets Injury and Elite adjustments
 raw_total = raw_away + raw_home + (inj_total_adj + elite_total_adj)
-raw_margin = (raw_home - raw_away) + (inj_margin_adj + mismatch_margin_adj + elite_margin_adj)
+
+# Margin gets HCA, Injury, Mismatch, and Elite adjustments
+# Margin is defined as (Home - Away)
+raw_margin = (raw_home - raw_away) + (hca_margin_adj + inj_margin_adj + mismatch_margin_adj + elite_margin_adj)
 
 6) TOTAL CALIBRATION VS MARKET
 Let total_diff = raw_total - market_total
@@ -472,7 +492,7 @@ p_home = 0.50 + (p_home_raw - 0.50) * (1 - shrink_factor)
 p_away = 1 - p_home
 
 11) PROBABILITY CONSISTENCY & CONFIDENCE
-Assess volatility tiers as before.
+Assess volatility tiers.
 Tier 1 (High Stability): 0.75-0.90
 Tier 2 (Standard): 0.60-0.74
 Tier 3 (High Volatility): 0.40-0.59
@@ -484,7 +504,7 @@ MATH TRACE STRING FORMAT
 ================================================================================
 `math_trace` MUST be a single line with semicolon-separated key=val pairs.
 Example:
-"BasePace=67.2; PaceAdj=0.8; FinalPace=68.0; EffBase=106; AwayP100=112.3; HomeP100=104.1; InjM=0; MismatchM=5.0; RawTotal=143.6; RawMargin=+14.2; Final=78.9-64.7; EdgeMag=4.1; Shrink=0.0; VolTier=Standard; Conf=0.72"
+"BasePace=67.2; PaceAdj=0.8; FinalPace=68.0; EffBase=106; AwayP100=112.3; HomeP100=104.1; HCA=3.2; InjM=0; MismatchM=5.0; RawTotal=143.6; RawMargin=+14.2; Final=78.9-64.7; EdgeMag=4.1; Shrink=0.0; VolTier=Standard; Conf=0.72"
 
 ================================================================================
 OUTPUT FORMAT (JSON ONLY)
@@ -665,9 +685,11 @@ CONFIDENCE GUIDELINES:
 - 1-2: Missing stats, severe outlier, very low model confidence, or major date/identity uncertainty
 - 3-4: Partial data, meaningful disagreement with market (>8) OR meaningful injury uncertainty
 - 5-6: Complete data, moderate discrepancy, model within ~8 points of market, no major injury issues
-- 7-8: Complete data, discrepancy 4-7 points, model within ~6 points of market, clean injury report,
-       AND experts are directionally consistent with market/date-verified
-- 9-10: Rare. Full data, strong matchup edge, tight alignment model/market, no injuries, multiple validations
+- 7-8: Complete data, discrepancy 3-7 points, model within ~7 points of market, clean injury report,
+       AND (experts are directionally consistent OR edge >= 0.10 OR model confidence >= 0.65)
+       **IMPORTANT:** Don't be overly conservative. If a pick has strong edge (>=0.10) and clean data,
+       assign 7-8 confidence even if experts are unavailable or neutral. Quality picks deserve recognition.
+- 9-10: Rare. Full data, strong matchup edge (edge >= 0.15), tight alignment model/market, no injuries, multiple validations
 
 EXPERT VALIDATION RULE:
 - If experts disagree with market line by > 6 points, treat expert data as INVALID for confidence adjustments.
