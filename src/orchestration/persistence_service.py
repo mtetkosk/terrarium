@@ -267,21 +267,56 @@ class PersistenceService:
                 normalized_pick_name = normalize_team_name(pick.team_name, for_matching=True)
                 game_team1 = session.query(TeamModel).filter_by(id=game_model.team1_id).first()
                 game_team2 = session.query(TeamModel).filter_by(id=game_model.team2_id).first()
-                
-                # Check if pick team name matches one of the game's teams
+
+                # Check if pick team name matches one of the game's teams.
+                # IMPORTANT: For ambiguous names like "South Carolina" vs "South Carolina State",
+                # we must prefer the more specific match (longer normalized name) instead of
+                # greedily matching the shorter prefix.
                 team_id_from_game = None
+                best_match_score = -1.0
+
+                def _compute_match_score(pick_name: str, team_name_norm: str) -> float:
+                    """
+                    Compute a similarity score between the normalized pick name and a game team name.
+                    
+                    Higher score = better match.
+                    Priority:
+                      1. Exact match
+                      2. One string fully contains the other
+                    Tie‑break by preferring closer length (penalize large length differences) so that
+                    "south carolina state" matches that team over plain "south carolina".
+                    """
+                    if not pick_name or not team_name_norm:
+                        return -1.0
+
+                    if pick_name == team_name_norm:
+                        base = 3.0
+                    elif pick_name in team_name_norm or team_name_norm in pick_name:
+                        base = 2.0
+                    else:
+                        return -1.0
+
+                    length_penalty = abs(len(pick_name) - len(team_name_norm)) / 100.0
+                    return base - length_penalty
+
+                # Evaluate match against team1
                 if game_team1:
                     game_team1_norm = normalize_team_name(game_team1.normalized_team_name, for_matching=True)
-                    if (normalized_pick_name in game_team1_norm or game_team1_norm in normalized_pick_name or
-                        normalized_pick_name == game_team1_norm):
+                    score1 = _compute_match_score(normalized_pick_name, game_team1_norm)
+                    if score1 > best_match_score:
+                        best_match_score = score1
                         team_id_from_game = game_model.team1_id
-                if not team_id_from_game and game_team2:
+
+                # Evaluate match against team2
+                if game_team2:
                     game_team2_norm = normalize_team_name(game_team2.normalized_team_name, for_matching=True)
-                    if (normalized_pick_name in game_team2_norm or game_team2_norm in normalized_pick_name or
-                        normalized_pick_name == game_team2_norm):
+                    score2 = _compute_match_score(normalized_pick_name, game_team2_norm)
+                    if score2 > best_match_score:
+                        best_match_score = score2
                         team_id_from_game = game_model.team2_id
-                
-                if team_id_from_game:
+
+                # Only accept a match if we found a positive score
+                if team_id_from_game is not None and best_match_score > 0:
                     # Use the game's team_id
                     team_id = team_id_from_game
                     # Use the normalized team name from database for betting line lookup consistency

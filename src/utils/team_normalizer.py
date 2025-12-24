@@ -87,6 +87,12 @@ TEAM_NAME_MAPPING: Dict[str, str] = {
     'california baptist': 'cal baptist',
     'cal baptist': 'cal baptist',
     
+    # SIUE variations
+    'siu edwardsville': 'siue',
+    'siue': 'siue',
+    'southern illinois edwardsville': 'siue',
+    'southern illinois university edwardsville': 'siue',
+    
     # Add more mappings as needed
 }
 

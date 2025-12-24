@@ -256,7 +256,10 @@ class Coordinator:
             logger.info(f"🧪 TEST MODE: Limited games from {original_count} to {len(games)}")
             self.researcher.interaction_logger.log_agent_complete("GamesScraper", f"Found {original_count} games (limited to {len(games)} for testing)")
         else:
-            self.researcher.interaction_logger.log_agent_complete("GamesScraper", f"Found {len(games)} games")
+            if len(games) == 0:
+                self.researcher.interaction_logger.log_agent_complete("GamesScraper", "No games today!")
+            else:
+                self.researcher.interaction_logger.log_agent_complete("GamesScraper", f"Found {len(games)} games")
         
         if config.is_debug_mode():
             log_data_object(logger, "All games after scraping", games)
