@@ -66,8 +66,8 @@ class GamesScraper:
             games = []
             
             if 'events' not in data:
-                logger.warning("No events in ESPN API response")
-                return self._get_mock_games(target_date)
+                logger.info("No games today!")
+                return []
             
             for event in data['events']:
                 try:
@@ -193,8 +193,8 @@ class GamesScraper:
                     continue
             
             if not games:
-                logger.warning("No games found in ESPN response, using mock data")
-                return self._get_mock_games(target_date)
+                logger.info("No games today!")
+                return []
             
             logger.info(f"Successfully scraped {len(games)} games from ESPN")
             return games

@@ -248,7 +248,7 @@ class EmailGenerator:
             ).all()
             
             if not games:
-                return None
+                return "No games today!"
             
             num_games = len(games)
             

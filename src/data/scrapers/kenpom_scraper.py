@@ -53,6 +53,9 @@ class KenPomScraper:
         # Four Factors cache: maps team name -> {four_factors: {...}, cache_date: date}
         self._four_factors_cache: Dict[str, Dict[str, Any]] = {}
         
+        # Track suspicious AdjD/AdjO parsing warnings
+        self._suspicious_adjd_warning_count = 0
+        
         # Load cache
         self._load_cache()
         
@@ -252,6 +255,9 @@ class KenPomScraper:
             return False
         
         try:
+            # Reset suspicious AdjD warning counter for this scraping session
+            self._suspicious_adjd_warning_count = 0
+            
             logger.info(f"Scraping KenPom homepage to refresh cache for {target_date}...")
             
             # Get season year based on target_date
@@ -501,16 +507,10 @@ class KenPomScraper:
                     adjd_value = None
                     drtg_first_col = col_indices.get('_drtg_first_col')
                     
-                    # Method 1: Try the DRtg column if we found it
-                    if drtg_first_col is not None and drtg_first_col < len(cells):
-                        test_value = safe_float(cells[drtg_first_col].get_text(strip=True))
-                        if test_value is not None and 70 <= test_value <= 130:
-                            adjd_value = test_value
-                    
-                    # Method 2: If DRtg column not found or value invalid, infer from AdjO position
-                    if adjd_value is None and 'adj_offense' in col_indices:
+                    # Method 1: Infer from AdjO position (MOST RELIABLE - prefer this method)
+                    # AdjD is 2 columns after AdjO (AdjO, AdjO Rank, AdjD)
+                    if 'adj_offense' in col_indices:
                         adjo_col = col_indices['adj_offense']
-                        # AdjD is typically 2 columns after AdjO (AdjO, AdjO Rank, AdjD)
                         adjd_col = adjo_col + 2
                         if adjd_col < len(cells):
                             test_value = safe_float(cells[adjd_col].get_text(strip=True))
@@ -518,7 +518,90 @@ class KenPomScraper:
                                 adjd_value = test_value
                                 logger.debug(f"Found AdjD value {adjd_value} for {team_name} by inferring from AdjO position (column {adjd_col})")
                     
+                    # Method 2: Try the DRtg column header (FALLBACK - may point to rank column, so validate carefully)
+                    # The DRtg header might point to AdjD Rank column instead of AdjD value, so we need to validate
+                    if adjd_value is None and drtg_first_col is not None and drtg_first_col < len(cells):
+                        test_value = safe_float(cells[drtg_first_col].get_text(strip=True))
+                        if test_value is not None and 70 <= test_value <= 130:
+                            # Validate against expected range for team's rank to catch rank vs value confusion
+                            kp_rank = team_stats.get('kenpom_rank')
+                            is_valid_adjd = True
+                            
+                            if kp_rank is not None:
+                                # Validate that this looks like an AdjD value, not a rank
+                                # Reject if: impossibly low (< 80), impossibly high (> 130), or looks like a rank
+                                is_likely_rank = False
+                                
+                                # Check if value looks like a rank (integer in 1-400 range, close to team's rank)
+                                if abs(test_value - round(test_value)) < 0.1 and 1 <= test_value <= 400:
+                                    # If it's close to the team's actual rank, it's likely the rank column
+                                    if abs(test_value - kp_rank) < 100:
+                                        is_likely_rank = True
+                                
+                                # For low-ranked teams (200+), very low AdjD values (< 110) that are integers are likely ranks
+                                if not is_likely_rank and kp_rank > 200 and test_value < 110:
+                                    if abs(test_value - round(test_value)) < 0.1 and abs(test_value - kp_rank) < 100:
+                                        is_likely_rank = True
+                                
+                                # Reject impossibly extreme values
+                                if test_value < 80 or test_value > 130:
+                                    is_likely_rank = True
+                                
+                                if is_likely_rank:
+                                    is_valid_adjd = False
+                                    logger.debug(
+                                        f"Skipping DRtg column value {test_value} for {team_name} (rank #{kp_rank}). "
+                                        f"This column likely contains AdjD Rank, not AdjD value."
+                                    )
+                            
+                            if is_valid_adjd:
+                                adjd_value = test_value
+                                logger.debug(f"Found AdjD value {adjd_value} for {team_name} from DRtg header column (column {drtg_first_col})")
+                    
                     if adjd_value is not None:
+                        # Additional validation: Check if AdjD value looks suspicious
+                        # We want to catch cases where we're reading AdjD Rank instead of AdjD value
+                        # But we need to be careful not to flag legitimate good defenses
+                        kp_rank = team_stats.get('kenpom_rank')
+                        is_suspicious = False
+                        
+                        # Check 1: Is the value impossibly low (< 80)? This would be impossibly elite defense
+                        if adjd_value < 80:
+                            is_suspicious = True
+                        # Check 2: Is the value impossibly high (> 130)? This would be impossibly bad defense
+                        elif adjd_value > 130:
+                            is_suspicious = True
+                        # Check 3: For low-ranked teams (200+), check if value looks like a rank
+                        # This catches cases like rank #284 with AdjD 107 (rank, not value)
+                        # Only check this for low-ranked teams to avoid false positives on good defenses
+                        elif kp_rank is not None and kp_rank > 200:
+                            # For teams ranked 200+, AdjD should typically be 115+
+                            # If we see an integer value in the 100-115 range that's close to the rank, it's suspicious
+                            if abs(adjd_value - round(adjd_value)) < 0.1:
+                                # Check if value is suspiciously close to the rank (within 100 ranks)
+                                # AND the value is in a range that could be confused with rank (100-115)
+                                if 100 <= adjd_value <= 115 and abs(adjd_value - kp_rank) < 100:
+                                    is_suspicious = True
+                        
+                        if is_suspicious:
+                            self._suspicious_adjd_warning_count += 1
+                            warning_msg = (
+                                f"Suspicious AdjD value {adjd_value} for {team_name} (rank #{kp_rank}). "
+                                f"This may indicate a parsing error (possibly reading AdjD Rank instead of AdjD value). "
+                                f"(Warning count: {self._suspicious_adjd_warning_count})"
+                            )
+                            
+                            if self._suspicious_adjd_warning_count >= 5:
+                                error_msg = (
+                                    f"ERROR: Too many suspicious AdjD values detected ({self._suspicious_adjd_warning_count}). "
+                                    f"Latest: {warning_msg}. "
+                                    f"This indicates a serious parsing error in the KenPom scraper. Aborting to prevent bad data."
+                                )
+                                logger.error(error_msg)
+                                raise ValueError(error_msg)
+                            else:
+                                logger.warning(warning_msg)
+                        
                         team_stats['adj_defense'] = adjd_value
                     else:
                         logger.warning(
