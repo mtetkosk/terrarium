@@ -23,11 +23,18 @@ CRITICAL RULES:
 - Keep it to highlights only - no overall performance summary, no analysis of what went well/badly"""
 
 
-def slate_overview_prompts(slate_data: Dict[str, Any]) -> Tuple[str, str]:
-    system_prompt = """You are a plugged-in college hoops fan and casual analyst providing a brief slate overview.
-Write EXACTLY 1-2 sentences characterizing the day's college basketball games.
+def slate_overview_prompts(slate_data: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any]]:
+    """
+    Returns (system_prompt, user_prompt, json_schema) for structured JSON output
+    """
+    system_prompt = """You are a plugged-in college hoops fan and casual analyst providing a brief, fun slate overview with personality.
 
-Guidelines:
+Your task: Generate three things:
+1. A catchy nickname for today's slate (2-4 words, like "Midweek Madness", "The Grind", "Chaos Night", etc.)
+2. A song that captures the vibe of today's games (song title and artist)
+3. A brief 1-2 sentence description of the slate
+
+Guidelines for the description:
 - Write like a real fan looking at the day's board and texting a friend about what it looks like
 - Be concise and conversational (short, natural sentences)
 - Comment on the quality/tier of teams playing (use KenPom ranks as reference) and the overall "feel" of the slate (juicy, sleepy, chaotic, top-heavy, etc.)
@@ -35,21 +42,62 @@ Guidelines:
 - If it's a strong slate (multiple top-50 teams), highlight the quality and upside
 - Don't list specific teams or matchups
 - Don't mention betting or picks
-- Vary your phrasing across days:
-  - Sometimes lean into the upside/appeal of the slate (fun watchability angles, top-end quality, or sheer volume)
-  - Sometimes be more matter-of-fact about it being middling or messy
-  - Only call out volatility/noise when the data is truly extreme (e.g., heavy concentration of 200+ teams AND lots of missing profiles)
-- Avoid generic, copy-paste endings like "expect a mixed bag", "expect more noise than usual", or "expect extra variance" — rephrase or skip that idea entirely if you've already made the point."""
+- Vary your phrasing across days
+- NEVER use the phrases "get weird", "things could get weird", or any variation of "weird" to describe unpredictability
+- Avoid repetitive endings like "stay sharp", "buckle up", or other generic closer phrases
+- Instead of defaulting to volatility language for low-major slates, focus on: volume, specific tier breakdowns, top-end quality, grind-it-out vibes, or just keep it simple
+
+Guidelines for the nickname:
+- Keep it short and punchy (2-4 words)
+- Match the vibe of the slate (exciting, grindy, chaotic, elite, etc.)
+- Be creative but not over-the-top
+- Examples: "Barn Burner Tuesday", "The Slog", "Prime Time Showdown", "Sleeper City"
+
+Guidelines for the song:
+- Pick songs that 30-40 year old white males would vibe with
+- Can range from 70s rock to current songs
+- The song should match the energy/vibe of the slate
+- For a loaded slate with quality teams: upbeat, energetic songs (e.g., "Born to Run" by Bruce Springsteen, "Mr. Brightside" by The Killers)
+- For a grind-it-out mid-major heavy slate: blue-collar, working songs (e.g., "Take It Easy" by Eagles, "Atlantic City" by Bruce Springsteen)
+- For a chaotic/unpredictable slate: edgy or intense songs (e.g., "Sabotage" by Beastie Boys, "Bulls on Parade" by Rage Against the Machine)
+- For a light/weak slate: more chill or reflective songs (e.g., "Ain't No Rest for the Wicked" by Cage the Elephant, "The Weight" by The Band)
+- Examples of good picks: Bruce Springsteen, Tom Petty, Eagles, Foo Fighters, Red Hot Chili Peppers, The Killers, Radiohead, Pearl Jam, Nirvana, Led Zeppelin, AC/DC, The Who, etc.
+- Format: "Song Title - Artist Name"
+
+Output must be valid JSON only."""
 
     user_prompt = f"""Today's slate data:
 {json.dumps(slate_data, indent=2)}
 
-Write 1-2 sentences like a college hoops fan scanning today's slate and giving a quick vibe check.
-- Sound like you're talking, not writing a report.
-- Be natural and varied in your phrasing.
-- Do NOT end every day with some version of "expect extra noise" or "expect a mixed bag" — only mention volatility if it's truly notable today, and then say it in a fresh way."""
+Generate a fun overview of today's slate. Output valid JSON only with three fields:
+1. "nickname": A catchy 2-4 word name for today's slate
+2. "song": A song (title and artist) that captures today's vibe, appealing to 30-40 year old males
+3. "description": 1-2 sentences giving a quick vibe check on the slate
 
-    return system_prompt, user_prompt
+Make sure the nickname, song choice, and description all align with the same vibe/energy level.
+
+CRITICAL: Do NOT use the word "weird" or phrases like "get weird", "things could get weird", etc. in your description. Be more specific and creative instead. Vary your descriptions - don't fall into repetitive patterns just because there are low-major teams."""
+
+    json_schema = {
+        "type": "object",
+        "properties": {
+            "nickname": {
+                "type": "string",
+                "description": "A catchy 2-4 word nickname for today's slate"
+            },
+            "song": {
+                "type": "string",
+                "description": "Song title and artist that captures the vibe (format: 'Song Title - Artist Name')"
+            },
+            "description": {
+                "type": "string",
+                "description": "1-2 sentences describing today's slate in a conversational way"
+            }
+        },
+        "required": ["nickname", "song", "description"]
+    }
+
+    return system_prompt, user_prompt, json_schema
 
 
 def watch_blurbs_prompts(games_json: str) -> Tuple[str, str, Dict[str, Any]]:
@@ -195,7 +243,8 @@ def highlights_prompts(games_text: str) -> Tuple[str, str]:
 
 Your task: Analyze the game results and identify 2-4 of the most interesting highlights. Focus on:
 
-1. Biggest Underdog Win: The team that was the biggest underdog (largest positive spread) that won
+1. Biggest Underdog Win: The team that was the biggest underdog (largest positive spread, e.g., +19.5) that won. 
+   **CRITICAL**: Only select games where the winner was marked as "UNDERDOG" in the data. If winner was "FAVORITE", do NOT include in this category.
 2. Biggest Blowout: The game with the largest margin of victory (only if margin ≥ 15 points)
 3. Highest or Lowest Scoring Game: Pick whichever is more interesting/notable (very high ≥170 or very low ≤100)
 4. Most Exciting Game: A close game with margin ≤ 5 points (only if there is one)
@@ -205,8 +254,14 @@ Your task: Analyze the game results and identify 2-4 of the most interesting hig
 - If an underdog win was also exciting, pick ONLY ONE category for it
 - Maximum 1 highlight per game
 
+**SPREAD INTERPRETATION**:
+- Positive spread (e.g., +19.5) = UNDERDOG
+- Negative spread (e.g., -19.5) = FAVORITE
+- If the data says "Winner: [Team] was FAVORITE at line -19.5", that team was favored and should NOT be in "Biggest Underdog Win"
+- If the data says "Winner: [Team] was UNDERDOG at line +19.5", that team was the underdog and CAN be in "Biggest Underdog Win"
+
 For each highlight, write a concise, engaging description (max 80 characters) in the format:
-"Team Name (spread if underdog) description - Final Score"
+"Team Name description - Final Score"
 
 Output format (JSON):
 {

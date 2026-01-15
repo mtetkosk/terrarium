@@ -151,9 +151,10 @@ class Auditor(BaseAgent):
                             bet_type_performance[bet_type]['payout'] += pick_model.stake_amount
                     
                     # Confidence analysis
-                    if pick_model.confidence >= 0.7:
+                    # HIGH: >= 0.6 (60% or 6/10), MEDIUM: >= 0.4 (40% or 4/10), LOW: < 0.4
+                    if pick_model.confidence >= 0.6:
                         conf_level = 'high'
-                    elif pick_model.confidence >= 0.5:
+                    elif pick_model.confidence >= 0.4:
                         conf_level = 'medium'
                     else:
                         conf_level = 'low'

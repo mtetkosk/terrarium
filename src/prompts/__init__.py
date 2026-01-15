@@ -1,6 +1,7 @@
 from .agents import (
     AUDITOR_PROMPT,
     MODELER_PROMPT,
+    MODEL_NOTES_PROMPT,
     PICKER_PROMPT,
     PLANNING_AGENT_PROMPT,
     PRESIDENT_PROMPT,
@@ -22,6 +23,7 @@ from .utils import generic_agent_user_prompt
 __all__ = [
     "AUDITOR_PROMPT",
     "MODELER_PROMPT",
+    "MODEL_NOTES_PROMPT",
     "PICKER_PROMPT",
     "PLANNING_AGENT_PROMPT",
     "PRESIDENT_PROMPT",

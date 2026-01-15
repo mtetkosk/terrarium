@@ -511,10 +511,12 @@ class Coordinator:
         
         # CRITICAL VALIDATION: Ensure all games from Researcher are modeled
         if len(game_models) != len(insights_games):
-            logger.error(
-                f"CRITICAL: Game count mismatch in Modeler! "
-                f"Expected {len(insights_games)} games from Researcher, got {len(game_models)} models. "
-                f"This should not happen - Modeler should return models for ALL games."
+            modeled_ids = {m.get("game_id") for m in game_models}
+            input_ids = {g.get("game_id") for g in insights_games}
+            skipped = input_ids - modeled_ids
+            logger.warning(
+                f"Modeler produced {len(game_models)}/{len(insights_games)} models. "
+                f"Skipped (likely missing advanced stats): {sorted(skipped)}"
             )
         else:
             logger.info(f"✅ Modeler validation passed: {len(game_models)}/{len(insights_games)} games")

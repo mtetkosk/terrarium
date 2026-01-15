@@ -196,11 +196,17 @@ class DataConverter:
                 team_name = pick_data.get("team_name")
                 if not team_name and selection_text and bet_type in [BetType.SPREAD, BetType.MONEYLINE]:
                     # Try to extract team name from selection text (e.g., "Team A +3.5" -> "Team A")
+                    # Remove ML suffix and any associated odds (e.g., "Team A ML" -> "Team A", "Team A ML +500" -> "Team A")
+                    clean_text = re.sub(r'\s+ML(\s*[+-]?\d+)?$', '', selection_text, flags=re.IGNORECASE)
                     # Remove the line part (e.g., "+3.5", "-7.5", "Over 160.5")
                     line_pattern = r'\s*([+-]?(?:over|under)\s*)?[+-]?\d+\.?\d*'
-                    team_name = re.sub(line_pattern, '', selection_text, flags=re.IGNORECASE).strip()
+                    team_name = re.sub(line_pattern, '', clean_text, flags=re.IGNORECASE).strip()
                     if not team_name:
                         team_name = None
+                
+                # Safety: strip " ML" suffix if picker explicitly provided team_name with it
+                if team_name and re.search(r'\s+ML(\s*[+-]?\d+)?$', team_name, flags=re.IGNORECASE):
+                    team_name = re.sub(r'\s+ML(\s*[+-]?\d+)?$', '', team_name, flags=re.IGNORECASE).strip()
                 
                 # team_id will be looked up when saving to database (based on team_name)
                 team_id = None

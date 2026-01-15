@@ -163,6 +163,17 @@ def get_modeler_schema() -> dict:
                             "properties": {
                                 "game_id": {"type": "string"},
                                 "league": {"type": "string"},
+                                "teams": {
+                                    "type": "object",
+                                    "description": "Team identifiers matching input data - CRITICAL for anchoring scores to correct teams",
+                                    "properties": {
+                                        "away": {"type": "string", "description": "Away team name"},
+                                        "home": {"type": "string", "description": "Home team name"},
+                                        "away_id": {"type": ["integer", "null"], "description": "Away team database ID (authoritative identifier)"},
+                                        "home_id": {"type": ["integer", "null"], "description": "Home team database ID (authoritative identifier)"}
+                                    },
+                                    "required": ["away", "home"]
+                                },
                                 "predictions": {
                                     "type": "object",
                                     "properties": {
@@ -173,12 +184,16 @@ def get_modeler_schema() -> dict:
                                             "type": "number",
                                             "description": "Model confidence 0.0-1.0 based on data quality and model certainty"
                                         },
-                                        "margin": {"type": "number"},
+                                        "margin": {
+                                            "type": "number",
+                                            "description": "Projected margin = home_score - away_score. NEGATIVE if away team wins!"
+                                        },
                                         "scores": {
                                             "type": "object",
+                                            "description": "Projected final scores. scores.away MUST be the AWAY team's score, scores.home MUST be the HOME team's score.",
                                             "properties": {
-                                                "away": {"type": "number"},
-                                                "home": {"type": "number"}
+                                                "away": {"type": "number", "description": "AWAY team's projected score"},
+                                                "home": {"type": "number", "description": "HOME team's projected score"}
                                             },
                                             "required": ["away", "home"]
                                         },
@@ -220,7 +235,7 @@ def get_modeler_schema() -> dict:
                                 },
                                 "model_notes": {"type": "string"}
                             },
-                            "required": ["game_id"]
+                            "required": ["game_id", "teams", "predictions"]
                         }
                     }
                 },

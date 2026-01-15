@@ -493,8 +493,38 @@ class LinesScraper:
                                 outcome1 = spread_outcomes[0]
                                 outcome2 = spread_outcomes[1]
                                 
+                                # CRITICAL FIX: If both outcomes have the SAME team name, reassign based on line sign
+                                # This can happen when the API returns the same team name for both outcomes
+                                if (outcome1['team_name'] and outcome2['team_name'] and 
+                                    outcome1['team_name'] == outcome2['team_name']):
+                                    # Use line signs to determine which is which:
+                                    # - Negative line = that team is the favorite
+                                    # - Positive line = the OTHER team should be assigned
+                                    if outcome1['line_value'] < 0 and outcome2['line_value'] > 0:
+                                        # outcome1 is the favorite line, outcome2 should be the underdog (other team)
+                                        if outcome1['team_name'] == matched_game.team1:
+                                            outcome2['team_name'] = matched_game.team2
+                                        elif outcome1['team_name'] == matched_game.team2:
+                                            outcome2['team_name'] = matched_game.team1
+                                        elif outcome1['team_name'] == home_team_mapped:
+                                            outcome2['team_name'] = away_team_mapped
+                                        elif outcome1['team_name'] == away_team_mapped:
+                                            outcome2['team_name'] = home_team_mapped
+                                        logger.debug(f"Fixed duplicate team name: {outcome1['team_name']} -> outcome2 reassigned to {outcome2['team_name']}")
+                                    elif outcome1['line_value'] > 0 and outcome2['line_value'] < 0:
+                                        # outcome2 is the favorite line, outcome1 should be the underdog (other team)
+                                        if outcome2['team_name'] == matched_game.team1:
+                                            outcome1['team_name'] = matched_game.team2
+                                        elif outcome2['team_name'] == matched_game.team2:
+                                            outcome1['team_name'] = matched_game.team1
+                                        elif outcome2['team_name'] == home_team_mapped:
+                                            outcome1['team_name'] = away_team_mapped
+                                        elif outcome2['team_name'] == away_team_mapped:
+                                            outcome1['team_name'] = home_team_mapped
+                                        logger.debug(f"Fixed duplicate team name: {outcome2['team_name']} -> outcome1 reassigned to {outcome1['team_name']}")
+                                
                                 # If one outcome has a team and the other doesn't, assign the other team
-                                if outcome1['team_name'] and not outcome2['team_name']:
+                                elif outcome1['team_name'] and not outcome2['team_name']:
                                     # Assign the team that's NOT outcome1's team
                                     if outcome1['team_name'] == matched_game.team1:
                                         outcome2['team_name'] = matched_game.team2
@@ -750,8 +780,38 @@ class LinesScraper:
                                 outcome1 = spread_outcomes[0]
                                 outcome2 = spread_outcomes[1]
                                 
+                                # CRITICAL FIX: If both outcomes have the SAME team name, reassign based on line sign
+                                # This can happen when the API returns the same team name for both outcomes
+                                if (outcome1['team_name'] and outcome2['team_name'] and 
+                                    outcome1['team_name'] == outcome2['team_name']):
+                                    # Use line signs to determine which is which:
+                                    # - Negative line = that team is the favorite
+                                    # - Positive line = the OTHER team should be assigned
+                                    if outcome1['line_value'] < 0 and outcome2['line_value'] > 0:
+                                        # outcome1 is the favorite line, outcome2 should be the underdog (other team)
+                                        if outcome1['team_name'] == game.team1:
+                                            outcome2['team_name'] = game.team2
+                                        elif outcome1['team_name'] == game.team2:
+                                            outcome2['team_name'] = game.team1
+                                        elif outcome1['team_name'] == home_team_mapped:
+                                            outcome2['team_name'] = away_team_mapped
+                                        elif outcome1['team_name'] == away_team_mapped:
+                                            outcome2['team_name'] = home_team_mapped
+                                        logger.debug(f"Fixed duplicate team name: {outcome1['team_name']} -> outcome2 reassigned to {outcome2['team_name']}")
+                                    elif outcome1['line_value'] > 0 and outcome2['line_value'] < 0:
+                                        # outcome2 is the favorite line, outcome1 should be the underdog (other team)
+                                        if outcome2['team_name'] == game.team1:
+                                            outcome1['team_name'] = game.team2
+                                        elif outcome2['team_name'] == game.team2:
+                                            outcome1['team_name'] = game.team1
+                                        elif outcome2['team_name'] == home_team_mapped:
+                                            outcome1['team_name'] = away_team_mapped
+                                        elif outcome2['team_name'] == away_team_mapped:
+                                            outcome1['team_name'] = home_team_mapped
+                                        logger.debug(f"Fixed duplicate team name: {outcome2['team_name']} -> outcome1 reassigned to {outcome1['team_name']}")
+                                
                                 # If one outcome has a team and the other doesn't, assign the other team
-                                if outcome1['team_name'] and not outcome2['team_name']:
+                                elif outcome1['team_name'] and not outcome2['team_name']:
                                     # Assign the team that's NOT outcome1's team
                                     if outcome1['team_name'] == game.team1:
                                         outcome2['team_name'] = game.team2

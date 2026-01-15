@@ -70,13 +70,24 @@ class Picker(BaseAgent):
             rejected_count = 0
             for pick in picks:
                 odds_str = str(pick.get("odds", "-110"))
+                selection = str(pick.get("selection", "")).lower()
+                is_moneyline = "ml" in selection or "moneyline" in selection
                 try:
                     odds_int = int(odds_str.replace("+", "").replace("-", ""))
+                    # Reject extreme favorites (worse than -500)
                     if odds_str.startswith("-") and odds_int > 500:
                         rejected_count += 1
                         self.log_warning(
                             f"Rejected pick with extreme odds {odds_str}: {pick.get('selection', 'Unknown')} "
                             f"(game_id: {pick.get('game_id', 'Unknown')})"
+                        )
+                        continue
+                    # Reject moneyline bets with high positive odds (over +300)
+                    if is_moneyline and odds_str.startswith("+") and odds_int > 300:
+                        rejected_count += 1
+                        self.log_warning(
+                            f"Rejected ML pick with high odds {odds_str}: {pick.get('selection', 'Unknown')} "
+                            f"(game_id: {pick.get('game_id', 'Unknown')}) - ML bets over +300 are too risky"
                         )
                         continue
                 except (ValueError, AttributeError):
@@ -85,7 +96,7 @@ class Picker(BaseAgent):
                 filtered_picks.append(pick)
             
             if rejected_count > 0:
-                self.log_info(f"Filtered out {rejected_count} picks with extreme odds (worse than -500)")
+                self.log_info(f"Filtered out {rejected_count} picks with extreme odds")
             
             self.log_info(f"Selected {len(filtered_picks)} candidate picks (one per game)")
             
@@ -164,13 +175,24 @@ class Picker(BaseAgent):
         rejected_count = 0
         for pick in all_picks:
             odds_str = str(pick.get("odds", "-110"))
+            selection = str(pick.get("selection", "")).lower()
+            is_moneyline = "ml" in selection or "moneyline" in selection
             try:
                 odds_int = int(odds_str.replace("+", "").replace("-", ""))
+                # Reject extreme favorites (worse than -500)
                 if odds_str.startswith("-") and odds_int > 500:
                     rejected_count += 1
                     self.log_warning(
                         f"Rejected pick with extreme odds {odds_str}: {pick.get('selection', 'Unknown')} "
                         f"(game_id: {pick.get('game_id', 'Unknown')})"
+                    )
+                    continue
+                # Reject moneyline bets with high positive odds (over +300)
+                if is_moneyline and odds_str.startswith("+") and odds_int > 300:
+                    rejected_count += 1
+                    self.log_warning(
+                        f"Rejected ML pick with high odds {odds_str}: {pick.get('selection', 'Unknown')} "
+                        f"(game_id: {pick.get('game_id', 'Unknown')}) - ML bets over +300 are too risky"
                     )
                     continue
             except (ValueError, AttributeError):
@@ -179,7 +201,7 @@ class Picker(BaseAgent):
             filtered_picks.append(pick)
         
         if rejected_count > 0:
-            self.log_info(f"Filtered out {rejected_count} picks with extreme odds (worse than -500)")
+            self.log_info(f"Filtered out {rejected_count} picks with extreme odds")
         
         self.log_info(f"Selected {len(filtered_picks)} candidate picks for {num_games} games (one per game)")
         

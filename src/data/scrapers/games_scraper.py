@@ -53,7 +53,7 @@ class GamesScraper:
         
         params = {
             'dates': date_str,
-            'limit': 100,
+            'limit': 200,  # NCAA basketball can have 100+ games on busy days - need buffer
             'groups': '50'  # Group 50 includes all NCAA Men's Basketball games (not just featured)
         }
         
