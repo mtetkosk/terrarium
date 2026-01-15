@@ -214,26 +214,32 @@ class EmailGenerator:
             
         Returns:
             Bucketed confidence level: "High", "Medium", or "Low"
+        
+        Note: Thresholds must match P/L calculation:
+        - HIGH: >= 6 (60%), MEDIUM: >= 4 (40%), LOW: < 4
         """
-        if confidence_score >= 7:
+        if confidence_score >= 6:
             return "High"
         elif confidence_score >= 4:
             return "Medium"
         else:
             return "Low"
     
-    def _generate_slate_summary(self, target_date: date) -> Optional[str]:
+    def _generate_slate_summary(self, target_date: date) -> Optional[Dict[str, Any]]:
         """
-        Generate a 1-2 sentence summary characterizing the day's slate of games using LLM.
+        Generate a fun, personality-driven summary of the day's slate of games.
         
-        Gathers KenPom rank data and passes it to an LLM to generate a natural,
-        varied summary about the quality of today's matchups.
+        Uses LLM to generate:
+        - A catchy nickname for the day
+        - A song that captures the vibe
+        - A brief description
+        - Plus stats like average KenPom rank, top teams count, etc.
         
         Args:
             target_date: Date to analyze
             
         Returns:
-            Summary string or None if no games
+            Dictionary with nickname, song, description, and stats, or None if no games
         """
         if not self.db:
             return None
@@ -248,7 +254,12 @@ class EmailGenerator:
             ).all()
             
             if not games:
-                return "No games today!"
+                return {
+                    'nickname': 'Off Day',
+                    'song': 'The Sound of Silence - Simon & Garfunkel',
+                    'description': 'No games today!',
+                    'stats': ''
+                }
             
             num_games = len(games)
             
@@ -283,87 +294,85 @@ class EmailGenerator:
             # Calculate summary stats
             if all_ranks:
                 avg_rank = sum(all_ranks) / len(all_ranks)
-                top_25_count = sum(1 for r in all_ranks if r <= 25)
+                top_100_count = sum(1 for r in all_ranks if r <= 100)
                 top_50_count = sum(1 for r in all_ranks if r <= 50)
+                top_25_count = sum(1 for r in all_ranks if r <= 25)
                 low_major_count = sum(1 for r in all_ranks if r > 200)
                 min_rank = min(all_ranks)
                 max_rank = max(all_ranks)
             else:
                 avg_rank = None
-                top_25_count = 0
+                top_100_count = 0
                 top_50_count = 0
+                top_25_count = 0
                 low_major_count = 0
                 min_rank = None
                 max_rank = None
             
-            # LLM is required - no fallback
-            if not self.llm_client:
-                logger.error("LLM client not available for slate summary generation")
-                return None
-            
-            # Build context for LLM
+            # Prepare slate data for LLM
             slate_data = {
                 'num_games': num_games,
-                'avg_kenpom_rank': round(avg_rank, 1) if avg_rank else None,
-                'top_25_teams': top_25_count,
-                'top_50_teams': top_50_count,
-                'low_major_teams_rank_200_plus': low_major_count,
-                'best_ranked_team': min_rank,
-                'worst_ranked_team': max_rank,
-                'teams_missing_data': missing_data_count,
-                'total_teams': num_games * 2
+                'avg_rank': round(avg_rank) if avg_rank else None,
+                'top_25_count': top_25_count,
+                'top_50_count': top_50_count,
+                'top_100_count': top_100_count,
+                'low_major_count': low_major_count,
+                'min_rank': min_rank,
+                'max_rank': max_rank,
+                'missing_profiles': missing_data_count
             }
             
-            system_prompt, user_prompt = slate_overview_prompts(slate_data)
-
-            try:
-                response = self.llm_client.call(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    temperature=0.9,  # Higher temp for more variety
-                    max_tokens=150,
-                    parse_json=False
-                )
-                
-                # Check for errors
-                if isinstance(response, dict):
-                    if "error" in response:
-                        error_msg = response.get("error", "Unknown error")
-                        raw_content = response.get("raw_response", "")
-                        logger.error(
-                            f"LLM returned error for slate summary: {error_msg}. "
-                            f"Raw response: {raw_content[:200]}"
-                        )
-                        return None
-                
-                # Extract summary from response
-                if response:
-                    # LLM client returns {"raw_response": content} when parse_json=False
-                    if isinstance(response, dict):
-                        summary = response.get('raw_response', '')
+            # Generate LLM content if client is available
+            llm_content = None
+            if self.llm_client:
+                try:
+                    system_prompt, user_prompt, json_schema = slate_overview_prompts(slate_data)
+                    response = self.llm_client.call(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=0.8,  # Higher temperature for more creativity
+                        parse_json=True,
+                        response_format=json_schema
+                    )
+                    llm_content = response
+                    logger.info(f"Generated slate overview: nickname='{llm_content.get('nickname')}', song='{llm_content.get('song')}'")
+                except Exception as e:
+                    logger.warning(f"Could not generate LLM slate overview: {e}")
+            
+            # Build stats string
+            if avg_rank is not None:
+                stats = f"Avg rank: {avg_rank:.0f} | {top_100_count} top 100 | {num_games} games"
+            else:
+                stats = f"{num_games} games scheduled"
+            
+            # Combine LLM content with stats
+            if llm_content:
+                return {
+                    'nickname': llm_content.get('nickname', 'Today\'s Slate'),
+                    'song': llm_content.get('song', ''),
+                    'description': llm_content.get('description', ''),
+                    'stats': stats,
+                    'has_llm_content': True
+                }
+            else:
+                # Fallback if LLM not available
+                if avg_rank is not None:
+                    if avg_rank <= 100:
+                        description = "Strong slate"
+                    elif avg_rank <= 200:
+                        description = "Mixed quality slate"
                     else:
-                        summary = str(response)
-                    
-                    # Clean up the response
-                    if summary:
-                        summary = summary.strip().strip('"').strip("'")
-                        if summary:
-                            return summary
+                        description = "Lower-tier slate"
+                else:
+                    description = "Games on tap today"
                 
-                # If we got here, LLM returned empty content
-                logger.error(
-                    f"LLM returned empty slate summary. Response: {response}. "
-                    f"This is a required feature - no fallback will be used."
-                )
-                return None
-                
-            except Exception as e:
-                logger.error(
-                    f"CRITICAL: LLM failed to generate slate summary: {e}. "
-                    f"This is a required feature - no fallback will be used.",
-                    exc_info=True
-                )
-                return None
+                return {
+                    'nickname': 'Today\'s Slate',
+                    'song': '',
+                    'description': description,
+                    'stats': stats,
+                    'has_llm_content': False
+                }
             
         except Exception as e:
             logger.error(f"Error generating slate summary: {e}")
@@ -693,7 +702,22 @@ class EmailGenerator:
         
         # Slate Summary
         if slate_summary:
-            html_parts.append(f'<p style="color: #666; font-style: italic; margin-top: 10px; padding: 10px 15px; background-color: #f8f9fa; border-radius: 4px;">📋 <strong>Today\'s Slate:</strong> {slate_summary}</p>')
+            # Format the new slate summary with nickname, song, description, and stats
+            nickname = slate_summary.get('nickname', 'Today\'s Slate')
+            song = slate_summary.get('song', '')
+            description = slate_summary.get('description', '')
+            stats = slate_summary.get('stats', '')
+            
+            slate_html = f'<div style="margin-top: 10px; padding: 15px; background-color: #f8f9fa; border-radius: 4px; border-left: 4px solid #3498db;">'
+            slate_html += f'<p style="color: #2c3e50; font-weight: 600; margin: 0 0 8px 0; font-size: 16px;">📋 {nickname}</p>'
+            if song:
+                slate_html += f'<p style="color: #666; font-style: italic; margin: 0 0 8px 0; font-size: 14px;">🎵 <em>{song}</em></p>'
+            if description:
+                slate_html += f'<p style="color: #555; margin: 0 0 8px 0;">{description}</p>'
+            if stats:
+                slate_html += f'<p style="color: #888; font-size: 13px; margin: 0;"><em>{stats}</em></p>'
+            slate_html += '</div>'
+            html_parts.append(slate_html)
         
         # Best Games to Watch
         if best_games:
@@ -764,10 +788,12 @@ class EmailGenerator:
             html_parts.append('<thead>')
             html_parts.append('<tr>')
             html_parts.append('<th style="width: 5%;">#</th>')
-            html_parts.append('<th style="width: 40%;">Matchup</th>')
-            html_parts.append('<th style="width: 35%;">Selection</th>')
-            html_parts.append('<th style="width: 10%;">Odds</th>')
-            html_parts.append('<th style="width: 10%;">Confidence</th>')
+            html_parts.append('<th style="width: 30%;">Matchup</th>')
+            html_parts.append('<th style="width: 25%;">Selection</th>')
+            html_parts.append('<th style="width: 8%;">Odds</th>')
+            html_parts.append('<th style="width: 8%;">Confidence</th>')
+            html_parts.append('<th style="width: 12%;">Pred. Score</th>')
+            html_parts.append('<th style="width: 12%;">Pred. Total</th>')
             html_parts.append('</tr>')
             html_parts.append('</thead>')
             html_parts.append('<tbody>')
@@ -779,6 +805,8 @@ class EmailGenerator:
                 rationale = pick_data.get('rationale', '')
                 confidence = pick_data.get('confidence_score', 5)
                 is_best_bet = pick_data.get('best_bet', False)
+                predicted_score_html = pick_data.get('predicted_score_html', '')
+                predicted_total = pick_data.get('predicted_total', '')
                 
                 # Bucket confidence score
                 confidence_bucket = self._bucket_confidence_score(confidence)
@@ -795,12 +823,14 @@ class EmailGenerator:
                 html_parts.append(f'<td class="selection-col">{selection_display}</td>')
                 html_parts.append(f'<td class="odds-col">{odds}</td>')
                 html_parts.append(f'<td class="confidence-col">{confidence_bucket}</td>')
+                html_parts.append(f'<td class="predicted-score-col">{predicted_score_html if predicted_score_html else "-"}</td>')
+                html_parts.append(f'<td class="predicted-total-col">{predicted_total if predicted_total else "-"}</td>')
                 html_parts.append('</tr>')
                 
                 # Add rationale row for best bets
                 if rationale and is_best_bet:
                     html_parts.append('<tr>')
-                    html_parts.append('<td colspan="5" style="padding-left: 30px; padding-top: 0; padding-bottom: 12px; color: #555; font-style: italic; font-size: 0.9em;">')
+                    html_parts.append('<td colspan="7" style="padding-left: 30px; padding-top: 0; padding-bottom: 12px; color: #555; font-style: italic; font-size: 0.9em;">')
                     html_parts.append(f'💡 {rationale}')
                     html_parts.append('</td>')
                     html_parts.append('</tr>')
@@ -840,7 +870,18 @@ class EmailGenerator:
         
         # Slate Summary (use pre-gathered data)
         if slate_summary:
-            email_lines.append(f"📋 Today's Slate: {slate_summary}")
+            nickname = slate_summary.get('nickname', 'Today\'s Slate')
+            song = slate_summary.get('song', '')
+            description = slate_summary.get('description', '')
+            stats = slate_summary.get('stats', '')
+            
+            email_lines.append(f"📋 {nickname}")
+            if song:
+                email_lines.append(f"🎵 {song}")
+            if description:
+                email_lines.append(description)
+            if stats:
+                email_lines.append(f"   {stats}")
             email_lines.append("")
         
         # Best Games to Watch (use pre-gathered data)
@@ -905,9 +946,9 @@ class EmailGenerator:
             email_lines.append("=" * 80)
             
             # Table header
-            header = f"{'#':<4} {'Matchup':<40} {'Selection':<30} {'Odds':<8} {'Conf':<6}"
+            header = f"{'#':<4} {'Matchup':<32} {'Selection':<24} {'Odds':<8} {'Conf':<6} {'Pred Score':<12} {'Pred Total':<10}"
             email_lines.append(header)
-            email_lines.append("-" * 88)
+            email_lines.append("-" * 116)
             
             # Table rows
             for i, pick_data in enumerate(all_picks, 1):
@@ -917,17 +958,27 @@ class EmailGenerator:
                 rationale = pick_data.get('rationale', '')
                 confidence = pick_data.get('confidence_score', 5)
                 is_best_bet = pick_data.get('best_bet', False)
+                predicted_score_plain = pick_data.get('predicted_score_plain', '')
+                predicted_total = pick_data.get('predicted_total', '')
                 
                 # Bucket confidence score
                 confidence_bucket = self._bucket_confidence_score(confidence)
                 
                 # Truncate long matchups/selections for table format
-                matchup_short = (matchup[:38] + '..') if len(matchup) > 40 else matchup
-                selection_short = (selection[:28] + '..') if len(selection) > 30 else selection
+                matchup_short = (matchup[:30] + '..') if len(matchup) > 32 else matchup
+                selection_short = (selection[:22] + '..') if len(selection) > 24 else selection
                 if is_best_bet:
                     selection_short = f"{selection_short} ⭐ BEST BET"
                 
-                row = f"{i:<4} {matchup_short:<40} {selection_short:<30} {odds:<8} {confidence_bucket:<6}"
+                # Format predicted score and total
+                # For plain text, use a compact format that fits in the table
+                pred_score_str = predicted_score_plain if predicted_score_plain else "-"
+                # Truncate if too long to fit in column
+                if len(pred_score_str) > 12:
+                    pred_score_str = pred_score_str[:9] + ".."
+                pred_total_str = str(predicted_total) if predicted_total else "-"
+                
+                row = f"{i:<4} {matchup_short:<32} {selection_short:<24} {odds:<8} {confidence_bucket:<6} {pred_score_str:<12} {pred_total_str:<10}"
                 email_lines.append(row)
                 
                 # Add rationale for best bets below the row
@@ -1321,6 +1372,32 @@ class EmailGenerator:
                 if pick.best_bet and rationale:
                     rationale = self._summarize_best_bet_rationale(rationale, matchup, selection)
                 
+                # Get prediction for this game
+                prediction = session.query(PredictionModel).filter_by(
+                    game_id=game.id,
+                    prediction_date=target_date
+                ).first()
+                
+                # Calculate predicted scores from predicted_spread and predicted_total
+                predicted_score_html = None
+                predicted_score_plain = None
+                predicted_total = None
+                if prediction and prediction.predicted_total is not None and prediction.predicted_spread is not None:
+                    predicted_total = prediction.predicted_total
+                    predicted_spread = prediction.predicted_spread
+                    # predicted_spread = team1_score - team2_score (team1 is home, team2 is away)
+                    # predicted_total = team1_score + team2_score
+                    # Solving: team1_score = (predicted_total + predicted_spread) / 2
+                    #          team2_score = (predicted_total - predicted_spread) / 2
+                    team1_score = (predicted_total + predicted_spread) / 2
+                    team2_score = (predicted_total - predicted_spread) / 2
+                    # Format with team names: home team : home score, away team: away score
+                    # HTML version uses <br> for line break
+                    predicted_score_html = f"{team1_name}: {team1_score:.1f}<br>{team2_name}: {team2_score:.1f}"
+                    # Plain text version uses / separator to fit in table
+                    predicted_score_plain = f"{team1_name}: {team1_score:.1f} / {team2_name}: {team2_score:.1f}"
+                    predicted_total = round(predicted_total, 1)
+                
                 pick_data = {
                     'matchup': matchup,
                     'selection': selection,
@@ -1328,7 +1405,10 @@ class EmailGenerator:
                     'rationale': rationale,
                     'confidence_score': confidence_score,
                     'best_bet': pick.best_bet or False,
-                    'confidence': confidence_value  # Keep raw confidence for comparison
+                    'confidence': confidence_value,  # Keep raw confidence for comparison
+                    'predicted_score_html': predicted_score_html,
+                    'predicted_score_plain': predicted_score_plain,
+                    'predicted_total': predicted_total
                 }
                 
                 # Deduplicate by matchup: keep the pick with highest confidence, or best bet if tied
@@ -2393,6 +2473,7 @@ class EmailGenerator:
             
             # Get betting lines for this game to determine favorites/underdogs
             spread_info = None
+            winner_spread = None  # Track winning team's spread
             if self.db:
                 session = self.db.get_session()
                 try:
@@ -2403,15 +2484,60 @@ class EmailGenerator:
                     ).order_by(BettingLineModel.timestamp.desc()).all()
                     
                     if spread_lines:
-                        # Format spread info
+                        # Determine which team won
+                        winner_name = None
+                        winner_is_home = False
+                        if home_score > away_score:
+                            winner_name = home_team_raw
+                            winner_is_home = True
+                        elif away_score > home_score:
+                            winner_name = away_team_raw
+                            winner_is_home = False
+                        
+                        # Format spread info and find winner's spread
                         spreads = []
                         for line in spread_lines[:2]:  # Get up to 2 lines (home and away)
                             if line.team:
                                 spread_val = line.line
+                                
+                                # Check if this is the winning team's line
+                                # Match by team name (handle variations)
+                                line_team_normalized = normalize_team_name(line.team, for_matching=True)
+                                winner_normalized = normalize_team_name(winner_name, for_matching=True) if winner_name else None
+                                
+                                # Also try matching against home/away team names directly
+                                home_normalized = normalize_team_name(home_team_raw, for_matching=True) if home_team_raw else None
+                                away_normalized = normalize_team_name(away_team_raw, for_matching=True) if away_team_raw else None
+                                
+                                is_winner = False
+                                if winner_name and line.team:
+                                    # Try exact match first
+                                    if line.team.lower() == winner_name.lower():
+                                        is_winner = True
+                                    # Try normalized match
+                                    elif winner_normalized and are_teams_matching(line_team_normalized, winner_normalized):
+                                        is_winner = True
+                                    # Try matching against home/away team names
+                                    elif winner_is_home and home_normalized and are_teams_matching(line_team_normalized, home_normalized):
+                                        is_winner = True
+                                    elif not winner_is_home and away_normalized and are_teams_matching(line_team_normalized, away_normalized):
+                                        is_winner = True
+                                    # Try substring match as fallback
+                                    elif winner_name.lower() in line.team.lower() or line.team.lower() in winner_name.lower():
+                                        is_winner = True
+                                
                                 if spread_val > 0:
-                                    spreads.append(f"{line.team} +{spread_val:.1f} (underdog)")
+                                    spread_str = f"{line.team} +{spread_val:.1f} (underdog)"
                                 else:
-                                    spreads.append(f"{line.team} {spread_val:.1f} (favorite)")
+                                    spread_str = f"{line.team} {spread_val:.1f} (favorite)"
+                                
+                                spreads.append(spread_str)
+                                
+                                # Store winner's spread if this is the winning team
+                                if is_winner:
+                                    winner_spread = spread_val
+                                    logger.debug(f"Matched winner {winner_name} to spread line: {line.team} at {spread_val:.1f}")
+                        
                         if spreads:
                             spread_info = " | ".join(spreads)
                 except Exception as e:
@@ -2428,13 +2554,15 @@ class EmailGenerator:
                 'away_score': away_score,
                 'total': home_score + away_score,
                 'margin': abs(home_score - away_score),
-                'spread_info': spread_info
+                'spread_info': spread_info,
+                'winner_spread': winner_spread
             })
         
         # Format games for LLM
         games_text = "\n".join([
             f"{i+1}. {g['matchup']}: {g['score']} (Total: {g['total']} pts, Margin: {g['margin']} pts)"
             + (f" | Spreads: {g['spread_info']}" if g.get('spread_info') else "")
+            + (f" | Winner: {g['home_team'] if g['home_score'] > g['away_score'] else g['away_team']} was {'UNDERDOG' if g.get('winner_spread') and g['winner_spread'] > 0 else 'FAVORITE' if g.get('winner_spread') and g['winner_spread'] < 0 else 'unknown'} at line {g['winner_spread']:+.1f}" if g.get('winner_spread') is not None else "")
             for i, g in enumerate(games_data)
         ])
         
@@ -2583,7 +2711,8 @@ class EmailGenerator:
             confidence_score = item['confidence_score']
             
             # Determine confidence band
-            if confidence_score >= 7:
+            # HIGH: >= 6 (60%), MEDIUM: >= 4 (40%), LOW: < 4
+            if confidence_score >= 6:
                 band = 'HIGH'
             elif confidence_score >= 4:
                 band = 'Medium'
@@ -2603,12 +2732,31 @@ class EmailGenerator:
             # For confidence band reporting, normalize to a 1-unit stake per game.
             # Use the existing odds-aware profit calculation and scale to per-unit P&L
             # so wins vary with odds while losses are -1.0 units.
-            profit_units, profit_dollars = self._calculate_bet_profit_loss(pick, bet.result)
-            if pick.stake_units and pick.stake_units != 0:
-                per_unit_profit_units = profit_units / pick.stake_units
-                per_unit_profit_dollars = profit_dollars / pick.stake_units
-            else:
+            
+            # ALWAYS normalize to 1.0 unit for reporting purposes, regardless of actual stake_units
+            # This ensures consistent reporting where each bet is treated as 1 unit
+            stake_units_for_calc = 1.0
+            
+            # Calculate profit/loss using normalized stake
+            if bet.result == BetResult.WIN:
+                if pick.odds < 0:
+                    # Negative odds: profit = stake * (100/abs(odds))
+                    profit_multiplier = 100.0 / abs(pick.odds)
+                else:
+                    # Positive odds: profit = stake * (odds/100)
+                    profit_multiplier = pick.odds / 100.0
+                per_unit_profit_units = stake_units_for_calc * profit_multiplier
+            elif bet.result == BetResult.PUSH:
+                # Push: stake returned, net profit = 0
                 per_unit_profit_units = 0.0
+            else:  # LOSS
+                # Loss: lose the stake
+                per_unit_profit_units = -stake_units_for_calc
+            
+            # For dollars, use actual stake_amount if available, otherwise calculate from normalized units
+            if pick.stake_amount and pick.stake_amount != 0 and stake_units_for_calc > 0:
+                per_unit_profit_dollars = (pick.stake_amount / pick.stake_units) * per_unit_profit_units if pick.stake_units and pick.stake_units != 0 else 0.0
+            else:
                 per_unit_profit_dollars = 0.0
 
             band_results[band]['profit_loss_units'] += per_unit_profit_units
@@ -2691,7 +2839,8 @@ class EmailGenerator:
                     confidence_score = max(1, min(10, int(round(confidence_value * 10))))
                 
                 # Determine confidence band
-                if confidence_score >= 7:
+                # HIGH: >= 6 (60%), MEDIUM: >= 4 (40%), LOW: < 4
+                if confidence_score >= 6:
                     band = 'HIGH'
                 elif confidence_score >= 4:
                     band = 'Medium'
@@ -2709,11 +2858,26 @@ class EmailGenerator:
                 # For confidence band reporting, normalize to a 1-unit stake per game.
                 # Use the existing odds-aware profit calculation and scale to per-unit P&L
                 # so YTD wins vary with odds while losses are -1.0 units.
-                profit_units, _ = self._calculate_bet_profit_loss(pick, bet.result)
-                if pick.stake_units and pick.stake_units != 0:
-                    per_unit_profit_units = profit_units / pick.stake_units
-                else:
+                
+                # ALWAYS normalize to 1.0 unit for reporting purposes, regardless of actual stake_units
+                # This ensures consistent reporting where each bet is treated as 1 unit
+                stake_units_for_calc = 1.0
+                
+                # Calculate profit/loss using normalized stake
+                if bet.result == BetResult.WIN:
+                    if pick.odds < 0:
+                        # Negative odds: profit = stake * (100/abs(odds))
+                        profit_multiplier = 100.0 / abs(pick.odds)
+                    else:
+                        # Positive odds: profit = stake * (odds/100)
+                        profit_multiplier = pick.odds / 100.0
+                    per_unit_profit_units = stake_units_for_calc * profit_multiplier
+                elif bet.result == BetResult.PUSH:
+                    # Push: stake returned, net profit = 0
                     per_unit_profit_units = 0.0
+                else:  # LOSS
+                    # Loss: lose the stake
+                    per_unit_profit_units = -stake_units_for_calc
 
                 band_results[band]['profit_loss_units'] += per_unit_profit_units
             

@@ -302,11 +302,15 @@ class Researcher(BaseAgent):
             all_teams.add(game.team2)
             
             # Create template data structure with all required fields
+            # CRITICAL: Include team_ids for reliable anchoring (prevents score inversion bugs)
             game_data = {
                 "game_id": str(game.id) if game.id else f"{game.team1}_{game.team2}_{game.date}",
                 "teams": {
                     "away": game.team2,
-                    "home": game.team1
+                    "home": game.team1,
+                    # Team IDs are the authoritative identifiers - use these for anchoring
+                    "away_id": game.team2_id,
+                    "home_id": game.team1_id
                 },
                 "date": game.date.isoformat() if isinstance(game.date, date) else str(game.date),
                 "venue": game.venue,
@@ -633,9 +637,10 @@ Return your JSON response now:"""
         games_data: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Preserve programmatic fields (KenPom stats) from games_data in LLM response.
+        Preserve programmatic fields (KenPom stats, team IDs) from games_data in LLM response.
         
         Programmatic fields that should NEVER be overwritten by LLM:
+        - teams.away_id, teams.home_id (CRITICAL: prevents score inversion bugs)
         - adv.away.kp_rank, adjo, adjd, adjt, net, conference, wins, losses, w_l, luck, sos, ncsos
         - adv.away.efg_pct, turnover_pct, off_reb_pct, fta_per_fga
         - adv.home.kp_rank, adjo, adjd, adjt, net, conference, wins, losses, w_l, luck, sos, ncsos
@@ -651,16 +656,37 @@ Return your JSON response now:"""
         if "games" not in llm_response:
             return llm_response
         
-        # Create a map of game_id to programmatic adv data
+        # Create maps of game_id to programmatic data
         programmatic_adv = {}
+        programmatic_teams = {}
         for game_data in games_data:
             game_id = game_data.get('game_id', '')
-            if game_id and 'adv' in game_data:
-                programmatic_adv[game_id] = game_data['adv']
+            if game_id:
+                if 'adv' in game_data:
+                    programmatic_adv[game_id] = game_data['adv']
+                if 'teams' in game_data:
+                    programmatic_teams[game_id] = game_data['teams']
         
         # Merge LLM response with programmatic data
         for game in llm_response.get('games', []):
             game_id = game.get('game_id', '')
+            
+            # CRITICAL: Preserve team IDs (prevents score inversion bugs)
+            if game_id in programmatic_teams:
+                prog_teams = programmatic_teams[game_id]
+                if 'teams' not in game:
+                    game['teams'] = {}
+                # Always restore team IDs from programmatic data
+                if 'away_id' in prog_teams and prog_teams['away_id'] is not None:
+                    game['teams']['away_id'] = prog_teams['away_id']
+                if 'home_id' in prog_teams and prog_teams['home_id'] is not None:
+                    game['teams']['home_id'] = prog_teams['home_id']
+                # Also preserve team names if missing
+                if 'away' in prog_teams and not game['teams'].get('away'):
+                    game['teams']['away'] = prog_teams['away']
+                if 'home' in prog_teams and not game['teams'].get('home'):
+                    game['teams']['home'] = prog_teams['home']
+            
             if game_id in programmatic_adv:
                 prog_adv = programmatic_adv[game_id]
                 
@@ -734,7 +760,10 @@ Return your JSON response now:"""
             "league": "UNKNOWN",  # Will be determined later if possible
             "teams": {
                 "away": game.team2,
-                "home": game.team1
+                "home": game.team1,
+                # CRITICAL: Include team IDs for score inversion prevention
+                "away_id": game.team2_id,
+                "home_id": game.team1_id
             },
             "start_time": game.date.isoformat() if isinstance(game.date, date) else str(game.date),
             "market": market if market else {},

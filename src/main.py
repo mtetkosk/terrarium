@@ -12,11 +12,48 @@ import pytz
 from src.orchestration.coordinator import Coordinator
 from src.utils.logging import setup_logging
 from src.utils.config import config
+from datetime import timedelta
 
 logger = setup_logging(
     log_level=config.get_log_level(),
     log_file="terrarium.log"
 )
+
+
+def run_performance_analysis():
+    """Run performance analysis for all data after 2025-11-19."""
+    try:
+        import subprocess
+        import sys
+        from pathlib import Path
+        
+        script_path = Path(__file__).parent.parent / "scripts" / "analyze_algorithm_performance.py"
+        
+        logger.info("=" * 80)
+        logger.info("Running performance analysis (all data after 2025-11-19)...")
+        logger.info("=" * 80)
+        
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+        
+        if result.returncode == 0:
+            logger.info("Performance analysis completed successfully")
+            # Log key output lines
+            for line in result.stdout.split('\n'):
+                if any(keyword in line for keyword in ['MAE', 'Accuracy', 'Days with data', 'Saved:']):
+                    logger.info(line)
+        else:
+            logger.warning(f"Performance analysis completed with warnings (exit code: {result.returncode})")
+            if result.stderr:
+                logger.warning(f"Analysis stderr: {result.stderr[:500]}")  # First 500 chars
+    except subprocess.TimeoutExpired:
+        logger.warning("Performance analysis timed out after 5 minutes")
+    except Exception as e:
+        logger.warning(f"Failed to run performance analysis: {e}")
 
 
 def run_daily(target_date: date = None, test_limit: Optional[int] = None, force_refresh: bool = False, debug: bool = False, single_game_id: Optional[int] = None):
@@ -40,6 +77,11 @@ def run_daily(target_date: date = None, test_limit: Optional[int] = None, force_
     try:
         review = coordinator.run_daily_workflow(target_date, test_limit=test_limit, force_refresh=force_refresh, single_game_id=single_game_id)
         logger.info(f"Daily workflow completed. Card approved: {review.approved}")
+        
+        # Run performance analysis after workflow completes (skip in test/single game mode)
+        if test_limit is None and single_game_id is None:
+            run_performance_analysis()
+        
         return review
     finally:
         coordinator.close()
