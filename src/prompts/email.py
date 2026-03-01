@@ -29,10 +29,9 @@ def slate_overview_prompts(slate_data: Dict[str, Any]) -> Tuple[str, str, Dict[s
     """
     system_prompt = """You are a plugged-in college hoops fan and casual analyst providing a brief, fun slate overview with personality.
 
-Your task: Generate three things:
+Your task: Generate two things:
 1. A catchy nickname for today's slate (2-4 words, like "Midweek Madness", "The Grind", "Chaos Night", etc.)
-2. A song that captures the vibe of today's games (song title and artist)
-3. A brief 1-2 sentence description of the slate
+2. A brief 1-2 sentence description of the slate
 
 Guidelines for the description:
 - Write like a real fan looking at the day's board and texting a friend about what it looks like
@@ -53,28 +52,16 @@ Guidelines for the nickname:
 - Be creative but not over-the-top
 - Examples: "Barn Burner Tuesday", "The Slog", "Prime Time Showdown", "Sleeper City"
 
-Guidelines for the song:
-- Pick songs that 30-40 year old white males would vibe with
-- Can range from 70s rock to current songs
-- The song should match the energy/vibe of the slate
-- For a loaded slate with quality teams: upbeat, energetic songs (e.g., "Born to Run" by Bruce Springsteen, "Mr. Brightside" by The Killers)
-- For a grind-it-out mid-major heavy slate: blue-collar, working songs (e.g., "Take It Easy" by Eagles, "Atlantic City" by Bruce Springsteen)
-- For a chaotic/unpredictable slate: edgy or intense songs (e.g., "Sabotage" by Beastie Boys, "Bulls on Parade" by Rage Against the Machine)
-- For a light/weak slate: more chill or reflective songs (e.g., "Ain't No Rest for the Wicked" by Cage the Elephant, "The Weight" by The Band)
-- Examples of good picks: Bruce Springsteen, Tom Petty, Eagles, Foo Fighters, Red Hot Chili Peppers, The Killers, Radiohead, Pearl Jam, Nirvana, Led Zeppelin, AC/DC, The Who, etc.
-- Format: "Song Title - Artist Name"
-
 Output must be valid JSON only."""
 
     user_prompt = f"""Today's slate data:
 {json.dumps(slate_data, indent=2)}
 
-Generate a fun overview of today's slate. Output valid JSON only with three fields:
+Generate a fun overview of today's slate. Output valid JSON only with two fields:
 1. "nickname": A catchy 2-4 word name for today's slate
-2. "song": A song (title and artist) that captures today's vibe, appealing to 30-40 year old males
-3. "description": 1-2 sentences giving a quick vibe check on the slate
+2. "description": 1-2 sentences giving a quick vibe check on the slate
 
-Make sure the nickname, song choice, and description all align with the same vibe/energy level.
+Make sure the nickname and description align with the same vibe/energy level.
 
 CRITICAL: Do NOT use the word "weird" or phrases like "get weird", "things could get weird", etc. in your description. Be more specific and creative instead. Vary your descriptions - don't fall into repetitive patterns just because there are low-major teams."""
 
@@ -85,16 +72,12 @@ CRITICAL: Do NOT use the word "weird" or phrases like "get weird", "things could
                 "type": "string",
                 "description": "A catchy 2-4 word nickname for today's slate"
             },
-            "song": {
-                "type": "string",
-                "description": "Song title and artist that captures the vibe (format: 'Song Title - Artist Name')"
-            },
             "description": {
                 "type": "string",
                 "description": "1-2 sentences describing today's slate in a conversational way"
             }
         },
-        "required": ["nickname", "song", "description"]
+        "required": ["nickname", "description"]
     }
 
     return system_prompt, user_prompt, json_schema
