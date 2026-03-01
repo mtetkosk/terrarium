@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from src.data.storage import Database, PredictionModel
 from src.utils.logging import get_logger
+from src.utils.prediction_adjustments import apply_all_adjustments, log_adjustments
 
 logger = get_logger("orchestration.prediction_persistence")
 
@@ -192,6 +193,35 @@ class PredictionPersistenceService:
                 f"This may indicate a model failure or data quality issue."
             )
             margin = 0.0  # Default only for data quality issues
+        
+        # Extract market_total from meta for blending (Strategy 1)
+        meta = game_model.get("meta", {})
+        market_total = meta.get("market_total_used")
+        
+        # Apply backtest-validated adjustments (Strategies 1, 2, 3)
+        # These were validated on 1,311 games from Jan-Feb 2026
+        # Combined improvements: Spread MAE +0.9%, Total MAE +3.5%
+        original_margin = margin
+        original_total = total
+        
+        margin, total = apply_all_adjustments(
+            predicted_spread=margin,
+            predicted_total=total,
+            market_total=market_total,
+            apply_spread_adjustment=True,  # Strategy 2: Shrinkage + blowout dampening
+            apply_total_blend=True,        # Strategy 1: Blend with market
+            apply_total_clamp=True         # Strategy 3: Clamp to [135, 170]
+        )
+        
+        # Log significant adjustments for monitoring
+        log_adjustments(
+            game_id=game_id,
+            original_spread=original_margin,
+            adjusted_spread=margin,
+            original_total=original_total,
+            adjusted_total=total,
+            market_total=market_total
+        )
         
         # Check if prediction already exists (upsert pattern)
         existing = session.query(PredictionModel).filter_by(

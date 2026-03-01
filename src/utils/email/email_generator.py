@@ -231,7 +231,6 @@ class EmailGenerator:
         
         Uses LLM to generate:
         - A catchy nickname for the day
-        - A song that captures the vibe
         - A brief description
         - Plus stats like average KenPom rank, top teams count, etc.
         
@@ -239,7 +238,7 @@ class EmailGenerator:
             target_date: Date to analyze
             
         Returns:
-            Dictionary with nickname, song, description, and stats, or None if no games
+            Dictionary with nickname, description, and stats, or None if no games
         """
         if not self.db:
             return None
@@ -256,7 +255,6 @@ class EmailGenerator:
             if not games:
                 return {
                     'nickname': 'Off Day',
-                    'song': 'The Sound of Silence - Simon & Garfunkel',
                     'description': 'No games today!',
                     'stats': ''
                 }
@@ -335,7 +333,7 @@ class EmailGenerator:
                         response_format=json_schema
                     )
                     llm_content = response
-                    logger.info(f"Generated slate overview: nickname='{llm_content.get('nickname')}', song='{llm_content.get('song')}'")
+                    logger.info(f"Generated slate overview: nickname='{llm_content.get('nickname')}'")
                 except Exception as e:
                     logger.warning(f"Could not generate LLM slate overview: {e}")
             
@@ -349,7 +347,6 @@ class EmailGenerator:
             if llm_content:
                 return {
                     'nickname': llm_content.get('nickname', 'Today\'s Slate'),
-                    'song': llm_content.get('song', ''),
                     'description': llm_content.get('description', ''),
                     'stats': stats,
                     'has_llm_content': True
@@ -368,7 +365,6 @@ class EmailGenerator:
                 
                 return {
                     'nickname': 'Today\'s Slate',
-                    'song': '',
                     'description': description,
                     'stats': stats,
                     'has_llm_content': False
@@ -702,16 +698,13 @@ class EmailGenerator:
         
         # Slate Summary
         if slate_summary:
-            # Format the new slate summary with nickname, song, description, and stats
+            # Format the new slate summary with nickname, description, and stats
             nickname = slate_summary.get('nickname', 'Today\'s Slate')
-            song = slate_summary.get('song', '')
             description = slate_summary.get('description', '')
             stats = slate_summary.get('stats', '')
             
             slate_html = f'<div style="margin-top: 10px; padding: 15px; background-color: #f8f9fa; border-radius: 4px; border-left: 4px solid #3498db;">'
             slate_html += f'<p style="color: #2c3e50; font-weight: 600; margin: 0 0 8px 0; font-size: 16px;">📋 {nickname}</p>'
-            if song:
-                slate_html += f'<p style="color: #666; font-style: italic; margin: 0 0 8px 0; font-size: 14px;">🎵 <em>{song}</em></p>'
             if description:
                 slate_html += f'<p style="color: #555; margin: 0 0 8px 0;">{description}</p>'
             if stats:
@@ -871,13 +864,10 @@ class EmailGenerator:
         # Slate Summary (use pre-gathered data)
         if slate_summary:
             nickname = slate_summary.get('nickname', 'Today\'s Slate')
-            song = slate_summary.get('song', '')
             description = slate_summary.get('description', '')
             stats = slate_summary.get('stats', '')
             
             email_lines.append(f"📋 {nickname}")
-            if song:
-                email_lines.append(f"🎵 {song}")
             if description:
                 email_lines.append(description)
             if stats:
