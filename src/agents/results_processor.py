@@ -794,17 +794,14 @@ class ResultsProcessor(BaseAgent):
         bet_result: BetResult
     ) -> Tuple[float, float]:
         """Calculate payout and profit/loss for a bet (using extracted attributes)"""
+        from src.utils.odds import american_odds_to_profit_multiplier
+
         stake = stake_amount
         
         if bet_result == BetResult.WIN:
-            # Calculate payout based on odds
-            if odds > 0:
-                # Positive odds: payout = stake * (odds / 100) + stake
-                payout = stake * (odds / 100) + stake
-            else:
-                # Negative odds: payout = stake * (100 / abs(odds)) + stake
-                payout = stake * (100 / abs(odds)) + stake
-            profit_loss = payout - stake
+            multiplier = american_odds_to_profit_multiplier(odds)
+            profit_loss = stake * multiplier
+            payout = stake + profit_loss
         elif bet_result == BetResult.PUSH:
             # Push: return stake
             payout = stake

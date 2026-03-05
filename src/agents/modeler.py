@@ -836,8 +836,15 @@ class Modeler(BaseAgent):
         # EFFICIENCY BASELINE
         notes_lines.append(f"EFFICIENCY BASELINE: eff_baseline={EFF_BASELINE:.1f} per protocol.")
         
-        # PTS/100 section
-        if away_pts_100 and home_pts_100:
+        # PTS/100 section (require all adv values to avoid NoneType format errors)
+        if (
+            away_pts_100 is not None
+            and home_pts_100 is not None
+            and away_adjo is not None
+            and away_adjd is not None
+            and home_adjo is not None
+            and home_adjd is not None
+        ):
             pts_desc = f"away_pts_per_100=(Away_AdjO {away_adjo:.1f} * Home_AdjD {home_adjd:.1f})/{EFF_BASELINE:.1f}={away_pts_100:.1f}. "
             pts_desc += f"home_pts_per_100=(Home_AdjO {home_adjo:.1f} * Away_AdjD {away_adjd:.1f})/{EFF_BASELINE:.1f}={home_pts_100:.1f}."
         else:

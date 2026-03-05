@@ -21,6 +21,7 @@ from src.orchestration.data_converter import DataConverter
 from src.orchestration.prediction_persistence import PredictionPersistenceService
 from src.orchestration.persistence_service import PersistenceService
 from src.utils.logging import get_logger
+from src.utils.team_normalizer import are_teams_matching
 from src.utils.reporting import ReportGenerator
 from src.utils.google_sheets import GoogleSheetsService
 
@@ -354,9 +355,9 @@ class Coordinator:
                 # Find matching game
                 matching_game = None
                 for game in games:
-                    if (home_team_name and away_team_name and
-                        ((home_team_name.lower() in game.team1.lower() and away_team_name.lower() in game.team2.lower()) or
-                         (home_team_name.lower() in game.team2.lower() and away_team_name.lower() in game.team1.lower()))):
+                    if (home_team_name and away_team_name and game.team1 and game.team2 and
+                        ((are_teams_matching(home_team_name, game.team1) and are_teams_matching(away_team_name, game.team2)) or
+                         (are_teams_matching(home_team_name, game.team2) and are_teams_matching(away_team_name, game.team1)))):
                         matching_game = game
                         break
                 
@@ -421,9 +422,9 @@ class Coordinator:
                     # Find matching game
                     matching_game = None
                     for game in games:
-                        if (home_team_name and away_team_name and
-                            ((home_team_name.lower() in game.team1.lower() and away_team_name.lower() in game.team2.lower()) or
-                             (home_team_name.lower() in game.team2.lower() and away_team_name.lower() in game.team1.lower()))):
+                        if (home_team_name and away_team_name and game.team1 and game.team2 and
+                            ((are_teams_matching(home_team_name, game.team1) and are_teams_matching(away_team_name, game.team2)) or
+                             (are_teams_matching(home_team_name, game.team2) and are_teams_matching(away_team_name, game.team1)))):
                             matching_game = game
                             break
                     

@@ -694,12 +694,7 @@ PHASE 3: BET SELECTION HIERARCHY (VALUE + QUALITY PRIORITIZATION)
    - Example: If spread_diff = 6.0 and total_diff = 8.0, choose SPREAD (only 2pt advantage)
    - When edges are similar, spread is generally lower variance
 
-5. **The Blowout Safety Valve (DEPRECATED - REMOVED):**
-   - **DO NOT use the blowout Under heuristic** - this was selecting too many total bets
-   - In blowout scenarios (|model_margin| > 20), STICK WITH THE SPREAD
-   - The spread bet performs better even in blowout games
-
-6. **Moneyline Utility:** Use ONLY if ML eligibility (Phase 1) is met, prediction confidence >= 0.50, and it offers the highest EV edge (model_prob - implied_prob > 0.10).
+5. **Moneyline Utility:** Use ONLY if ML eligibility (Phase 1) is met, prediction confidence >= 0.50, and it offers the highest EV edge (model_prob - implied_prob > 0.10).
 
 -------------------------------------------------------------------------------
 PHASE 4: RED FLAGS + CONFIDENCE (1-10)

@@ -120,7 +120,14 @@ class PredictionPersistenceService:
             moneyline_data = pred_data.get("moneyline", {})
             team_probs = moneyline_data.get("team_probabilities", {})
             if team_probs:
-                win_probs = {"away": team_probs.get("away", 0.5), "home": team_probs.get("home", 0.5)}
+                away_p = team_probs.get("away")
+                home_p = team_probs.get("home")
+                if away_p is None or home_p is None:
+                    logger.warning(
+                        f"Missing win probability for game_id={game_id} (away={away_p}, home={home_p}). "
+                        "Defaulting to 0.5 may skew EV."
+                    )
+                win_probs = {"away": away_p if away_p is not None else 0.5, "home": home_p if home_p is not None else 0.5}
         
         # Extract confidence - try multiple locations
         # Check all possible locations where confidence might be stored
@@ -173,8 +180,15 @@ class PredictionPersistenceService:
             total = away_score + home_score
         
         # Get win probabilities
-        win_prob_team1 = win_probs.get("home", 0.5)
-        win_prob_team2 = win_probs.get("away", 0.5)
+        win_prob_team1 = win_probs.get("home")
+        win_prob_team2 = win_probs.get("away")
+        if win_prob_team1 is None or win_prob_team2 is None:
+            logger.warning(
+                f"Missing win_prob for game_id={game_id} (home={win_prob_team1}, away={win_prob_team2}). "
+                "Defaulting to 0.5 may skew EV."
+            )
+        win_prob_team1 = win_prob_team1 if win_prob_team1 is not None else 0.5
+        win_prob_team2 = win_prob_team2 if win_prob_team2 is not None else 0.5
         
         # Extract ev_estimate from modeler output (required field)
         ev_estimate = game_model.get("ev_estimate")

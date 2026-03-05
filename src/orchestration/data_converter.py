@@ -95,7 +95,7 @@ class DataConverter:
         return BetType.SPREAD
     
     @staticmethod
-    def parse_odds(odds_str: str) -> int:
+    def parse_odds(odds_str: str) -> Optional[int]:
         """
         Parse odds from string format (e.g., "-110", "+150")
         
@@ -103,12 +103,8 @@ class DataConverter:
             odds_str: Odds as string (may be "market_unavailable" or similar)
             
         Returns:
-            Odds as integer (negative for favorites, positive for underdogs)
-            Defaults to -110 if odds are unavailable (standard market odds)
-            
-        Note:
-            Defaulting to -110 may hide data quality issues. Consider investigating
-            why odds are unavailable if this warning appears frequently.
+            Odds as integer (negative for favorites, positive for underdogs), or None if
+            unavailable/unparseable. Callers should skip the pick when None is returned.
         """
         odds_str_original = str(odds_str).strip()
         odds_str_lower = odds_str_original.lower()
@@ -116,10 +112,9 @@ class DataConverter:
         # Handle unavailable/missing odds
         if not odds_str_original or odds_str_lower in ["market_unavailable", "unavailable", "n/a", "na", "none", ""]:
             logger.warning(
-                f"Odds unavailable ('{odds_str_original}'), defaulting to -110. "
-                f"This may indicate a data quality issue - investigate missing odds data."
+                f"Odds unavailable ('{odds_str_original}'). Pick will be skipped - investigate missing odds data."
             )
-            return -110
+            return None
         
         try:
             # Parse the numeric value (remove + or - for parsing)
@@ -130,10 +125,9 @@ class DataConverter:
             return odds
         except (ValueError, AttributeError) as e:
             logger.warning(
-                f"Could not parse odds '{odds_str_original}', defaulting to -110: {e}. "
-                f"This may indicate a data quality issue."
+                f"Could not parse odds '{odds_str_original}': {e}. Pick will be skipped."
             )
-            return -110
+            return None
     
     @staticmethod
     def picks_from_json(candidate_picks: List[Dict[str, Any]], games: List[Game]) -> List[Pick]:
@@ -162,9 +156,14 @@ class DataConverter:
                 # Parse bet type
                 bet_type = DataConverter.parse_bet_type(pick_data.get("bet_type", ""))
                 
-                # Parse odds
-                odds_str = str(pick_data.get("odds", "-110"))
+                # Parse odds (skip pick if unavailable or unparseable)
+                odds_str = str(pick_data.get("odds", ""))
                 odds = DataConverter.parse_odds(odds_str)
+                if odds is None:
+                    logger.warning(
+                        f"Skipping pick for game_id={pick_data.get('game_id')} - odds unavailable or unparseable: '{odds_str}'"
+                    )
+                    continue
                 
                 # Get line from pick_data, or parse from selection_text
                 selection_text = pick_data.get("selection", "")

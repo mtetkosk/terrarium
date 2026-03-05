@@ -316,6 +316,17 @@ class TestResultsProcessorUnit:
         
         assert payout == 10.0
         assert profit_loss == 0.0
+
+    def test_payout_calculation_win_positive_odds(self):
+        """Test payout calculation for winning bet with positive odds"""
+        processor = ResultsProcessor(db=None)
+        payout, profit_loss = processor._calculate_payout_from_attrs(
+            stake_amount=10.0,
+            odds=150,
+            bet_result=BetResult.WIN
+        )
+        assert abs(profit_loss - 15.0) < 0.01
+        assert abs(payout - 25.0) < 0.01
     
     def test_settle_away_team_positive_spread(self, mock_database):
         """Test settling an away team spread bet with positive line (+7.5)
