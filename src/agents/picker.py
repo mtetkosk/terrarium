@@ -90,10 +90,12 @@ class Picker(BaseAgent):
                             f"(game_id: {pick.get('game_id', 'Unknown')}) - ML bets over +300 are too risky"
                         )
                         continue
+                    filtered_picks.append(pick)
                 except (ValueError, AttributeError):
-                    pass
-                
-                filtered_picks.append(pick)
+                    self.log_warning(
+                        f"Skipped pick with unparseable odds '{odds_str}': {pick.get('selection', 'Unknown')} "
+                        f"(game_id: {pick.get('game_id', 'Unknown')})"
+                    )
             
             if rejected_count > 0:
                 self.log_info(f"Filtered out {rejected_count} picks with extreme odds")
@@ -195,10 +197,12 @@ class Picker(BaseAgent):
                         f"(game_id: {pick.get('game_id', 'Unknown')}) - ML bets over +300 are too risky"
                     )
                     continue
+                filtered_picks.append(pick)
             except (ValueError, AttributeError):
-                pass
-            
-            filtered_picks.append(pick)
+                self.log_warning(
+                    f"Skipped pick with unparseable odds '{odds_str}': {pick.get('selection', 'Unknown')} "
+                    f"(game_id: {pick.get('game_id', 'Unknown')})"
+                )
         
         if rejected_count > 0:
             self.log_info(f"Filtered out {rejected_count} picks with extreme odds")

@@ -3,7 +3,6 @@
 import pytest
 from unittest.mock import Mock, patch
 from datetime import date
-import json
 
 from src.agents.modeler import Modeler
 from src.data.models import BettingLine, BetType
@@ -13,108 +12,37 @@ class TestModelerUnit:
     """Unit tests for Modeler agent (mocked LLM)"""
     
     def test_process_with_mocked_llm(self, mock_database, mock_llm_client, sample_researcher_output, sample_betting_lines):
-        """Test modeler processes researcher output with mocked LLM"""
-        # Setup mock response
-        mock_response = {
-            "game_models": [
-                {
-                    "game_id": sample_researcher_output["games"][0]["game_id"],
-                    "league": "NCAA",
-                    "predictions": {
-                        "confidence": 0.8,  # Add top-level confidence
-                        "spread": {
-                            "projected_line": "Duke -8.0",
-                            "projected_margin": -8.0,
-                            "model_confidence": 0.75
-                        },
-                        "total": {
-                            "projected_total": 152.0,
-                            "model_confidence": 0.65
-                        },
-                        "moneyline": {
-                            "team_probabilities": {
-                                "away": 0.25,
-                                "home": 0.75
-                            },
-                            "model_confidence": 0.70
-                        }
-                    },
-                    "predicted_score": {
-                        "away_score": 72.0,
-                        "home_score": 80.0
-                    },
-                    "market_edges": [
-                        {
-                            "market_type": "spread",
-                            "market_line": "-7.5",
-                            "model_estimated_probability": 0.58,
-                            "implied_probability": 0.524,
-                            "edge": 0.056,
-                            "edge_confidence": 0.75
-                        }
-                    ],
-                    "model_notes": "Strong model confidence"
-                }
-            ]
-        }
-        mock_llm_client.set_response(mock_response)
-        print(f"DEBUG: Set mock response: {json.dumps(mock_response, indent=2)}")
-        
-        # Create modeler with mocked LLM
+        """Test modeler processes researcher output (programmatic path; force_refresh to avoid cache)."""
         modeler = Modeler(db=mock_database, llm_client=mock_llm_client)
-        result = modeler.process(sample_researcher_output, betting_lines=sample_betting_lines)
-        print(f"DEBUG: Result: {json.dumps(result, indent=2)}")
-        
-        # Verify output structure
+        result = modeler.process(
+            sample_researcher_output,
+            betting_lines=sample_betting_lines,
+            force_refresh=True,
+        )
         assert "game_models" in result
         assert len(result["game_models"]) == 1
-        assert result["game_models"][0]["game_id"] == sample_researcher_output["games"][0]["game_id"]
-        assert "predictions" in result["game_models"][0]
-        assert "market_edges" in result["game_models"][0]
-        # Verify predicted_score is present (new field)
-        assert "predicted_score" in result["game_models"][0]
-        predicted_score = result["game_models"][0]["predicted_score"]
+        model = result["game_models"][0]
+        assert str(model["game_id"]) == str(sample_researcher_output["games"][0]["game_id"])
+        assert "predictions" in model
+        assert "market_edges" in model
+        assert "predicted_score" in model
+        predicted_score = model["predicted_score"]
         assert "away_score" in predicted_score
         assert "home_score" in predicted_score
+        predictions = model["predictions"]
+        assert "spread" in predictions or "margin" in predictions
+        assert "total" in predictions or "scores" in predictions
     
     def test_batch_processing(self, mock_database, mock_llm_client, sample_researcher_output, sample_betting_lines):
-        """Test that modeler processes games in batches"""
-        # Duplicate game for batch testing
-        games_output = {
-            "games": sample_researcher_output["games"] * 2
-        }
-        # Update game_id for second game
+        """Test that modeler processes games in batches (programmatic path; force_refresh to avoid cache)."""
+        games_output = {"games": sample_researcher_output["games"] * 2}
         games_output["games"][1]["game_id"] = "2"
-        
-        mock_response = {
-            "game_models": [
-                {
-                    "game_id": game["game_id"],
-                    "league": "NCAA",
-                    "predictions": {
-                        "confidence": 0.7,
-                        "spread": {
-                            "projected_line": "Team -5.0",
-                            "projected_margin": -5.0,
-                            "model_confidence": 0.6
-                        }
-                    },
-                    "predicted_score": {
-                        "away_score": 70.0,
-                        "home_score": 75.0
-                    },
-                    "market_edges": [],
-                    "model_notes": "Test model"
-                }
-                for game in games_output["games"]
-            ]
-        }
-        mock_llm_client.set_response(mock_response)
-        
         modeler = Modeler(db=mock_database, llm_client=mock_llm_client)
-        result = modeler.process(games_output, betting_lines=sample_betting_lines)
-        
-        # Verify all games are processed
+        result = modeler.process(
+            games_output,
+            betting_lines=sample_betting_lines,
+            force_refresh=True,
+        )
         assert len(result["game_models"]) == len(games_output["games"])
     
     def test_empty_input(self, mock_database, mock_llm_client):
@@ -127,20 +55,18 @@ class TestModelerUnit:
         assert result == {"game_models": []}
     
     def test_probability_validation(self, mock_database, mock_llm_client, sample_researcher_output, sample_betting_lines):
-        """Test that modeler validates probability ranges"""
-        # Note: With programmatic modeler, this test verifies that win probabilities
-        # from the engine are properly formatted. The test input still needs valid stats.
-        # Update sample_researcher_output to have required advanced stats
+        """Test that modeler validates probability ranges (programmatic path; force_refresh to avoid cache)."""
         if "adv" not in sample_researcher_output["games"][0]:
             sample_researcher_output["games"][0]["adv"] = {
                 "away": {"adjo": 108.0, "adjd": 98.0, "adjt": 65.0},
                 "home": {"adjo": 115.0, "adjd": 95.0, "adjt": 68.0}
             }
-        
         modeler = Modeler(db=mock_database, llm_client=mock_llm_client)
-        result = modeler.process(sample_researcher_output, betting_lines=sample_betting_lines)
-        
-        # Verify probabilities exist and sum to approximately 1.0
+        result = modeler.process(
+            sample_researcher_output,
+            betting_lines=sample_betting_lines,
+            force_refresh=True,
+        )
         assert len(result["game_models"]) >= 1
         model = result["game_models"][0]
         predictions = model.get("predictions", {})

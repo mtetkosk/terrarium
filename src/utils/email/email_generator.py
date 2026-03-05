@@ -27,6 +27,7 @@ from src.prompts import (
 from src.utils.config import config
 from src.utils.llm import LLMClient, get_llm_client
 from src.utils.logging import get_logger
+from src.utils.odds import american_odds_to_profit_multiplier
 from src.utils.team_normalizer import normalize_team_name, are_teams_matching, remove_mascot_from_team_name
 
 logger = get_logger("utils.email_generator")
@@ -57,14 +58,14 @@ class EmailGenerator:
     def _get_team_name(self, team_id: Optional[int], session) -> str:
         """Get official team name from database using team_id"""
         if not team_id or not session:
-            return "Team"
+            return "Unknown Team"
         try:
             team = session.query(TeamModel).filter_by(id=team_id).first()
             if team:
                 return team.normalized_team_name
         except Exception as e:
             logger.debug(f"Error getting team name for team_id {team_id}: {e}")
-        return "Team"
+        return f"Unknown Team #{team_id}"
     
     def _format_game_time_est(self, game_time_est: Optional[datetime]) -> str:
         """
@@ -796,7 +797,10 @@ class EmailGenerator:
                 selection = pick_data.get('selection', '')
                 odds = pick_data.get('odds', '')
                 rationale = pick_data.get('rationale', '')
-                confidence = pick_data.get('confidence_score', 5)
+                confidence = pick_data.get('confidence_score')
+                if confidence is None:
+                    logger.debug("Using default confidence 5 for pick (missing confidence_score)")
+                    confidence = 5
                 is_best_bet = pick_data.get('best_bet', False)
                 predicted_score_html = pick_data.get('predicted_score_html', '')
                 predicted_total = pick_data.get('predicted_total', '')
@@ -946,7 +950,10 @@ class EmailGenerator:
                 selection = pick_data.get('selection', '')
                 odds = pick_data.get('odds', '')
                 rationale = pick_data.get('rationale', '')
-                confidence = pick_data.get('confidence_score', 5)
+                confidence = pick_data.get('confidence_score')
+                if confidence is None:
+                    logger.debug("Using default confidence 5 for pick (missing confidence_score)")
+                    confidence = 5
                 is_best_bet = pick_data.get('best_bet', False)
                 predicted_score_plain = pick_data.get('predicted_score_plain', '')
                 predicted_total = pick_data.get('predicted_total', '')
@@ -1496,6 +1503,8 @@ class EmailGenerator:
                 for pick in picks:
                     bet = session.query(BetModel).filter_by(pick_id=pick.id).first()
                     if bet:
+                        profit_units, profit_dollars = (self._calculate_bet_profit_loss(pick, bet.result)
+                            if bet.result != BetResult.PENDING else (None, None))
                         game_data['picks'].append({
                             'pick_id': pick.id,
                             'bet_type': pick.bet_type.value,
@@ -1507,7 +1516,8 @@ class EmailGenerator:
                             'odds': pick.odds,
                             'best_bet': pick.best_bet,
                             'result': bet.result.value if bet.result else None,
-                            'profit_loss': bet.profit_loss if bet.result != BetResult.PENDING else None,
+                            'profit_loss_units': profit_units,
+                            'profit_loss_dollars': profit_dollars,
                             'payout': bet.payout if bet.result != BetResult.PENDING else None
                         })
                 
@@ -1547,8 +1557,10 @@ class EmailGenerator:
             
             # Get game info and bet results
             best_bets_data = []
-            total_wagered = 0.0
-            total_profit = 0.0
+            total_wagered_units = 0.0
+            total_wagered_dollars = 0.0
+            total_profit_units = 0.0
+            total_profit_dollars = 0.0
             wins = 0
             losses = 0
             pushes = 0
@@ -1577,23 +1589,28 @@ class EmailGenerator:
                 away_team_raw = game_result.get('away_team', team2_name)
                 
                 # Match result team names to team1/team2 to get correct rank
-                if home_team_raw == team1_name or home_team_raw.lower() in team1_name.lower():
+                if are_teams_matching(home_team_raw, team1_name):
                     home_team = self._format_team_with_rank(home_team_raw, team1_kp)
                 else:
                     home_team = self._format_team_with_rank(home_team_raw, team2_kp)
                 
-                if away_team_raw == team2_name or away_team_raw.lower() in team2_name.lower():
+                if are_teams_matching(away_team_raw, team2_name):
                     away_team = self._format_team_with_rank(away_team_raw, team2_kp)
                 else:
                     away_team = self._format_team_with_rank(away_team_raw, team1_kp)
                 
                 bet_result = bet.result if bet else BetResult.PENDING
-                profit_loss = bet.profit_loss if bet and bet.result != BetResult.PENDING else 0.0
+                if bet and bet_result != BetResult.PENDING:
+                    profit_units, profit_dollars = self._calculate_bet_profit_loss(pick, bet_result)
+                else:
+                    profit_units, profit_dollars = 0.0, 0.0
                 stake_units = pick.stake_units or 0.0
                 stake_amount = pick.stake_amount or 0.0
                 
-                total_wagered += stake_amount
-                total_profit += profit_loss
+                total_wagered_units += stake_units
+                total_wagered_dollars += stake_amount
+                total_profit_units += profit_units
+                total_profit_dollars += profit_dollars
                 
                 if bet_result == BetResult.WIN:
                     wins += 1
@@ -1649,7 +1666,8 @@ class EmailGenerator:
                     'stake_units': stake_units,
                     'stake_amount': stake_amount,
                     'result': bet_result.value if bet_result != BetResult.PENDING else 'pending',
-                    'profit_loss': profit_loss,
+                    'profit_loss_units': profit_units,
+                    'profit_loss_dollars': profit_dollars,
                     'payout': bet.payout if bet and bet.result != BetResult.PENDING else None,
                     'final_score': f"{away_team} {away_score} - {home_team} {home_score}" if home_score or away_score else None,
                     'rationale': pick.rationale
@@ -1666,8 +1684,8 @@ class EmailGenerator:
             win_rate = (wins / settled * 100) if settled > 0 else 0
             html_parts.append('<div style="background-color: #f0f4f8; padding: 15px; border-radius: 5px; margin-bottom: 20px;">')
             html_parts.append(f'<p style="margin: 5px 0;"><strong>Best Bets Record:</strong> {wins}-{losses}' + (f'-{pushes}' if pushes > 0 else '') + f' ({win_rate:.1f}% win rate)</p>')
-            html_parts.append(f'<p style="margin: 5px 0;"><strong>Total Wagered:</strong> {total_wagered:.2f} units (${total_wagered:.2f})</p>')
-            html_parts.append(f'<p style="margin: 5px 0;"><strong>Total Profit/Loss:</strong> <span style="color: {"#2e7d32" if total_profit >= 0 else "#c62828"}; font-weight: bold;">{total_profit:+.2f} units (${total_profit:+.2f})</span></p>')
+            html_parts.append(f'<p style="margin: 5px 0;"><strong>Total Wagered:</strong> {total_wagered_units:.2f} units (${total_wagered_dollars:.2f})</p>')
+            html_parts.append(f'<p style="margin: 5px 0;"><strong>Total Profit/Loss:</strong> <span style="color: {"#2e7d32" if total_profit_units >= 0 else "#c62828"}; font-weight: bold;">{total_profit_units:+.2f} units (${total_profit_dollars:+.2f})</span></p>')
             if pending > 0:
                 html_parts.append(f'<p style="margin: 5px 0; color: #666;"><em>{pending} bet(s) still pending</em></p>')
             html_parts.append('</div>')
@@ -1701,8 +1719,8 @@ class EmailGenerator:
                     html_parts.append(f'<div style="margin: 5px 0;"><strong>Final Score:</strong> {bet_data["final_score"]}</div>')
                 
                 if bet_data['result'] != 'pending':
-                    profit_color = '#2e7d32' if bet_data['profit_loss'] >= 0 else '#c62828'
-                    html_parts.append(f'<div style="margin: 5px 0;"><strong>P&L:</strong> <span style="color: {profit_color}; font-weight: bold;">{bet_data["profit_loss"]:+.2f} units (${bet_data["profit_loss"]:+.2f})</span></div>')
+                    profit_color = '#2e7d32' if bet_data['profit_loss_units'] >= 0 else '#c62828'
+                    html_parts.append(f'<div style="margin: 5px 0;"><strong>P&L:</strong> <span style="color: {profit_color}; font-weight: bold;">{bet_data["profit_loss_units"]:+.2f} units (${bet_data["profit_loss_dollars"]:+.2f})</span></div>')
                     if bet_data['payout']:
                         html_parts.append(f'<div style="margin: 5px 0; color: #666; font-size: 0.9em;">Payout: ${bet_data["payout"]:.2f}</div>')
                 else:
@@ -1741,8 +1759,10 @@ class EmailGenerator:
             
             # Get game info and bet results
             best_bets_data = []
-            total_wagered = 0.0
-            total_profit = 0.0
+            total_wagered_units = 0.0
+            total_wagered_dollars = 0.0
+            total_profit_units = 0.0
+            total_profit_dollars = 0.0
             wins = 0
             losses = 0
             pushes = 0
@@ -1771,23 +1791,28 @@ class EmailGenerator:
                 away_team_raw = game_result.get('away_team', team2_name)
                 
                 # Match result team names to team1/team2 to get correct rank
-                if home_team_raw == team1_name or home_team_raw.lower() in team1_name.lower():
+                if are_teams_matching(home_team_raw, team1_name):
                     home_team = self._format_team_with_rank(home_team_raw, team1_kp)
                 else:
                     home_team = self._format_team_with_rank(home_team_raw, team2_kp)
                 
-                if away_team_raw == team2_name or away_team_raw.lower() in team2_name.lower():
+                if are_teams_matching(away_team_raw, team2_name):
                     away_team = self._format_team_with_rank(away_team_raw, team2_kp)
                 else:
                     away_team = self._format_team_with_rank(away_team_raw, team1_kp)
                 
                 bet_result = bet.result if bet else BetResult.PENDING
-                profit_loss = bet.profit_loss if bet and bet.result != BetResult.PENDING else 0.0
+                if bet and bet_result != BetResult.PENDING:
+                    profit_units, profit_dollars = self._calculate_bet_profit_loss(pick, bet_result)
+                else:
+                    profit_units, profit_dollars = 0.0, 0.0
                 stake_units = pick.stake_units or 0.0
                 stake_amount = pick.stake_amount or 0.0
                 
-                total_wagered += stake_amount
-                total_profit += profit_loss
+                total_wagered_units += stake_units
+                total_wagered_dollars += stake_amount
+                total_profit_units += profit_units
+                total_profit_dollars += profit_dollars
                 
                 if bet_result == BetResult.WIN:
                     wins += 1
@@ -1843,7 +1868,8 @@ class EmailGenerator:
                     'stake_units': stake_units,
                     'stake_amount': stake_amount,
                     'result': bet_result.value if bet_result != BetResult.PENDING else 'pending',
-                    'profit_loss': profit_loss,
+                    'profit_loss_units': profit_units,
+                    'profit_loss_dollars': profit_dollars,
                     'final_score': f"{away_team} {away_score} - {home_team} {home_score}" if home_score or away_score else None,
                     'rationale': pick.rationale
                 })
@@ -1858,8 +1884,8 @@ class EmailGenerator:
             settled = wins + losses + pushes
             win_rate = (wins / settled * 100) if settled > 0 else 0
             lines.append(f"Best Bets Record: {wins}-{losses}" + (f"-{pushes}" if pushes > 0 else "") + f" ({win_rate:.1f}% win rate)")
-            lines.append(f"Total Wagered: {total_wagered:.2f} units (${total_wagered:.2f})")
-            lines.append(f"Total Profit/Loss: {total_profit:+.2f} units (${total_profit:+.2f})")
+            lines.append(f"Total Wagered: {total_wagered_units:.2f} units (${total_wagered_dollars:.2f})")
+            lines.append(f"Total Profit/Loss: {total_profit_units:+.2f} units (${total_profit_dollars:+.2f})")
             if pending > 0:
                 lines.append(f"{pending} bet(s) still pending")
             lines.append("")
@@ -1881,7 +1907,7 @@ class EmailGenerator:
                     lines.append(f"   Final Score: {bet_data['final_score']}")
                 
                 if bet_data['result'] != 'pending':
-                    lines.append(f"   P&L: {bet_data['profit_loss']:+.2f} units (${bet_data['profit_loss']:+.2f})")
+                    lines.append(f"   P&L: {bet_data['profit_loss_units']:+.2f} units (${bet_data['profit_loss_dollars']:+.2f})")
                 else:
                     lines.append("   Result pending")
                 
@@ -2447,12 +2473,12 @@ class EmailGenerator:
                         team2_name = self._get_team_name(game_model.team2_id, session)
                         
                         # Match result team names to team1/team2 to get correct rank
-                        if home_team_raw == team1_name or home_team_raw.lower() in team1_name.lower():
+                        if are_teams_matching(home_team_raw, team1_name):
                             home_team = self._format_team_with_rank(home_team_raw, team1_kp)
                         else:
                             home_team = self._format_team_with_rank(home_team_raw, team2_kp)
                         
-                        if away_team_raw == team2_name or away_team_raw.lower() in team2_name.lower():
+                        if are_teams_matching(away_team_raw, team2_name):
                             away_team = self._format_team_with_rank(away_team_raw, team2_kp)
                         else:
                             away_team = self._format_team_with_rank(away_team_raw, team1_kp)
@@ -2653,13 +2679,7 @@ class EmailGenerator:
             Tuple of (profit_loss_units, profit_loss_dollars)
         """
         if bet_result == BetResult.WIN:
-            if pick.odds < 0:
-                # Negative odds: profit = stake * (100/abs(odds))
-                profit_multiplier = 100.0 / abs(pick.odds)
-            else:
-                # Positive odds: profit = stake * (odds/100)
-                profit_multiplier = pick.odds / 100.0
-            
+            profit_multiplier = american_odds_to_profit_multiplier(pick.odds)
             profit_units = pick.stake_units * profit_multiplier
             profit_dollars = pick.stake_amount * profit_multiplier
         elif bet_result == BetResult.PUSH:
@@ -2729,12 +2749,7 @@ class EmailGenerator:
             
             # Calculate profit/loss using normalized stake
             if bet.result == BetResult.WIN:
-                if pick.odds < 0:
-                    # Negative odds: profit = stake * (100/abs(odds))
-                    profit_multiplier = 100.0 / abs(pick.odds)
-                else:
-                    # Positive odds: profit = stake * (odds/100)
-                    profit_multiplier = pick.odds / 100.0
+                profit_multiplier = american_odds_to_profit_multiplier(pick.odds)
                 per_unit_profit_units = stake_units_for_calc * profit_multiplier
             elif bet.result == BetResult.PUSH:
                 # Push: stake returned, net profit = 0
@@ -2855,12 +2870,7 @@ class EmailGenerator:
                 
                 # Calculate profit/loss using normalized stake
                 if bet.result == BetResult.WIN:
-                    if pick.odds < 0:
-                        # Negative odds: profit = stake * (100/abs(odds))
-                        profit_multiplier = 100.0 / abs(pick.odds)
-                    else:
-                        # Positive odds: profit = stake * (odds/100)
-                        profit_multiplier = pick.odds / 100.0
+                    profit_multiplier = american_odds_to_profit_multiplier(pick.odds)
                     per_unit_profit_units = stake_units_for_calc * profit_multiplier
                 elif bet.result == BetResult.PUSH:
                     # Push: stake returned, net profit = 0

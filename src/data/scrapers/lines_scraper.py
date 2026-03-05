@@ -415,7 +415,10 @@ class LinesScraper:
                 
                 if not matched_game:
                     continue
-                
+                if not matched_game.id:
+                    logger.debug(f"Skipping lines for matched game with no id ({matched_game.team1} vs {matched_game.team2})")
+                    continue
+
                 # Match event teams to game teams (could be in either order)
                 home_team_mapped = None
                 away_team_mapped = None
@@ -472,7 +475,7 @@ class LinesScraper:
                                 if o1['team_name'] and o2['team_name'] and o1['team_name'] != o2['team_name']:
                                     for outcome in spread_outcomes:
                                         all_lines.append(BettingLine(
-                                            game_id=matched_game.id or 0,
+                                            game_id=matched_game.id,
                                             book=book,
                                             bet_type=BetType.SPREAD,
                                             line=outcome['line_value'],
@@ -504,7 +507,7 @@ class LinesScraper:
                                     pass
                                 
                                 all_lines.append(BettingLine(
-                                    game_id=matched_game.id or 0,
+                                    game_id=matched_game.id,
                                     book=book,
                                     bet_type=BetType.TOTAL,
                                     line=line_value,
@@ -540,7 +543,7 @@ class LinesScraper:
                                 # Do not infer team from odds (favorite can be home or away).
                                 
                                 all_lines.append(BettingLine(
-                                    game_id=matched_game.id or 0,
+                                    game_id=matched_game.id,
                                     book=book,
                                     bet_type=BetType.MONEYLINE,
                                     line=0.0,
@@ -615,6 +618,9 @@ class LinesScraper:
             
             # Parse the response
             lines = []
+            if not game.id:
+                logger.warning("Cannot fetch lines for game with no id; skipping.")
+                return lines
             for event in data:
                 # Match game by teams
                 if not self._matches_game(event, game.team1, game.team2):
@@ -683,7 +689,7 @@ class LinesScraper:
                                 if o1['team_name'] and o2['team_name'] and o1['team_name'] != o2['team_name']:
                                     for outcome in spread_outcomes:
                                         lines.append(BettingLine(
-                                            game_id=game.id or 0,
+                                            game_id=game.id,
                                             book=book,
                                             bet_type=BetType.SPREAD,
                                             line=outcome['line_value'],
@@ -715,7 +721,7 @@ class LinesScraper:
                                     pass
                                 
                                 lines.append(BettingLine(
-                                    game_id=game.id or 0,
+                                    game_id=game.id,
                                     book=book,
                                     bet_type=BetType.TOTAL,
                                     line=line_value,
@@ -751,7 +757,7 @@ class LinesScraper:
                                 # Do not infer team from odds (favorite can be home or away).
                                 
                                 lines.append(BettingLine(
-                                    game_id=game.id or 0,
+                                    game_id=game.id,
                                     book=book,
                                     bet_type=BetType.MONEYLINE,
                                     line=0.0,

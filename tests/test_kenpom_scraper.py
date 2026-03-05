@@ -521,9 +521,10 @@ class TestKenPomScraperCache:
             # Should not call session.get again (using cache)
             assert not scraper.session.get.called or scraper.session.get.call_count == 0
     
+    @pytest.mark.skip(reason="Four factors disabled in scraper to avoid rate limiting")
     @patch('src.data.scrapers.kenpom_scraper.config')
     def test_get_team_stats_includes_four_factors(self, mock_config, tmp_path):
-        """Test that get_team_stats includes Four Factors"""
+        """Test that get_team_stats includes Four Factors (disabled in scraper)."""
         mock_config.get_kenpom_credentials.return_value = {'email': 'test@test.com', 'password': 'test'}
         
         cache_file = tmp_path / "kenpom_cache.json"

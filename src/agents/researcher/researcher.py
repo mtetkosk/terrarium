@@ -14,6 +14,7 @@ from src.data.scrapers.lines_scraper import LinesScraper
 from src.data.storage import Database
 from src.prompts import RESEARCHER_PROMPT
 from src.utils.logging import get_logger
+from src.utils.team_normalizer import are_teams_matching
 from src.utils.web_browser import WebBrowser, get_web_browser
 from src.utils.json_schemas import get_researcher_schema
 
@@ -380,9 +381,9 @@ class Researcher(BaseAgent):
                         # Format spread with team name if available
                         if line.team:
                             # Match team name to home/away
-                            if line.team.lower() in game.team1.lower() or game.team1.lower() in line.team.lower():
+                            if game.team1 and are_teams_matching(line.team, game.team1):
                                 market["spread"] = f"{game.team1} {line.line:+.1f}"
-                            elif line.team.lower() in game.team2.lower() or game.team2.lower() in line.team.lower():
+                            elif game.team2 and are_teams_matching(line.team, game.team2):
                                 market["spread"] = f"{game.team2} {line.line:+.1f}"
                             else:
                                 # Fallback: just show the line
@@ -397,9 +398,9 @@ class Researcher(BaseAgent):
                         # Use team name to determine home/away
                         if line.team:
                             # Match team name to home/away
-                            if line.team.lower() in game.team1.lower() or game.team1.lower() in line.team.lower():
+                            if game.team1 and are_teams_matching(line.team, game.team1):
                                 market["moneyline"]["home"] = f"{line.odds:+d}"
-                            elif line.team.lower() in game.team2.lower() or game.team2.lower() in line.team.lower():
+                            elif game.team2 and are_teams_matching(line.team, game.team2):
                                 market["moneyline"]["away"] = f"{line.odds:+d}"
                             else:
                                 # Fallback: use odds to guess (negative = favorite, likely home)
@@ -750,10 +751,17 @@ Return your JSON response now:"""
                 elif line.bet_type.value == "moneyline":
                     if not market.get("moneyline"):
                         market["moneyline"] = {}
-                    if line.line == 0:
+                    # Use team name to assign home/away; for moneylines line.line is always 0 so we cannot use it
+                    if line.team and game.team1 and are_teams_matching(line.team, game.team1):
                         market["moneyline"]["home"] = f"{line.odds:+d}"
-                    else:
+                    elif line.team and game.team2 and are_teams_matching(line.team, game.team2):
                         market["moneyline"]["away"] = f"{line.odds:+d}"
+                    else:
+                        # Fallback when team is missing: negative odds often favorite (frequently home)
+                        if line.odds < 0:
+                            market["moneyline"]["home"] = f"{line.odds:+d}"
+                        else:
+                            market["moneyline"]["away"] = f"{line.odds:+d}"
         
         return {
             "game_id": game_id_str,

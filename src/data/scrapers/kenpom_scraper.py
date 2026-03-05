@@ -810,21 +810,6 @@ class KenPomScraper:
         )
         return None
     
-    def _llm_fuzzy_match_team(self, team_name: str) -> Optional[str]:
-        """
-        DEPRECATED: Use LLM to fuzzy match a team name to a KenPom team name.
-        
-        This method is deprecated because it can produce hallucinations (e.g. matching "Iowa Hawkeyes" to a random rank).
-        It is better to fail and log a warning than to return incorrect data.
-        
-        Args:
-            team_name: Team name to match
-            
-        Returns:
-            None (always returns None to disable this feature)
-        """
-        return None
-    
     def _find_team_url(self, team_name: str) -> Optional[str]:
         """Find the KenPom URL for a team by searching the teams page"""
         try:

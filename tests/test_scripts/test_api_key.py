@@ -4,12 +4,15 @@
 import os
 import sys
 import requests
+import pytest
 from datetime import date
 
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
 
+
+@pytest.mark.integration
 def test_api_key():
     """Test The Odds API key and verify it's working"""
     api_key = os.getenv('THE_ODDS_API_KEY')

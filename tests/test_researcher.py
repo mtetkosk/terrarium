@@ -274,3 +274,34 @@ class TestResearcherIntegration:
             # Stats should be objects/dicts if present
             assert isinstance(stats_to_check, dict)
 
+
+class TestResearcherCreateFallbackInsight:
+    """Test _create_fallback_insight moneyline home/away assignment from line.team."""
+
+    def test_moneyline_home_away_from_team_name(self):
+        """Duke (team1/home) and North Carolina (team2/away) moneylines assigned correctly."""
+        researcher = Researcher(db=None, llm_client=Mock())
+        game = Game(
+            id=1,
+            team1="Duke",
+            team2="North Carolina",
+            date=date.today()
+        )
+        betting_lines = [
+            BettingLine(game_id=1, book="DraftKings", bet_type=BetType.MONEYLINE, line=0.0, odds=-150, team="Duke"),
+            BettingLine(game_id=1, book="DraftKings", bet_type=BetType.MONEYLINE, line=0.0, odds=130, team="North Carolina"),
+        ]
+        result = researcher._create_fallback_insight(game, date.today(), betting_lines)
+        assert result["market"]["moneyline"]["home"] == "-150"
+        assert result["market"]["moneyline"]["away"] == "+130"
+
+    def test_moneyline_fallback_when_team_missing(self):
+        """When line.team is missing, negative odds assigned to home, positive to away."""
+        researcher = Researcher(db=None, llm_client=Mock())
+        game = Game(id=1, team1="Duke", team2="North Carolina", date=date.today())
+        betting_lines = [
+            BettingLine(game_id=1, book="DraftKings", bet_type=BetType.MONEYLINE, line=0.0, odds=-150, team=None),
+        ]
+        result = researcher._create_fallback_insight(game, date.today(), betting_lines)
+        assert result["market"]["moneyline"]["home"] == "-150"
+

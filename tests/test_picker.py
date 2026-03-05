@@ -86,6 +86,44 @@ class TestPickerUnit:
         picks = result["candidate_picks"]
         assert len(picks) == 1  # Only the normal odds pick should remain
         assert picks[0]["odds"] == "-110"
+
+    def test_unparseable_odds_pick_filtered_out(self, mock_database, mock_llm_client, sample_researcher_output, sample_modeler_output, sample_bankroll_status):
+        """Test that picks with unparseable odds (e.g. n/a, invalid) are dropped, not passed through."""
+        mock_response = {
+            "candidate_picks": [
+                {
+                    "game_id": sample_modeler_output["game_models"][0]["game_id"],
+                    "bet_type": "spread",
+                    "selection": "Duke -7.5",
+                    "odds": "-110",
+                    "justification": ["Good value"],
+                    "edge_estimate": 0.056,
+                    "confidence": 0.75,
+                    "confidence_score": 7,
+                    "best_bet": True,
+                    "book": "DraftKings"
+                },
+                {
+                    "game_id": sample_modeler_output["game_models"][0]["game_id"],
+                    "bet_type": "moneyline",
+                    "selection": "North Carolina ML",
+                    "odds": "n/a",
+                    "justification": ["Market unavailable"],
+                    "edge_estimate": 0.05,
+                    "confidence": 0.6,
+                    "confidence_score": 6,
+                    "best_bet": False,
+                    "book": "DraftKings"
+                }
+            ],
+            "overall_strategy_summary": []
+        }
+        mock_llm_client.set_response(mock_response)
+        picker = Picker(db=mock_database, llm_client=mock_llm_client)
+        result = picker.process(sample_researcher_output, sample_modeler_output, sample_bankroll_status)
+        picks = result["candidate_picks"]
+        assert len(picks) == 1
+        assert picks[0]["odds"] == "-110"
     
     def test_parlay_creation(self, mock_database, mock_llm_client, sample_researcher_output, sample_modeler_output, sample_bankroll_status):
         """Test that picker can create parlays"""
