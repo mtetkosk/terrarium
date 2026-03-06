@@ -9,6 +9,18 @@ from src.data.models import BetResult, BetType, GameStatus
 from src.data.storage import PickModel, BetModel, DailyReportModel, GameModel
 
 
+def _mock_auditor_llm_response():
+    """Response shape returned by Auditor LLM (insights + recommendations)."""
+    return {
+        "insights": {
+            "what_went_well": ["Test: profitable day", "Strong win rate"],
+            "what_needs_improvement": ["Review strategy"],
+            "key_findings": {"best_bet_type": "spread", "worst_bet_type": "total"},
+        },
+        "recommendations": ["Continue current strategy.", "Monitor EV threshold."],
+    }
+
+
 class TestAuditorUnit:
     """Unit tests for Auditor agent (no LLM, pure logic)"""
     
@@ -27,9 +39,10 @@ class TestAuditorUnit:
         assert report.losses == 0
         assert report.pushes == 0
     
-    def test_review_daily_results_with_picks(self, mock_database):
+    def test_review_daily_results_with_picks(self, mock_database, mock_llm_client):
         """Test auditor reviews picks and calculates metrics"""
         from tests.conftest import get_or_create_team
+        mock_llm_client.set_response(_mock_auditor_llm_response())
         # Create test data
         session = mock_database.get_session()
         try:
@@ -114,8 +127,8 @@ class TestAuditorUnit:
         finally:
             session.close()
         
-        # Run auditor
-        auditor = Auditor(db=mock_database)
+        # Run auditor with mock LLM
+        auditor = Auditor(db=mock_database, llm_client=mock_llm_client)
         target_date = date.today()
         review_date = target_date - timedelta(days=1)
         
@@ -131,9 +144,13 @@ class TestAuditorUnit:
         assert report.total_payout == 19.09
         assert abs(report.profit_loss - (-0.91)) < 0.01  # 19.09 - 20.0 (floating point precision)
         
-        # Verify insights and recommendations exist
-        assert "insights" in report.insights or report.insights is not None
+        # Verify insights and recommendations (from mock LLM)
+        assert report.insights is not None
+        assert isinstance(report.insights, dict)
+        assert "what_went_well" in report.insights
+        assert "what_needs_improvement" in report.insights
         assert isinstance(report.recommendations, list)
+        assert len(report.recommendations) >= 1
     
     def test_calculate_daily_pl(self, mock_database):
         """Test daily P&L calculation"""
@@ -279,9 +296,12 @@ class TestAuditorUnit:
         assert feedback["overall_performance"] == "poor"
         assert len(feedback["recommendations"]) > 0
     
-    def test_report_generation_insights(self, mock_database):
+    def test_report_generation_insights(self, mock_database, mock_llm_client):
         """Test that report includes insights"""
+        from datetime import datetime
         from tests.conftest import get_or_create_team
+        mock_llm_client.set_response(_mock_auditor_llm_response())
+        review_date = date.today() - timedelta(days=1)
         session = mock_database.get_session()
         try:
             team1_id = get_or_create_team(session, "Team A")
@@ -289,7 +309,7 @@ class TestAuditorUnit:
             game = GameModel(
                 team1_id=team1_id,
                 team2_id=team2_id,
-                date=date.today() - timedelta(days=1),
+                date=review_date,
                 status=GameStatus.SCHEDULED
             )
             session.add(game)
@@ -305,7 +325,9 @@ class TestAuditorUnit:
                 expected_value=0.05,
                 confidence=0.7,
                 rationale="Test pick",
-                book="DraftKings"
+                book="DraftKings",
+                pick_date=review_date,
+                created_at=datetime.combine(review_date, datetime.min.time()),
             )
             session.add(pick)
             session.flush()
@@ -321,24 +343,17 @@ class TestAuditorUnit:
         finally:
             session.close()
         
-        auditor = Auditor(db=mock_database)
+        auditor = Auditor(db=mock_database, llm_client=mock_llm_client)
         target_date = date.today()
         review_date = target_date - timedelta(days=1)
         
         report = auditor.review_daily_results(target_date, review_date)
         
-        # Verify insights structure
+        # Verify insights structure (from mock LLM)
         assert report.insights is not None
         assert isinstance(report.insights, dict)
-        
-        # Should have what_went_well and what_needs_improvement
-        if "what_went_well" in report.insights:
-            assert isinstance(report.insights["what_went_well"], list)
-        
-        if "what_needs_improvement" in report.insights:
-            assert isinstance(report.insights["what_needs_improvement"], list)
-        
-        # Verify recommendations
+        assert isinstance(report.insights.get("what_went_well"), list)
+        assert isinstance(report.insights.get("what_needs_improvement"), list)
         assert isinstance(report.recommendations, list)
         assert len(report.recommendations) > 0
 

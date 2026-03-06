@@ -186,9 +186,6 @@ def calculate_hca_adjustment(is_neutral_site: bool) -> float:
     return 3.2  # Home court advantage (matches agentic modeler output)
 
 
-# Injury adjustment removed - injuries are not reliably detected by researcher
-
-
 def _is_power_conference(conference: str) -> bool:
     """Normalize conference name and check if it is a power conference."""
     if not conference:
