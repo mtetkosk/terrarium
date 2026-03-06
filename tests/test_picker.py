@@ -8,7 +8,20 @@ from src.agents.picker import Picker
 
 class TestPickerUnit:
     """Unit tests for Picker agent (mocked LLM)"""
-    
+
+    def test_filter_extreme_odds_filters_favorite_and_ml_underdog(self, mock_database):
+        """_filter_extreme_odds removes -600 favorites and +400 ML picks, keeps normal picks."""
+        picker = Picker(db=mock_database, llm_client=Mock())
+        picks = [
+            {"game_id": "1", "selection": "Team A -7.5", "odds": "-600"},
+            {"game_id": "2", "selection": "Team B ML +400", "odds": "+400"},
+            {"game_id": "3", "selection": "Team C -7.5", "odds": "-110"},
+        ]
+        filtered = picker._filter_extreme_odds(picks)
+        assert len(filtered) == 1
+        assert filtered[0]["game_id"] == "3"
+        assert filtered[0]["odds"] == "-110"
+
     def test_process_with_mocked_llm(self, mock_database, mock_llm_client, sample_researcher_output, sample_modeler_output, sample_bankroll_status):
         """Test picker processes inputs with mocked LLM"""
         # Setup mock response

@@ -12,7 +12,7 @@ from src.data.models import Game, GameInsight
 from src.data.scrapers.games_scraper import GamesScraper
 from src.data.scrapers.lines_scraper import LinesScraper
 from src.data.storage import Database
-from src.prompts import RESEARCHER_PROMPT
+from src.prompts import RESEARCHER_PROMPT, build_researcher_final_prompt
 from src.utils.logging import get_logger
 from src.utils.team_normalizer import are_teams_matching
 from src.utils.web_browser import WebBrowser, get_web_browser
@@ -581,18 +581,7 @@ class Researcher(BaseAgent):
                 
                 # Call LLM again with tool results using proper function calling format
                 # Add explicit instruction to return JSON (not use tools again)
-                final_prompt = f"""{user_prompt}
-
-CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE EXACTLY:
-1. You have received the results from your web searches. DO NOT request additional tool calls.
-2. You MUST return ONLY valid JSON in the exact format specified by the response schema.
-3. DO NOT include any explanatory text, tool call instructions, or markdown formatting.
-4. DO NOT write "Now searching..." or "Calling..." - just return the JSON directly.
-5. Your response must be a valid JSON object starting with {{ and ending with }}.
-6. Return game insights for ALL {len(games)} games in the "games" array.
-7. **CRITICAL: If adv.away or adv.home fields already have values (kp_rank, adjo, adjd, adjt, net, conference, wins, losses, w_l, luck, sos, ncsos), DO NOT CHANGE THEM. These are pre-populated programmatically and are authoritative. Only add missing fields or populate fields that are empty.**
-
-Return your JSON response now:"""
+                final_prompt = build_researcher_final_prompt(user_prompt, len(games))
                 
                 response = self.call_llm_with_tool_results(
                     initial_user_prompt=final_prompt,

@@ -871,6 +871,191 @@ Your responsibilities:
 }
 """
 
+# ---------------------------------------------------------------------------
+# Picker user prompt (built at runtime with optional historical context)
+# ---------------------------------------------------------------------------
+
+PICKER_HISTORICAL_CONTEXT_TEMPLATE = """
+
+HISTORICAL PERFORMANCE (Learn from past results):
+- Period: {period}
+- Recent Performance: {wins}W-{losses}L-{pushes}P ({win_rate:.1f}% win rate)
+- ROI: {roi:.1f}%
+- Total Profit: ${total_profit:.2f}
+- Bet Type Performance: {bet_type_performance}
+- Recent Recommendations: {recent_recommendations}
+
+Use this historical data to:
+- Learn which bet types have been most successful
+- Adjust confidence levels based on recent accuracy
+- Avoid patterns that led to losses
+- Double down on strategies that have been profitable
+"""
+
+PICKER_USER_INSTRUCTIONS = """Please analyze the research data and model predictions to select betting opportunities.
+
+CRITICAL REQUIREMENT: You MUST generate EXACTLY ONE pick for EVERY game provided. Do not skip any games. Do not generate multiple picks for the same game.
+
+For each game:
+- Generate exactly one pick (spread, total, or moneyline) based on model edge and research
+- Choose the bet type with the best edge and reasoning for that specific game
+- Include clear, detailed justification explaining why this pick was chosen
+- The President will review ALL picks, assign units, and select the top 5 best bets
+
+Focus on:
+- Positive expected value (edge > 0) when possible
+- Reasonable confidence levels
+- Clear reasoning that combines model edge with contextual factors
+{historical_context}
+Provide clear, detailed justification for each pick that explains:
+- Why this specific bet type was chosen (spread vs total vs moneyline)
+- How the model edge supports this pick
+- What contextual factors (injuries, recent form, matchups) influenced the decision
+- How historical performance patterns informed this selection"""
+
+
+def build_picker_user_prompt(historical_performance, serializable_input_data):
+    """Build the full Picker user prompt with optional historical context and input JSON.
+
+    Caller must pass already JSON-serializable input (e.g. via _make_json_serializable).
+    """
+    import json
+
+    historical_context = ""
+    if historical_performance:
+        hp = historical_performance
+        historical_context = PICKER_HISTORICAL_CONTEXT_TEMPLATE.format(
+            period=hp.get("period", "N/A"),
+            wins=hp.get("wins", 0),
+            losses=hp.get("losses", 0),
+            pushes=hp.get("pushes", 0),
+            win_rate=hp.get("win_rate", 0),
+            roi=hp.get("roi", 0),
+            total_profit=hp.get("total_profit", 0),
+            bet_type_performance=hp.get("bet_type_performance", {}),
+            recent_recommendations=hp.get("recent_recommendations", []),
+        )
+    user_prompt = PICKER_USER_INSTRUCTIONS.format(historical_context=historical_context)
+    return f"""{user_prompt}
+
+Input data:
+{json.dumps(serializable_input_data, indent=2)}"""
+
+
+# ---------------------------------------------------------------------------
+# President user prompt (built at runtime with optional auditor feedback)
+# ---------------------------------------------------------------------------
+
+PRESIDENT_HISTORICAL_CONTEXT_TEMPLATE = """
+
+HISTORICAL PERFORMANCE (Learn from past results):
+- Period: {period}
+- Recent Performance: {wins}W-{losses}L-{pushes}P ({win_rate:.1f}% win rate)
+- ROI: {roi:.1f}%
+- Total Profit: ${total_profit:.2f}
+- Bet Type Performance: {bet_type_performance}
+- Recent Recommendations: {recent_recommendations}
+- Daily Summaries: {daily_summaries}
+
+Use this historical data to:
+- Learn which bet types have been most successful
+- Adjust approval criteria based on recent accuracy
+- Avoid patterns that led to losses
+- Prioritize strategies that have been profitable
+- Consider recent recommendations when making decisions
+"""
+
+PRESIDENT_USER_PROMPT_TEMPLATE = """Please review ALL candidate picks and complete the following tasks:
+{historical_context}
+
+YOUR TASKS:
+1. Assign betting units (decimal values like 0.5, 1.0, 2.5, etc.) to EACH pick based on:
+   - Model edge and expected value
+   - Confidence level and data quality
+   - Risk/reward ratio
+   - Historical performance patterns
+   - Typical range: 0.5 (low confidence/edge) to 3.0 (exceptional value)
+
+2. Select UP TO 5 best bets representing the games you would personally bet on yourself:
+   - **ONLY CONSTRAINT:** Picks with picker_rating <= 3 are INELIGIBLE for best bets (these are low confidence picks)
+   - **YOUR DISCRETION:** You have full freedom to select best bets based on your judgment. Consider:
+     * Model edge and expected value
+     * Picker confidence (picker_rating) and rationale
+     * Research context (injuries, matchups, situational factors)
+     * Historical performance patterns (if available in auditor_feedback)
+     * Risk/reward balance
+     * Overall portfolio construction
+   - **QUALITY OVER QUANTITY:** Select the games that represent your top opportunities. It's better to have 2-3 strong best bets than 5 mediocre ones.
+   - **NO STRICT THRESHOLDS:** There are no mandatory edge minimums, confidence requirements (beyond excluding low confidence), or unit thresholds. Trust your judgment.
+   - Mark selected picks with "best_bet": true
+   - Best bets can be any bet type (spread, total, moneyline) - choose what you believe are the best opportunities
+
+3. Generate comprehensive reasoning for each pick:
+   - Use the Picker's rationale (already synthesized from research and model data)
+   - Consider edge, confidence, and picker_rating when assigning units
+   - Reference historical performance patterns when available
+   - Explain why this specific unit size was assigned
+   - For best bets, explain why you selected them as your top opportunities
+
+CRITICAL REQUIREMENTS:
+- You must assign units to ALL picks (do not skip any)
+- You may select UP TO 5 best bets, but ONLY exclude picks with picker_rating <= 3 (low confidence)
+- **YOUR JUDGMENT MATTERS:** The best bets should represent the games YOU would personally bet on based on all available information. Use your judgment to balance edge, confidence, risk, and value.
+- **HIGH CONFIDENCE TIER:** In addition to best bets, identify picks with picker_rating >= 6.0 as "high_confidence": true. These are strong picks that deserve attention even if not selected as best bets.
+- All picks are approved by default - you're assigning units and selecting best bets
+- The candidate_picks already contain synthesized information from Researcher and Modeler
+- Use the edge, confidence, picker_rating, and key_rationale fields to make decisions
+- **HISTORICAL LEARNING:** Use auditor_feedback to inform your decisions, but don't let it override your judgment. Historical patterns are one factor among many.
+
+Provide your response in the specified JSON format with approved_picks (all picks with units and best_bet flags) and daily_report_summary."""
+
+
+def build_president_user_prompt(auditor_feedback):
+    """Build the full President user prompt with optional auditor/historical context."""
+    historical_context = ""
+    if auditor_feedback:
+        hp = auditor_feedback
+        historical_context = PRESIDENT_HISTORICAL_CONTEXT_TEMPLATE.format(
+            period=hp.get("period", "N/A"),
+            wins=hp.get("wins", 0),
+            losses=hp.get("losses", 0),
+            pushes=hp.get("pushes", 0),
+            win_rate=hp.get("win_rate", 0),
+            roi=hp.get("roi", 0),
+            total_profit=hp.get("total_profit", 0),
+            bet_type_performance=hp.get("bet_type_performance", {}),
+            recent_recommendations=hp.get("recent_recommendations", []),
+            daily_summaries=hp.get("daily_summaries", []),
+        )
+    return PRESIDENT_USER_PROMPT_TEMPLATE.format(historical_context=historical_context)
+
+
+# ---------------------------------------------------------------------------
+# Researcher final prompt (after tool calls, instruct LLM to return JSON only)
+# ---------------------------------------------------------------------------
+
+RESEARCHER_FINAL_INSTRUCTIONS_TEMPLATE = """{user_prompt}
+
+CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE EXACTLY:
+1. You have received the results from your web searches. DO NOT request additional tool calls.
+2. You MUST return ONLY valid JSON in the exact format specified by the response schema.
+3. DO NOT include any explanatory text, tool call instructions, or markdown formatting.
+4. DO NOT write "Now searching..." or "Calling..." - just return the JSON directly.
+5. Your response must be a valid JSON object starting with {{ and ending with }}.
+6. Return game insights for ALL {num_games} games in the "games" array.
+7. **CRITICAL: If adv.away or adv.home fields already have values (kp_rank, adjo, adjd, adjt, net, conference, wins, losses, w_l, luck, sos, ncsos), DO NOT CHANGE THEM. These are pre-populated programmatically and are authoritative. Only add missing fields or populate fields that are empty.**
+
+Return your JSON response now:"""
+
+
+def build_researcher_final_prompt(user_prompt: str, num_games: int) -> str:
+    """Build the Researcher follow-up prompt after tool results (JSON-only instruction)."""
+    return RESEARCHER_FINAL_INSTRUCTIONS_TEMPLATE.format(
+        user_prompt=user_prompt,
+        num_games=num_games,
+    )
+
+
 __all__ = [
     "PLANNING_AGENT_PROMPT",
     "PRESIDENT_PROMPT",
@@ -880,4 +1065,7 @@ __all__ = [
     "MODEL_NOTES_PROMPT",
     "PICKER_PROMPT",
     "AUDITOR_PROMPT",
+    "build_picker_user_prompt",
+    "build_president_user_prompt",
+    "build_researcher_final_prompt",
 ]
