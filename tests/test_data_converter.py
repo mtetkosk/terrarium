@@ -113,6 +113,38 @@ class TestPicksFromJson:
         assert picks[0].odds == -110
         assert picks[0].rationale == "First pick"
 
+    def test_parse_single_pick_returns_pick_when_valid(self, minimal_game):
+        """_parse_single_pick returns a Pick when game_id, odds, and rationale are valid."""
+        game_map = {minimal_game.id: minimal_game}
+        pick_data = {
+            "game_id": "1",
+            "bet_type": "spread",
+            "selection": "Team A -5.5",
+            "odds": "-110",
+            "justification": ["Good edge"],
+            "line": -5.5,
+        }
+        pick = DataConverter._parse_single_pick(pick_data, [minimal_game], game_map)
+        assert pick is not None
+        assert pick.game_id == 1
+        assert pick.odds == -110
+        assert pick.bet_type == BetType.SPREAD
+        assert pick.rationale == "Good edge"
+
+    def test_parse_single_pick_returns_none_when_odds_unavailable(self, minimal_game):
+        """_parse_single_pick returns None when odds are missing/unparseable (pick skipped)."""
+        game_map = {minimal_game.id: minimal_game}
+        pick_data = {
+            "game_id": "1",
+            "bet_type": "spread",
+            "selection": "Team A -5.5",
+            "odds": "n/a",
+            "justification": ["Good edge"],
+            "line": -5.5,
+        }
+        pick = DataConverter._parse_single_pick(pick_data, [minimal_game], game_map)
+        assert pick is None
+
     def test_missing_rationale_skips_pick(self, minimal_game):
         """Empty justification and notes cause rationale validation to fail; pick is skipped (exception caught)."""
         candidate_picks = [

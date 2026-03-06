@@ -1,8 +1,8 @@
 """Integration test to verify modeler receives all inputs from researcher correctly."""
 
 import pytest
-from src.agents.modeler import _extract_game_stats, Modeler
-from src.agents.modeler_engine import calculate_game_model, GameStats
+from src.agents.modeler import Modeler
+from src.agents.modeler_engine import calculate_game_model, GameContext
 
 
 def test_researcher_to_modeler_data_flow():
@@ -85,30 +85,30 @@ def test_researcher_to_modeler_data_flow():
         "dq": []
     }
     
-    # Step 1: Extract GameStats from researcher output
-    stats = _extract_game_stats(researcher_game_output)
+    # Step 1: Build GameContext from researcher output
+    ctx = GameContext.from_researcher_output(researcher_game_output)
     
     # Verify extraction worked
-    assert stats is not None, "GameStats should be extracted successfully"
+    assert ctx is not None, "GameContext should be extracted successfully"
     
     # Verify all required fields are present
-    assert stats.away.adjo == 121.9
-    assert stats.away.adjd == 101.0
-    assert stats.away.adjt == 67.9
-    assert stats.away.conference == "ACC"
-    assert stats.away.pace_trend == "same"
+    assert ctx.away.adjo == 121.9
+    assert ctx.away.adjd == 101.0
+    assert ctx.away.adjt == 67.9
+    assert ctx.away.conference == "ACC"
+    assert ctx.away.pace_trend == "same"
     
-    assert stats.home.adjo == 120.2
-    assert stats.home.adjd == 98.7
-    assert stats.home.adjt == 71.2
-    assert stats.home.conference == "ACC"
-    assert stats.home.pace_trend == "faster"
+    assert ctx.home.adjo == 120.2
+    assert ctx.home.adjd == 98.7
+    assert ctx.home.adjt == 71.2
+    assert ctx.home.conference == "ACC"
+    assert ctx.home.pace_trend == "faster"
     
-    assert stats.market_total == 152.5
-    assert stats.market_spread_home == -4.5  # Should parse "virginia +4.5" as home -4.5
-    assert stats.is_neutral_site == False  # No "neutral site" in context
+    assert ctx.market_total == 152.5
+    assert ctx.market_spread_home == -4.5  # Should parse "virginia +4.5" as home -4.5
+    assert ctx.is_neutral_site is False  # No "neutral site" in context
     
-    # Step 2: Run the modeler engine with extracted stats
+    # Step 2: Run the modeler engine with context
     betting_lines = [
         {
             "bet_type": "spread",
@@ -129,12 +129,7 @@ def test_researcher_to_modeler_data_flow():
         }
     ]
     
-    model = calculate_game_model(
-        researcher_game_output,
-        stats,
-        betting_lines,
-        has_adv_stats=True
-    )
+    model = calculate_game_model(ctx, betting_lines, has_adv_stats=True)
     
     # Verify model output structure (raw output from calculate_game_model)
     assert "game_id" in model
@@ -198,13 +193,13 @@ def test_missing_conference_handles_gracefully():
         "context": []
     }
     
-    stats = _extract_game_stats(game_data)
-    assert stats is not None
-    assert stats.away.conference is None
-    assert stats.home.conference == "SEC"
+    ctx = GameContext.from_researcher_output(game_data)
+    assert ctx is not None
+    assert ctx.away.conference is None
+    assert ctx.home.conference == "SEC"
     
     # Should not crash with missing conference
-    model = calculate_game_model(game_data, stats, [], has_adv_stats=True)
+    model = calculate_game_model(ctx, [], has_adv_stats=True)
     assert model is not None
 
 
@@ -222,9 +217,9 @@ def test_neutral_site_detection():
         "context": ["Neutral site game at MSG"]
     }
     
-    stats = _extract_game_stats(game_data)
-    assert stats is not None
-    assert stats.is_neutral_site == True
+    ctx = GameContext.from_researcher_output(game_data)
+    assert ctx is not None
+    assert ctx.is_neutral_site is True
 
 
 def test_missing_pace_trend_handles_gracefully():
@@ -241,13 +236,13 @@ def test_missing_pace_trend_handles_gracefully():
         "context": []
     }
     
-    stats = _extract_game_stats(game_data)
-    assert stats is not None
-    assert stats.away.pace_trend is None
-    assert stats.home.pace_trend is None
+    ctx = GameContext.from_researcher_output(game_data)
+    assert ctx is not None
+    assert ctx.away.pace_trend is None
+    assert ctx.home.pace_trend is None
     
     # Should default to no trend adjustment
-    model = calculate_game_model(game_data, stats, [], has_adv_stats=True)
+    model = calculate_game_model(ctx, [], has_adv_stats=True)
     assert model is not None
 
 
@@ -265,13 +260,13 @@ def test_missing_market_data_handles_gracefully():
         "context": []
     }
     
-    stats = _extract_game_stats(game_data)
-    assert stats is not None
-    assert stats.market_total is None
-    assert stats.market_spread_home is None
+    ctx = GameContext.from_researcher_output(game_data)
+    assert ctx is not None
+    assert ctx.market_total is None
+    assert ctx.market_spread_home is None
     
     # Should use raw_total and continue without market calibration
-    model = calculate_game_model(game_data, stats, [], has_adv_stats=True)
+    model = calculate_game_model(ctx, [], has_adv_stats=True)
     assert model is not None
     assert "predictions" in model
 
@@ -291,11 +286,11 @@ def test_conference_mismatch_adjustment():
         "context": []
     }
     
-    stats = _extract_game_stats(game_data)
-    assert stats is not None
+    ctx = GameContext.from_researcher_output(game_data)
+    assert ctx is not None
     
     # Run calculation and check that mismatch adjustment is applied
-    model = calculate_game_model(game_data, stats, [], has_adv_stats=True)
+    model = calculate_game_model(ctx, [], has_adv_stats=True)
     assert model is not None
     
     # The mismatch adjustment should add +5.0 to the margin (favoring home)

@@ -7,6 +7,9 @@ from .agents_prompts import (
     PRESIDENT_PROMPT,
     RESEARCHER_BATCH_PROMPT,
     RESEARCHER_PROMPT,
+    build_picker_user_prompt,
+    build_president_user_prompt,
+    build_researcher_final_prompt,
 )
 from .email_prompts import (
     EMAIL_GENERATOR_RECAP_SYSTEM_PROMPT,
@@ -29,6 +32,9 @@ __all__ = [
     "PRESIDENT_PROMPT",
     "RESEARCHER_BATCH_PROMPT",
     "RESEARCHER_PROMPT",
+    "build_picker_user_prompt",
+    "build_president_user_prompt",
+    "build_researcher_final_prompt",
     "EMAIL_GENERATOR_RECAP_SYSTEM_PROMPT",
     "best_bet_summary_prompts",
     "daily_recap_prompts",

@@ -244,23 +244,3 @@ class AccuracyMetrics:
     ev_realized: float
     period_start: date
     period_end: date
-
-
-@dataclass
-class Conflict:
-    """Conflict between agents"""
-    conflict_type: str
-    description: str
-    involved_agents: List[str]
-    severity: str
-    created_at: datetime = field(default_factory=datetime.now)
-
-
-@dataclass
-class Resolution:
-    """Conflict resolution"""
-    resolution: str
-    decision: str
-    resolved_by: str
-    conflict_id: Optional[int] = None
-    created_at: datetime = field(default_factory=datetime.now)

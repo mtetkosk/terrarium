@@ -5,6 +5,8 @@ from unittest.mock import Mock, patch
 from datetime import date
 
 from src.agents.modeler import Modeler
+from src.agents.modeler_validation import validate_score_team_consistency
+from src.agents.modeler_engine import GameContext
 from src.data.models import BettingLine, BetType
 
 
@@ -86,6 +88,51 @@ class TestModelerUnit:
             if away_prob > 0 or home_prob > 0:
                 total = away_prob + home_prob
                 assert 0.9 <= total <= 1.1, f"Moneyline probs sum to {total}, expected ~1.0"
+
+    def test_validate_score_team_consistency_margin_mismatch(self):
+        """validate_score_team_consistency flags when margin != home_score - away_score."""
+        model = {
+            "game_id": "1",
+            "teams": {"away": "A", "home": "B", "away_id": 1, "home_id": 2},
+            "predictions": {
+                "scores": {"away": 70.0, "home": 78.0},
+                "margin": 5.0,
+                "win_probs": {"away": 0.4, "home": 0.6},
+            },
+        }
+        game_data = {
+            "teams": {"away": "A", "home": "B", "away_id": 1, "home_id": 2},
+            "adv": {"away": {"adjo": 100, "adjd": 100, "adjt": 68}, "home": {"adjo": 100, "adjd": 100, "adjt": 68}},
+            "recent": {"away": {}, "home": {}},
+            "context": [],
+        }
+        ctx = GameContext.from_researcher_output(game_data)
+        assert ctx is not None
+        result = validate_score_team_consistency(model, ctx, game_data)
+        assert result["valid"] is False
+        assert "MARGIN MISMATCH" in (result.get("warning") or "")
+
+    def test_validate_score_team_consistency_valid_model(self):
+        """validate_score_team_consistency passes when margin matches scores."""
+        model = {
+            "game_id": "1",
+            "teams": {"away": "A", "home": "B", "away_id": 1, "home_id": 2},
+            "predictions": {
+                "scores": {"away": 70.0, "home": 78.0},
+                "margin": 8.0,
+                "win_probs": {"away": 0.4, "home": 0.6},
+            },
+        }
+        game_data = {
+            "teams": {"away": "A", "home": "B", "away_id": 1, "home_id": 2},
+            "adv": {"away": {"adjo": 100, "adjd": 100, "adjt": 68}, "home": {"adjo": 100, "adjd": 100, "adjt": 68}},
+            "recent": {"away": {}, "home": {}},
+            "context": [],
+        }
+        ctx = GameContext.from_researcher_output(game_data)
+        assert ctx is not None
+        result = validate_score_team_consistency(model, ctx, game_data)
+        assert result["valid"] is True
 
 
 @pytest.mark.integration
