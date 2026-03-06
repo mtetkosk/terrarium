@@ -1,6 +1,4 @@
-"""
-Prompts for agents in the multi-agent sports betting system.
-"""
+"""Agent prompts for the multi-agent sports betting system."""
 
 PLANNING_AGENT_PROMPT = """
 You are the PLANNING AGENT for a multi-agent sports betting system.
@@ -345,7 +343,8 @@ Be neutral and factual.
 If data cannot be found, state so in dq array.
 """
 
-RESEARCHER_BATCH_PROMPT = """Research the following {num_games} games and return JSON with insights for ALL games.
+RESEARCHER_BATCH_PROMPT = """
+Research the following {num_games} games and return JSON with insights for ALL games.
 
 === CRITICAL BATCH REQUIREMENTS ===
 - Response MUST contain a games[] array covering ALL {num_games} game_ids from the input data.
@@ -584,7 +583,6 @@ Provide:
 
 Do not restate JSON; summarize the rationale plainly.
 """
-
 
 PICKER_PROMPT = """
 You are the PICKER agent: the decision-making specialist.

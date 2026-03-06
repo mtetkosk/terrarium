@@ -1,9 +1,9 @@
+"""Prompts for scrapers (e.g. KenPom team name matching)."""
+
 import json
 from typing import List, Tuple
 
-
-def kenpom_match_prompts(team_name: str, available_teams: List[str]) -> Tuple[str, str]:
-    system_prompt = """You are a helper that matches team names to KenPom team names.
+KENPOM_MATCH_SYSTEM = """You are a helper that matches team names to KenPom team names.
 
 Given a team name and a list of available KenPom team names, find the best match.
 Team names may vary (e.g., "Rice Owls" might match "Rice", "Tennessee Volunteers" might match "Tennessee").
@@ -21,15 +21,21 @@ These are DIFFERENT teams - do NOT mix them up!
 
 Return JSON: {"matched_team": "exact name from list" or null}"""
 
-    user_prompt = f"""Team to match: "{team_name}"
+KENPOM_MATCH_USER = """Team to match: "{team_name}"
 
 Available KenPom teams (first 100):
-{json.dumps(available_teams[:100], indent=2)}
+{available_teams_json}
 
 Find the best match for "{team_name}". Return only the exact name from the list, or null if no good match."""
 
+
+def kenpom_match_prompts(team_name: str, available_teams: List[str]) -> Tuple[str, str]:
+    system_prompt = KENPOM_MATCH_SYSTEM
+    user_prompt = KENPOM_MATCH_USER.format(
+        team_name=team_name,
+        available_teams_json=json.dumps(available_teams[:100], indent=2),
+    )
     return system_prompt, user_prompt
 
 
 __all__ = ["kenpom_match_prompts"]
-
