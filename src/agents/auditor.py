@@ -8,6 +8,8 @@ from src.data.models import (
     Bet, Pick, DailyReport, AccuracyMetrics, BetResult, BetType
 )
 from src.data.storage import Database, BetModel, PickModel, DailyReportModel, GameModel
+from src.prompts import AUDITOR_PROMPT, build_auditor_user_prompt
+from src.utils.json_schemas import get_auditor_schema
 from sqlalchemy import func
 from src.utils.logging import get_logger
 from collections import defaultdict
@@ -18,9 +20,13 @@ logger = get_logger("agents.auditor")
 class Auditor(BaseAgent):
     """Auditor agent for performance tracking"""
     
-    def __init__(self, db: Optional[Database] = None):
+    def __init__(self, db: Optional[Database] = None, llm_client=None):
         """Initialize Auditor agent"""
-        super().__init__("Auditor", db)
+        super().__init__("Auditor", db, llm_client)
+    
+    def _get_system_prompt(self) -> str:
+        """Get system prompt for Auditor"""
+        return AUDITOR_PROMPT
     
     def process(self, target_date: Optional[date] = None) -> DailyReport:
         """Review previous day's results and generate comprehensive report"""
@@ -182,18 +188,32 @@ class Auditor(BaseAgent):
             win_rate = wins / total_picks if total_picks > 0 else 0.0
             roi = (profit_loss / total_wagered * 100) if total_wagered > 0 else 0.0
             
-            # Generate insights
-            insights = self._generate_insights(
-                winning_picks, losing_picks, parlay_results,
-                bet_type_performance, confidence_analysis, ev_analysis,
-                win_rate, roi, profit_loss
-            )
+            # Build metrics for LLM (no ORM objects)
+            metrics = {
+                "report_date": report_date.isoformat(),
+                "review_date": review_date.isoformat(),
+                "total_picks": total_picks,
+                "wins": wins,
+                "losses": losses,
+                "pushes": pushes,
+                "win_rate": round(win_rate, 4),
+                "total_wagered": round(total_wagered, 2),
+                "total_payout": round(total_payout, 2),
+                "profit_loss": round(profit_loss, 2),
+                "roi": round(roi, 2),
+                "accuracy_metrics": accuracy_metrics,
+                "bet_type_performance": dict(bet_type_performance),
+                "confidence_analysis": confidence_analysis,
+                "winning_picks_count": len(winning_picks),
+                "losing_picks_count": len(losing_picks),
+                "parlay_results": parlay_results,
+                "ev_analysis": {
+                    "winners_count": len(ev_analysis["winners"]),
+                    "losers_count": len(ev_analysis["losers"]),
+                },
+            }
             
-            # Generate recommendations
-            recommendations = self._generate_recommendations(
-                insights, win_rate, roi, profit_loss, accuracy_metrics,
-                bet_type_performance, confidence_analysis
-            )
+            insights, recommendations = self._get_insights_and_recommendations(metrics)
             
             report = DailyReport(
                 date=report_date,
@@ -451,201 +471,41 @@ class Auditor(BaseAgent):
         
         return metrics
     
-    def _generate_insights(
-        self,
-        winning_picks: List[Dict],
-        losing_picks: List[Dict],
-        parlay_results: List[Dict],
-        bet_type_performance: Dict,
-        confidence_analysis: Dict,
-        ev_analysis: Dict,
-        win_rate: float,
-        roi: float,
-        profit_loss: float
-    ) -> Dict[str, Any]:
-        """Generate insights about what went well and what needs improvement"""
-        insights = {
-            'what_went_well': [],
-            'what_needs_improvement': [],
-            'key_findings': {}
+    def _get_insights_and_recommendations(self, metrics: Dict[str, Any]) -> tuple:
+        """Call LLM to generate insights and recommendations; fallback to minimal output on failure."""
+        fallback_insights = {
+            "what_went_well": [],
+            "what_needs_improvement": ["LLM analysis unavailable. Review metrics manually."],
+            "key_findings": {},
         }
+        fallback_recommendations = ["LLM analysis unavailable. Review metrics manually."]
         
-        # What went well
-        if profit_loss > 0:
-            insights['what_went_well'].append(f"Profitable day: +${profit_loss:.2f} ({roi:.1f}% ROI)")
+        if not self.system_prompt:
+            return fallback_insights, fallback_recommendations
         
-        if win_rate >= 0.55:
-            insights['what_went_well'].append(f"Strong win rate: {win_rate:.1%}")
-        
-        # Analyze winning picks
-        if winning_picks:
-            avg_win_profit = sum(w['profit'] for w in winning_picks) / len(winning_picks)
-            best_win = max(winning_picks, key=lambda x: x['profit'])
-            insights['what_went_well'].append(
-                f"Average win profit: ${avg_win_profit:.2f}. Best win: ${best_win['profit']:.2f}"
+        try:
+            user_prompt = build_auditor_user_prompt(metrics)
+            response = self.call_llm(
+                user_prompt=user_prompt,
+                input_data=None,
+                temperature=0.4,
+                parse_json=True,
+                response_format=get_auditor_schema(),
             )
-        
-        # Bet type performance
-        for bet_type, perf in bet_type_performance.items():
-            if perf['wins'] + perf['losses'] > 0:
-                bt_win_rate = perf['wins'] / (perf['wins'] + perf['losses'])
-                if bt_win_rate >= 0.6:
-                    insights['what_went_well'].append(
-                        f"{bet_type.upper()} bets performing well: {bt_win_rate:.1%} win rate"
-                    )
-        
-        # Confidence analysis
-        high_conf_total = confidence_analysis['high']['wins'] + confidence_analysis['high']['losses']
-        if high_conf_total > 0:
-            high_conf_win_rate = confidence_analysis['high']['wins'] / high_conf_total
-            if high_conf_win_rate >= 0.6:
-                insights['what_went_well'].append(
-                    f"High-confidence picks delivering: {high_conf_win_rate:.1%} win rate"
-                )
-        
-        # Parlay results
-        if parlay_results:
-            parlay_wins = sum(1 for p in parlay_results if p['result'] == 'win')
-            if parlay_wins > 0:
-                insights['what_went_well'].append(
-                    f"Parlays hit! {parlay_wins}/{len(parlay_results)} parlays won"
-                )
-        
-        # What needs improvement
-        if profit_loss < 0:
-            insights['what_needs_improvement'].append(
-                f"Lost ${abs(profit_loss):.2f} ({roi:.1f}% ROI). Need to review strategy."
-            )
-        
-        if win_rate < 0.45:
-            insights['what_needs_improvement'].append(
-                f"Low win rate: {win_rate:.1%}. Consider raising EV threshold or improving model."
-            )
-        
-        # Analyze losing picks
-        if losing_picks:
-            avg_loss = sum(l['loss'] for l in losing_picks) / len(losing_picks)
-            worst_loss = max(losing_picks, key=lambda x: x['loss'])
-            insights['what_needs_improvement'].append(
-                f"Average loss: ${avg_loss:.2f}. Largest loss: ${worst_loss['loss']:.2f}"
-            )
-        
-        # EV efficiency
-        if ev_analysis['winners'] and ev_analysis['losers']:
-            avg_expected_ev = sum(e['expected'] for e in ev_analysis['winners'] + ev_analysis['losers']) / len(ev_analysis['winners'] + ev_analysis['losers'])
-            if avg_expected_ev > 0.1 and roi < 0:
-                insights['what_needs_improvement'].append(
-                    "High expected EV but negative ROI - model may be overestimating win probability"
-                )
-        
-        # Bet type weaknesses
-        for bet_type, perf in bet_type_performance.items():
-            if perf['wins'] + perf['losses'] > 0:
-                bt_win_rate = perf['wins'] / (perf['wins'] + perf['losses'])
-                if bt_win_rate < 0.4:
-                    insights['what_needs_improvement'].append(
-                        f"{bet_type.upper()} bets struggling: {bt_win_rate:.1%} win rate - consider avoiding"
-                    )
-        
-        # Confidence issues
-        high_conf_total = confidence_analysis['high']['wins'] + confidence_analysis['high']['losses']
-        if high_conf_total > 0:
-            high_conf_win_rate = confidence_analysis['high']['wins'] / high_conf_total
-            if high_conf_win_rate < 0.5:
-                insights['what_needs_improvement'].append(
-                    "High-confidence picks underperforming - may be overconfident"
-                )
-        
-        # Key findings
-        insights['key_findings'] = {
-            'best_bet_type': max(bet_type_performance.items(), 
-                               key=lambda x: x[1]['wins'] / (x[1]['wins'] + x[1]['losses']) if (x[1]['wins'] + x[1]['losses']) > 0 else 0)[0] if bet_type_performance else None,
-            'worst_bet_type': min(bet_type_performance.items(),
-                                key=lambda x: x[1]['wins'] / (x[1]['wins'] + x[1]['losses']) if (x[1]['wins'] + x[1]['losses']) > 0 else 1)[0] if bet_type_performance else None,
-            'parlay_performance': f"{sum(1 for p in parlay_results if p['result'] == 'win')}/{len(parlay_results)}" if parlay_results else "N/A",
-            'confidence_accuracy': {
-                'high': confidence_analysis['high']['wins'] / (confidence_analysis['high']['wins'] + confidence_analysis['high']['losses']) if (confidence_analysis['high']['wins'] + confidence_analysis['high']['losses']) > 0 else 0,
-                'medium': confidence_analysis['medium']['wins'] / (confidence_analysis['medium']['wins'] + confidence_analysis['medium']['losses']) if (confidence_analysis['medium']['wins'] + confidence_analysis['medium']['losses']) > 0 else 0,
-                'low': confidence_analysis['low']['wins'] / (confidence_analysis['low']['wins'] + confidence_analysis['low']['losses']) if (confidence_analysis['low']['wins'] + confidence_analysis['low']['losses']) > 0 else 0,
-            }
-        }
-        
-        return insights
-    
-    def _generate_recommendations(
-        self,
-        insights: Dict[str, Any],
-        win_rate: float,
-        roi: float,
-        profit_loss: float,
-        accuracy_metrics: Dict[str, float],
-        bet_type_performance: Dict,
-        confidence_analysis: Dict
-    ) -> List[str]:
-        """Generate actionable recommendations"""
-        recommendations = []
-        
-        # ROI-based recommendations
-        if roi < -10:
-            recommendations.append("URGENT: ROI below -10%. Consider pausing betting until model is reviewed.")
-        elif roi < -5:
-            recommendations.append("ROI below -5%. Review model accuracy and consider raising EV threshold.")
-        elif roi > 10:
-            recommendations.append("Strong ROI! Consider slightly increasing exposure if bankroll allows.")
-        
-        # Win rate recommendations
-        if win_rate < 0.40:
-            recommendations.append("Win rate below 40%. Strongly consider raising minimum EV threshold to 0.08+.")
-        elif win_rate < 0.45:
-            recommendations.append("Win rate below 45%. Consider raising minimum EV threshold to 0.06+.")
-        elif win_rate > 0.60:
-            recommendations.append("Excellent win rate! Current strategy is working well.")
-        
-        # Bet type recommendations
-        for bet_type, perf in bet_type_performance.items():
-            if perf['wins'] + perf['losses'] > 2:  # Need at least 3 bets for meaningful analysis
-                bt_win_rate = perf['wins'] / (perf['wins'] + perf['losses'])
-                if bt_win_rate < 0.35:
-                    recommendations.append(
-                        f"Consider reducing {bet_type.upper()} bets - only {bt_win_rate:.1%} win rate"
-                    )
-                elif bt_win_rate > 0.65:
-                    recommendations.append(
-                        f"{bet_type.upper()} bets performing well ({bt_win_rate:.1%} win rate) - consider prioritizing"
-                    )
-        
-        # Confidence recommendations
-        high_conf_total = confidence_analysis['high']['wins'] + confidence_analysis['high']['losses']
-        if high_conf_total > 0:
-            high_conf_win_rate = confidence_analysis['high']['wins'] / high_conf_total
-            if high_conf_win_rate < 0.5:
-                recommendations.append(
-                    "High-confidence picks underperforming. Review confidence calculation or model calibration."
-                )
-        
-        # EV efficiency recommendations
-        if 'ev_efficiency' in accuracy_metrics:
-            ev_eff = accuracy_metrics['ev_efficiency']
-            if ev_eff < 0.5:
-                recommendations.append(
-                    f"EV efficiency low ({ev_eff:.2f}). Model may be overestimating win probabilities."
-                )
-            elif ev_eff > 1.2:
-                recommendations.append(
-                    f"EV efficiency high ({ev_eff:.2f}). Model is performing well - consider being more aggressive."
-                )
-        
-        # Bankroll recommendations
-        if profit_loss < -20:
-            recommendations.append("Significant losses. Ensure bankroll management is conservative.")
-        elif profit_loss > 20:
-            recommendations.append("Strong profits. Bankroll is growing - maintain current strategy.")
-        
-        # Default if no specific issues
-        if not recommendations:
-            recommendations.append("Performance is within acceptable ranges. Continue current strategy.")
-        
-        return recommendations
+            insights = response.get("insights") or fallback_insights
+            recommendations = response.get("recommendations")
+            if not isinstance(recommendations, list):
+                recommendations = fallback_recommendations
+            if not isinstance(insights, dict):
+                insights = fallback_insights
+            else:
+                insights.setdefault("what_went_well", [])
+                insights.setdefault("what_needs_improvement", [])
+                insights.setdefault("key_findings", {})
+            return insights, recommendations
+        except Exception as e:
+            self.log_error(f"Auditor LLM call failed: {e}", exc_info=True)
+            return fallback_insights, fallback_recommendations
     
     def _save_report(self, report: DailyReport) -> None:
         """Save daily report to database"""

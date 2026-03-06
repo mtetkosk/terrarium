@@ -337,7 +337,7 @@ def get_president_schema() -> dict:
 
 
 def get_auditor_schema() -> dict:
-    """Get JSON schema for Auditor agent response"""
+    """Get JSON schema for Auditor agent response (daily report: insights + recommendations)."""
     return {
         "type": "json_schema",
         "json_schema": {
@@ -345,55 +345,33 @@ def get_auditor_schema() -> dict:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "period_summary": {
+                    "insights": {
                         "type": "object",
                         "properties": {
-                            "start_date": {"type": "string"},
-                            "end_date": {"type": "string"},
-                            "num_bets": {"type": "integer"},
-                            "units_won_or_lost": {"type": "number"},
-                            "roi": {"type": "number"},
-                            "hit_rate": {"type": "number"},
-                            "max_drawdown_units": {"type": "number"},
-                            "notes": {"type": "string"}
-                        }
+                            "what_went_well": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of positive observations"
+                            },
+                            "what_needs_improvement": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of areas to improve"
+                            },
+                            "key_findings": {
+                                "type": "object",
+                                "description": "Optional summary (e.g. best_bet_type, worst_bet_type, parlay_performance, confidence_accuracy)"
+                            }
+                        },
+                        "required": ["what_went_well", "what_needs_improvement"]
                     },
-                    "bet_level_analysis": {
+                    "recommendations": {
                         "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "game_id": {"type": "string"},
-                                "selection": {"type": "string"},
-                                "odds": {"type": "string"},
-                                "units": {"type": "number"},
-                                "result": {"type": "string"},
-                                "units_result": {"type": "number"},
-                                "edge_estimate": {"type": "number"},
-                                "confidence": {"type": "number"},
-                                "was_result_consistent_with_model": {"type": "boolean"},
-                                "post_hoc_notes": {"type": "string"}
-                            }
-                        }
-                    },
-                    "diagnostics_and_recommendations": {
-                        "type": "object",
-                        "properties": {
-                            "modeler": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            },
-                            "picker": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            },
-                            "president": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            }
-                        }
+                        "items": {"type": "string"},
+                        "description": "Actionable recommendations for the operator"
                     }
-                }
+                },
+                "required": ["insights", "recommendations"]
             }
         }
     }
