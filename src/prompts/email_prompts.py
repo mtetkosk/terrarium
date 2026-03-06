@@ -1,3 +1,5 @@
+"""Email generator prompts: recap, slate overview, watch blurbs, best bet summary, highlights."""
+
 from datetime import date
 import json
 from typing import Any, Dict, List, Optional, Tuple
@@ -22,12 +24,7 @@ CRITICAL RULES:
 - Do NOT mention units, profit, loss, P&L, dollar amounts, wins, losses, or accuracy percentages
 - Keep it to highlights only - no overall performance summary, no analysis of what went well/badly"""
 
-
-def slate_overview_prompts(slate_data: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any]]:
-    """
-    Returns (system_prompt, user_prompt, json_schema) for structured JSON output
-    """
-    system_prompt = """You are a plugged-in college hoops fan and casual analyst providing a brief, fun slate overview with personality.
+SLATE_OVERVIEW_SYSTEM = """You are a plugged-in college hoops fan and casual analyst providing a brief, fun slate overview with personality.
 
 Your task: Generate two things:
 1. A catchy nickname for today's slate (2-4 words, like "Midweek Madness", "The Grind", "Chaos Night", etc.)
@@ -54,8 +51,8 @@ Guidelines for the nickname:
 
 Output must be valid JSON only."""
 
-    user_prompt = f"""Today's slate data:
-{json.dumps(slate_data, indent=2)}
+SLATE_OVERVIEW_USER = """Today's slate data:
+{slate_data_json}
 
 Generate a fun overview of today's slate. Output valid JSON only with two fields:
 1. "nickname": A catchy 2-4 word name for today's slate
@@ -65,29 +62,7 @@ Make sure the nickname and description align with the same vibe/energy level.
 
 CRITICAL: Do NOT use the word "weird" or phrases like "get weird", "things could get weird", etc. in your description. Be more specific and creative instead. Vary your descriptions - don't fall into repetitive patterns just because there are low-major teams."""
 
-    json_schema = {
-        "type": "object",
-        "properties": {
-            "nickname": {
-                "type": "string",
-                "description": "A catchy 2-4 word nickname for today's slate"
-            },
-            "description": {
-                "type": "string",
-                "description": "1-2 sentences describing today's slate in a conversational way"
-            }
-        },
-        "required": ["nickname", "description"]
-    }
-
-    return system_prompt, user_prompt, json_schema
-
-
-def watch_blurbs_prompts(games_json: str) -> Tuple[str, str, Dict[str, Any]]:
-    """
-    Returns (system_prompt, user_prompt, json_schema) for structured JSON output
-    """
-    system_prompt = """You are a sharp, punchy sports writer selecting the most exciting games to watch for a daily betting email newsletter.
+WATCH_BLURBS_SYSTEM = """You are a sharp, punchy sports writer selecting the most exciting games to watch for a daily betting email newsletter.
 
 Your task: Select the 3 most exciting/compelling games from the list and write a snappy, high-energy blurb (1-2 sentences, max 120 characters) for each.
 
@@ -111,7 +86,7 @@ CRITICAL:
 - In your output, always refer to games by their `game_id` from the input JSON (do NOT invent new IDs).
 - Your output MUST be valid JSON only."""
 
-    user_prompt = f"""You are given today's slate of games as a JSON array. Each game has:
+WATCH_BLURBS_USER = """You are given today's slate of games as a JSON array. Each game has:
 - game_id (integer)
 - matchup (string)
 - venue, rankings, rivalry flag, projected totals/spread, and notes
@@ -134,45 +109,7 @@ Output format (valid JSON only, no extra text):
   ]
 }}"""
 
-    # JSON schema for structured output
-    # Note: Gemini Schema proto doesn't support minItems/maxItems, so we enforce in prompt
-    json_schema = {
-        "type": "object",
-        "properties": {
-            "games": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "game_id": {
-                            "type": "integer",
-                            "description": "The game_id from the input games JSON"
-                        },
-                        "matchup": {
-                            "type": "string",
-                            "description": "Optional: matchup in format 'Team A @ Team B'"
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "A punchy, engaging 1-2 sentence description (max 120 characters) explaining why this game is worth watching"
-                        },
-                        "blurb": {
-                            "type": "string",
-                            "description": "Optional alternative field name for description"
-                        }
-                    },
-                    "required": ["game_id", "description"]
-                }
-            }
-        },
-        "required": ["games"]
-    }
-
-    return system_prompt, user_prompt, json_schema
-
-
-def watch_description_prompts(matchup: str, context: str) -> Tuple[str, str]:
-    system_prompt = """You are a sports writer creating engaging, concise descriptions for "Best Games to Watch" in a daily betting email newsletter.
+WATCH_DESCRIPTION_SYSTEM = """You are a sports writer creating engaging, concise descriptions for "Best Games to Watch" in a daily betting email newsletter.
 
 Your task: Write a 1-2 sentence description (max 150 characters) that explains why this game is worth watching. Be specific, engaging, and avoid generic phrases like "high-scoring affair" or "nail-biter" unless truly exceptional.
 
@@ -187,7 +124,7 @@ Avoid:
 - Overusing "projected" or "expected"
 """
 
-    user_prompt = f"""Write a compelling 1-2 sentence description for why viewers should watch this game:
+WATCH_DESCRIPTION_USER = """Write a compelling 1-2 sentence description for why viewers should watch this game:
 
 Matchup: {matchup}
 
@@ -196,11 +133,7 @@ Context:
 
 Make it unique, specific, and exciting. Focus on what makes THIS game special."""
 
-    return system_prompt, user_prompt
-
-
-def best_bet_summary_prompts(matchup: str, selection: str, cleaned_rationale: str) -> Tuple[str, str]:
-    system_prompt = """You are a sports betting analyst creating concise summaries for best bets in an email newsletter.
+BEST_BET_SUMMARY_SYSTEM = """You are a sports betting analyst creating concise summaries for best bets in an email newsletter.
 
 Your task: Take a detailed betting rationale and create a concise 1-2 bullet point summary (max 150 characters total) that explains:
 - The key value proposition (why this bet has edge)
@@ -208,7 +141,7 @@ Your task: Take a detailed betting rationale and create a concise 1-2 bullet poi
 
 Format as 1-2 short bullet points. Be specific and avoid generic language."""
 
-    user_prompt = f"""Summarize this betting rationale into 1-2 concise bullet points:
+BEST_BET_SUMMARY_USER = """Summarize this betting rationale into 1-2 concise bullet points:
 
 Matchup: {matchup}
 Selection: {selection}
@@ -218,11 +151,7 @@ Full Rationale:
 
 Create a brief, engaging summary that captures the key value proposition."""
 
-    return system_prompt, user_prompt
-
-
-def highlights_prompts(games_text: str) -> Tuple[str, str]:
-    system_prompt = """You are a sports analyst identifying the most interesting highlights from yesterday's college basketball games.
+HIGHLIGHTS_SYSTEM = """You are a sports analyst identifying the most interesting highlights from yesterday's college basketball games.
 
 Your task: Analyze the game results and identify 2-4 of the most interesting highlights. Focus on:
 
@@ -247,23 +176,99 @@ For each highlight, write a concise, engaging description (max 80 characters) in
 "Team Name description - Final Score"
 
 Output format (JSON):
-{
+{{
   "highlights": [
-    {
+    {{
       "category": "Biggest Underdog Win" | "Biggest Blowout" | "Highest Scoring Game" | "Lowest Scoring Game" | "Most Exciting Game",
       "game_id": "matchup identifier (e.g. 'UNLV @ Stanford')",
       "description": "Your engaging description here"
-    },
+    }},
     ...
   ]
-}"""
+}}"""
 
-    user_prompt = f"""Analyze these game results from yesterday and identify 2-4 interesting highlights:
+HIGHLIGHTS_USER = """Analyze these game results from yesterday and identify 2-4 interesting highlights:
 
 {games_text}
 
 Return the highlights in JSON format."""
 
+DAILY_RECAP_USER = """Generate a daily betting recap for {recap_date}.
+
+Results Summary:
+{results_summary_block}
+
+Notable Games (with predictions):
+{games_block}
+
+{modeler_block}
+
+IMPORTANT: Each game listed above shows the full matchup (both team names). When writing about notable games in your recap, you MUST use the complete matchup format "Team A vs. Team B" - never use "[opponent]" or omit team names. Always include both team names when discussing any game.
+
+Write a compelling recap that highlights the key moments and performance. When discussing notable games, ALWAYS mention the full matchup (both teams), what we predicted, and what actually happened. Do NOT mention units, profit, loss, P&L, or dollar amounts."""
+
+
+def slate_overview_prompts(slate_data: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any]]:
+    """Returns (system_prompt, user_prompt, json_schema) for structured JSON output."""
+    user_prompt = SLATE_OVERVIEW_USER.format(slate_data_json=json.dumps(slate_data, indent=2))
+    json_schema = {
+        "type": "object",
+        "properties": {
+            "nickname": {"type": "string", "description": "A catchy 2-4 word nickname for today's slate"},
+            "description": {"type": "string", "description": "1-2 sentences describing today's slate in a conversational way"},
+        },
+        "required": ["nickname", "description"],
+    }
+    return SLATE_OVERVIEW_SYSTEM, user_prompt, json_schema
+
+
+def watch_blurbs_prompts(games_json: str) -> Tuple[str, str, Dict[str, Any]]:
+    """Returns (system_prompt, user_prompt, json_schema) for structured JSON output."""
+    user_prompt = WATCH_BLURBS_USER.format(games_json=games_json)
+    json_schema = {
+        "type": "object",
+        "properties": {
+            "games": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "game_id": {"type": "integer", "description": "The game_id from the input games JSON"},
+                        "matchup": {"type": "string", "description": "Optional: matchup in format 'Team A @ Team B'"},
+                        "description": {
+                            "type": "string",
+                            "description": "A punchy, engaging 1-2 sentence description (max 120 characters) explaining why this game is worth watching",
+                        },
+                        "blurb": {"type": "string", "description": "Optional alternative field name for description"},
+                    },
+                    "required": ["game_id", "description"],
+                },
+            }
+        },
+        "required": ["games"],
+    }
+    return WATCH_BLURBS_SYSTEM, user_prompt, json_schema
+
+
+def watch_description_prompts(matchup: str, context: str) -> Tuple[str, str]:
+    system_prompt = WATCH_DESCRIPTION_SYSTEM
+    user_prompt = WATCH_DESCRIPTION_USER.format(matchup=matchup, context=context)
+    return system_prompt, user_prompt
+
+
+def best_bet_summary_prompts(matchup: str, selection: str, cleaned_rationale: str) -> Tuple[str, str]:
+    system_prompt = BEST_BET_SUMMARY_SYSTEM
+    user_prompt = BEST_BET_SUMMARY_USER.format(
+        matchup=matchup,
+        selection=selection,
+        cleaned_rationale=cleaned_rationale,
+    )
+    return system_prompt, user_prompt
+
+
+def highlights_prompts(games_text: str) -> Tuple[str, str]:
+    system_prompt = HIGHLIGHTS_SYSTEM
+    user_prompt = HIGHLIGHTS_USER.format(games_text=games_text)
     return system_prompt, user_prompt
 
 
@@ -275,25 +280,19 @@ def daily_recap_prompts(
 ) -> Tuple[str, str]:
     games_block = "\n".join(games_text)
     modeler_block = f"Modeler Predictions Context:\n{modeler_stash[:2000]}" if modeler_stash else ""
-
-    user_prompt = f"""Generate a daily betting recap for {recap_date.isoformat()}.
-
-Results Summary:
-- Total Picks: {results_summary['total_picks']}
-- Wins: {results_summary['wins']}
-- Losses: {results_summary['losses']}
-- Pushes: {results_summary['pushes']}
-- Accuracy: {results_summary['accuracy']:.1f}%
-
-Notable Games (with predictions):
-{games_block}
-
-{modeler_block}
-
-IMPORTANT: Each game listed above shows the full matchup (both team names). When writing about notable games in your recap, you MUST use the complete matchup format "Team A vs. Team B" - never use "[opponent]" or omit team names. Always include both team names when discussing any game.
-
-Write a compelling recap that highlights the key moments and performance. When discussing notable games, ALWAYS mention the full matchup (both teams), what we predicted, and what actually happened. Do NOT mention units, profit, loss, P&L, or dollar amounts."""
-
+    results_summary_block = (
+        f"- Total Picks: {results_summary['total_picks']}\n"
+        f"- Wins: {results_summary['wins']}\n"
+        f"- Losses: {results_summary['losses']}\n"
+        f"- Pushes: {results_summary['pushes']}\n"
+        f"- Accuracy: {results_summary['accuracy']:.1f}%"
+    )
+    user_prompt = DAILY_RECAP_USER.format(
+        recap_date=recap_date.isoformat(),
+        results_summary_block=results_summary_block,
+        games_block=games_block,
+        modeler_block=modeler_block,
+    )
     return EMAIL_GENERATOR_RECAP_SYSTEM_PROMPT, user_prompt
 
 
@@ -306,4 +305,3 @@ __all__ = [
     "watch_blurbs_prompts",
     "watch_description_prompts",
 ]
-
