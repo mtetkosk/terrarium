@@ -256,6 +256,13 @@ Be neutral and factual.
 If data cannot be found, state so in dq array.
 """
 
+RESEARCHER_NCAA_TOURNAMENT_BLOCK = """
+=== NCAA TOURNAMENT SLATE (when slate_context indicates NCAA Tournament) ===
+- Assume all games on this slate are at neutral sites unless your web search shows otherwise. Confirm neutral site per game as usual.
+- In context, include a note such as "NCAA Tournament (Round of 64)" or the appropriate round from slate_context.
+- Consider and optionally note in context or dq: single-elimination pressure, short rest between rounds, tournament experience, and any round-specific narratives that could affect play.
+"""
+
 RESEARCHER_BATCH_PROMPT = """
 Research the following {num_games} games and return JSON with insights for ALL games.
 
@@ -276,6 +283,9 @@ MODELER_PROMPT = """
 You are the MODELER agent: A quantitative predictive engine for NCAA Basketball.
 
 Your Goal: Generate independent, mathematically rigorous game models. You are the "Raw Signal" generator.
+
+=== NCAA TOURNAMENT SLATES ===
+When the slate is NCAA Tournament: all games are neutral site (HCA is already 0 in the model). You may use your judgment on whether single-elimination or tournament variance should affect your confidence or model_notes; the core math (pace, efficiency, totals) is unchanged.
 You do NOT pick bets. You only output projections + calibrated probabilities.
 
 ================================================================================
@@ -600,10 +610,11 @@ Provide clear, detailed justification for each pick that explains:
 - How historical performance patterns informed this selection"""
 
 
-def build_picker_user_prompt(historical_performance, serializable_input_data):
+def build_picker_user_prompt(historical_performance, serializable_input_data, slate_context=None):
     """Build the full Picker user prompt with optional historical context and input JSON.
 
     Caller must pass already JSON-serializable input (e.g. via _make_json_serializable).
+    When slate_context indicates NCAA Tournament, appends guidance for tournament slates.
     """
     import json
 
@@ -622,6 +633,8 @@ def build_picker_user_prompt(historical_performance, serializable_input_data):
             recent_recommendations=hp.get("recent_recommendations", []),
         )
     user_prompt = PICKER_USER_INSTRUCTIONS.format(historical_context=historical_context)
+    if slate_context and "NCAA Tournament" in (slate_context or ""):
+        user_prompt += "\n\nThis slate includes NCAA Tournament games. Consider single-elimination and typically higher variance when setting confidence and edge thresholds; use your judgment."
     return f"""{user_prompt}
 
 Input data:
@@ -696,8 +709,11 @@ CRITICAL REQUIREMENTS:
 Provide your response in the specified JSON format with approved_picks (all picks with units and best_bet flags) and daily_report_summary."""
 
 
-def build_president_user_prompt(auditor_feedback):
-    """Build the full President user prompt with optional auditor/historical context."""
+def build_president_user_prompt(auditor_feedback, slate_context=None):
+    """Build the full President user prompt with optional auditor/historical context.
+
+    When slate_context indicates NCAA Tournament, appends guidance for tournament slates.
+    """
     historical_context = ""
     if auditor_feedback:
         hp = auditor_feedback
@@ -713,7 +729,10 @@ def build_president_user_prompt(auditor_feedback):
             recent_recommendations=hp.get("recent_recommendations", []),
             daily_summaries=hp.get("daily_summaries", []),
         )
-    return PRESIDENT_USER_PROMPT_TEMPLATE.format(historical_context=historical_context)
+    prompt = PRESIDENT_USER_PROMPT_TEMPLATE.format(historical_context=historical_context)
+    if slate_context and "NCAA Tournament" in (slate_context or ""):
+        prompt += "\n\nToday's slate is NCAA Tournament. Consider whether to apply slightly more conservative unit sizing or to note tournament variance in strategic_notes; use your judgment."
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +765,7 @@ __all__ = [
     "PLANNING_AGENT_PROMPT",
     "PRESIDENT_PROMPT",
     "RESEARCHER_PROMPT",
+    "RESEARCHER_NCAA_TOURNAMENT_BLOCK",
     "RESEARCHER_BATCH_PROMPT",
     "MODELER_PROMPT",
     "MODEL_NOTES_PROMPT",

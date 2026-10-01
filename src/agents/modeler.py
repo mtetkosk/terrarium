@@ -209,7 +209,8 @@ class Modeler(BaseAgent):
         betting_lines: Optional[List] = None,
         historical_data: Optional[Dict[str, Any]] = None,
         target_date: Optional[date] = None,
-        force_refresh: bool = False
+        force_refresh: bool = False,
+        slate_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate predictions using LLM with batch processing
@@ -220,6 +221,7 @@ class Modeler(BaseAgent):
             historical_data: Optional historical performance data
             target_date: Target date for predictions
             force_refresh: Force refresh even if cached
+            slate_context: Optional context string for slate type (e.g., tournament round)
             
         Returns:
             LLM response with predictions and edge estimates
@@ -321,13 +323,16 @@ class Modeler(BaseAgent):
         game: Dict[str, Any],
         batch_lines: List[Dict[str, Any]],
         game_ctx: GameContext,
+        used_defaults: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Process a single game: run model, attach notes, transform format, validate. Returns model dict or None on error."""
         game_id = game.get("game_id")
         game_lines = [line for line in batch_lines if str(line.get("game_id")) == str(game_id)]
         try:
-            model = calculate_game_model(game_ctx, game_lines, has_adv_stats=True)
+            model = calculate_game_model(game_ctx, game_lines, has_adv_stats=not used_defaults)
             model["model_notes"] = self._generate_model_notes(game_ctx, model)
+            if used_defaults:
+                model["model_notes"] = "Minimal/default stats used (research data unavailable). " + (model.get("model_notes") or "")
             self._transform_predictions_format(model)
             validation_result = validate_score_team_consistency(model, game_ctx, game)
             if not validation_result["valid"]:
@@ -351,15 +356,16 @@ class Modeler(BaseAgent):
         batch_lines: List[Dict[str, Any]],
         historical_data: Optional[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Process a single batch of games deterministically."""
+        """Process a single batch of games deterministically. Uses default AdjO/AdjD/AdjT when research data unavailable."""
         validated_models: List[Dict[str, Any]] = []
         for game in batch_games:
             game_id = game.get("game_id")
-            ctx = GameContext.from_researcher_output(game)
-            if not ctx:
+            result = GameContext.from_researcher_output_with_defaults(game)
+            if result is None or result[0] is None:
                 self.log_warning(f"⚠️  Skipping game {game_id}: missing advanced stats (AdjO/AdjD/AdjT).")
                 continue
-            model = self._process_one_game(game, batch_lines, ctx)
+            ctx, used_defaults = result
+            model = self._process_one_game(game, batch_lines, ctx, used_defaults=used_defaults)
             if model is not None:
                 validated_models.append(model)
         return validated_models

@@ -1168,7 +1168,10 @@ class ReportGenerator:
                         lines.append(f"    Total: {market['total']}")
                     if market.get("moneyline"):
                         ml = market["moneyline"]
-                        lines.append(f"    Moneyline: Away {ml.get('away', 'N/A')} / Home {ml.get('home', 'N/A')}")
+                        if isinstance(ml, dict):
+                            lines.append(f"    Moneyline: Away {ml.get('away', 'N/A')} / Home {ml.get('home', 'N/A')}")
+                        else:
+                            lines.append(f"    Moneyline: {ml}")
                 
                 # Advanced Stats (KenPom/Torvik) - THE KEY DATA
                 adv = game.get("adv", {})

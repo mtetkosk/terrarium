@@ -24,6 +24,7 @@ from src.utils.logging import get_logger
 from src.utils.team_normalizer import are_teams_matching
 from src.utils.reporting import ReportGenerator
 from src.utils.google_sheets import GoogleSheetsService
+from src.utils.ncaa_tournament import get_slate_context
 
 logger = get_logger("orchestration.coordinator")
 
@@ -71,6 +72,9 @@ class Coordinator:
         
         logger.info("=" * 80)
         logger.info(f"🚀 STARTING DAILY WORKFLOW FOR {target_date}")
+        slate_context = get_slate_context(target_date)
+        if slate_context:
+            logger.info(f"🏀 Slate context: {slate_context}")
         if single_game_id is not None:
             logger.info(f"🎯 SINGLE GAME MODE: Processing only game ID {single_game_id}")
         elif test_limit is not None:
@@ -131,16 +135,16 @@ class Coordinator:
             president_response = None
             
             # Step 3: Researcher researches games
-            insights = self._step_research(games, target_date, lines, force_refresh)
+            insights = self._step_research(games, target_date, lines, force_refresh, slate_context=slate_context)
             
             # Step 4: Modeler generates predictions
-            predictions = self._step_model(insights, lines, target_date, force_refresh)
+            predictions = self._step_model(insights, lines, target_date, force_refresh, slate_context=slate_context)
             
             # Get historical performance data for learning
             historical_performance = self.db.get_historical_performance(target_date)
             
             # Step 5: Picker selects picks (one per game)
-            picks, candidate_picks = self._step_pick(predictions, insights, lines, games, target_date, historical_performance)
+            picks, candidate_picks = self._step_pick(predictions, insights, lines, games, target_date, historical_performance, slate_context=slate_context)
             if picks is None:
                 logger.warning("No picks selected. Ending workflow.")
                 return CardReview(
@@ -153,7 +157,7 @@ class Coordinator:
             
             # Step 6: President assigns units, selects best bets, and generates report
             review, president_response = self._step_president(
-                candidate_picks, insights, predictions, target_date, historical_performance
+                candidate_picks, insights, predictions, target_date, historical_performance, slate_context=slate_context
             )
             
             # Step 7: Save betting card and place bets (if approved)
@@ -282,7 +286,7 @@ class Coordinator:
         
         return lines
     
-    def _step_research(self, games: List[Game], target_date: date, lines: List[BettingLine], force_refresh: bool) -> Dict[str, Any]:
+    def _step_research(self, games: List[Game], target_date: date, lines: List[BettingLine], force_refresh: bool, slate_context: Optional[str] = None) -> Dict[str, Any]:
         """Step 3: Researcher researches games"""
         from src.utils.logging import log_data_object
         from src.utils.config import config
@@ -294,7 +298,7 @@ class Coordinator:
             log_data_object(logger, "Games input to Researcher", games)
             log_data_object(logger, "Betting lines input to Researcher", lines)
         
-        insights = self.researcher.process(games, target_date=target_date, betting_lines=lines, force_refresh=force_refresh)
+        insights = self.researcher.process(games, target_date=target_date, betting_lines=lines, force_refresh=force_refresh, slate_context=slate_context)
         
         if config.is_debug_mode():
             log_data_object(logger, "Researcher insights output", insights)
@@ -499,12 +503,12 @@ class Coordinator:
         finally:
             session.close()
     
-    def _step_model(self, insights: Dict[str, Any], lines: List[BettingLine], target_date: date, force_refresh: bool = False) -> Dict[str, Any]:
+    def _step_model(self, insights: Dict[str, Any], lines: List[BettingLine], target_date: date, force_refresh: bool = False, slate_context: Optional[str] = None) -> Dict[str, Any]:
         """Step 4: Modeler generates predictions"""
         insights_games = insights.get("games", [])
         self.modeler.interaction_logger.log_agent_start("Modeler", f"Modeling {len(insights_games)} games")
         self.modeler.interaction_logger.log_handoff("Researcher", "Modeler", "GameInsights", len(insights_games))
-        predictions = self.modeler.process(insights, betting_lines=lines, target_date=target_date, force_refresh=force_refresh)
+        predictions = self.modeler.process(insights, betting_lines=lines, target_date=target_date, force_refresh=force_refresh, slate_context=slate_context)
         
         # Save predictions using persistence service
         game_models = predictions.get("game_models", [])
@@ -533,7 +537,7 @@ class Coordinator:
         )
         return predictions
     
-    def _step_pick(self, predictions: Dict[str, Any], insights: Dict[str, Any], lines: List[BettingLine], games: List[Game], target_date: date, historical_performance: Optional[Dict[str, Any]] = None) -> tuple[Optional[List[Pick]], List[Dict[str, Any]]]:
+    def _step_pick(self, predictions: Dict[str, Any], insights: Dict[str, Any], lines: List[BettingLine], games: List[Game], target_date: date, historical_performance: Optional[Dict[str, Any]] = None, slate_context: Optional[str] = None) -> tuple[Optional[List[Pick]], List[Dict[str, Any]]]:
         """Step 5: Picker selects picks
         
         Returns:
@@ -543,7 +547,7 @@ class Coordinator:
         self.picker.interaction_logger.log_handoff("Modeler", "Picker", "Predictions", len(predictions.get('game_models', [])))
         
         # Pass arguments: researcher_output, modeler_output, historical_performance
-        picker_response = self.picker.process(insights, predictions, historical_performance)
+        picker_response = self.picker.process(insights, predictions, historical_performance, slate_context=slate_context)
         candidate_picks = picker_response.get("candidate_picks", [])
         self.picker.interaction_logger.log_agent_complete("Picker", f"Selected {len(candidate_picks)} picks")
         
@@ -564,7 +568,7 @@ class Coordinator:
     
     def _step_president(self, candidate_picks: List[Dict[str, Any]], 
                        insights: Dict[str, Any], predictions: Dict[str, Any], 
-                       target_date: date, historical_performance: Optional[Dict[str, Any]] = None) -> tuple[CardReview, Dict[str, Any]]:
+                       target_date: date, historical_performance: Optional[Dict[str, Any]] = None, slate_context: Optional[str] = None) -> tuple[CardReview, Dict[str, Any]]:
         """Step 6: President assigns units, selects best bets, and generates report"""
         self.president.interaction_logger.log_agent_start("President", f"Assigning units and selecting best bets from {len(candidate_picks)} picks")
         self.president.interaction_logger.log_handoff("Picker", "President", "CandidatePicks", len(candidate_picks))
@@ -573,7 +577,8 @@ class Coordinator:
             candidate_picks,
             researcher_output=insights,
             modeler_output=predictions,
-            auditor_feedback=historical_performance
+            auditor_feedback=historical_performance,
+            slate_context=slate_context
         )
         
         # Convert President's JSON response to CardReview object
