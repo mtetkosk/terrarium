@@ -63,6 +63,7 @@ class Picker(BaseAgent):
         modeler_games: List[Dict[str, Any]],
         batch_size: int,
         historical_performance: Optional[Dict[str, Any]],
+        slate_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Run batch processing and return merged filtered picks."""
         researcher_by_id = {g.get("game_id"): g for g in researcher_games}
@@ -77,7 +78,7 @@ class Picker(BaseAgent):
             batch_modeler = {"game_models": [modeler_by_id[gid] for gid in batch_ids if gid in modeler_by_id]}
             self.log_info(f"📦 Processing batch {batch_num}/{total_batches} ({len(batch_ids)} games)")
             result = self._process_batch_with_retry(
-                batch_researcher, batch_modeler, historical_performance, batch_num, max_retries=2
+                batch_researcher, batch_modeler, historical_performance, batch_num, max_retries=2, slate_context=slate_context
             )
             if result and result.get("candidate_picks"):
                 all_picks.extend(result["candidate_picks"])
@@ -90,7 +91,8 @@ class Picker(BaseAgent):
         self,
         researcher_output: Dict[str, Any],
         modeler_output: Dict[str, Any],
-        historical_performance: Optional[Dict[str, Any]] = None
+        historical_performance: Optional[Dict[str, Any]] = None,
+        slate_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Select picks using LLM - exactly one pick per game
@@ -99,6 +101,7 @@ class Picker(BaseAgent):
             researcher_output: Output from Researcher
             modeler_output: Output from Modeler (predictions and edges)
             historical_performance: Historical performance data for learning
+            slate_context: Optional slate context (e.g. NCAA Tournament) for prompt guidance
             
         Returns:
             LLM response with candidate picks (one per game)
@@ -124,6 +127,7 @@ class Picker(BaseAgent):
                 historical_performance,
                 batch_num=1,
                 total_batches=1,
+                slate_context=slate_context,
             )
             filtered_picks = self._filter_extreme_odds(result.get("candidate_picks", []))
             self.log_info(f"Selected {len(filtered_picks)} candidate picks (one per game)")
@@ -134,7 +138,7 @@ class Picker(BaseAgent):
 
         self.log_info(f"Selecting picks from {num_games} games using batch processing (batch size: {batch_size})")
         filtered_picks = self._merge_batch_picks(
-            researcher_games, modeler_games, batch_size, historical_performance
+            researcher_games, modeler_games, batch_size, historical_performance, slate_context=slate_context
         )
         self.log_info(f"Selected {len(filtered_picks)} candidate picks for {num_games} games (one per game)")
         return {
@@ -148,7 +152,8 @@ class Picker(BaseAgent):
         modeler_output: Dict[str, Any],
         historical_performance: Optional[Dict[str, Any]],
         batch_num: int,
-        max_retries: int = 2
+        max_retries: int = 2,
+        slate_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process a batch of games with retry mechanism"""
         for attempt in range(max_retries + 1):
@@ -158,7 +163,8 @@ class Picker(BaseAgent):
                     modeler_output,
                     historical_performance,
                     batch_num,
-                    1  # total_batches not needed for individual batch
+                    1,  # total_batches not needed for individual batch
+                    slate_context=slate_context,
                 )
                 if batch_result and len(batch_result.get("candidate_picks", [])) > 0:
                     return batch_result
@@ -178,7 +184,8 @@ class Picker(BaseAgent):
         modeler_output: Dict[str, Any],
         historical_performance: Optional[Dict[str, Any]],
         batch_num: int,
-        total_batches: int
+        total_batches: int,
+        slate_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process a single batch of games - generates exactly one pick per game"""
         
@@ -196,7 +203,7 @@ class Picker(BaseAgent):
         from src.agents.base import _make_json_serializable
 
         serializable_data = _make_json_serializable(input_data)
-        full_user_prompt = build_picker_user_prompt(historical_performance, serializable_data)
+        full_user_prompt = build_picker_user_prompt(historical_performance, serializable_data, slate_context=slate_context)
         
         self.log_info(f"Calling LLM for batch {batch_num} ({num_games} games)")
         

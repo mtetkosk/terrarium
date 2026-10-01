@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 import json
 import hashlib
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
 from src.agents.base import BaseAgent
 from src.data.models import Game, GameInsight
@@ -19,6 +19,9 @@ from src.utils.web_browser import WebBrowser, get_web_browser
 from src.utils.json_schemas import get_researcher_schema
 
 logger = get_logger("agents.researcher")
+
+# Hard timeout for a single LLM+tools batch (seconds). Prevents silent hangs.
+LLM_BATCH_TIMEOUT_SECONDS = 240
 
 
 class Researcher(BaseAgent):
@@ -113,7 +116,7 @@ class Researcher(BaseAgent):
         self._save_cache()
         logger.debug(f"Cached researcher insights for {len(games)} games")
     
-    def process(self, games: List[Game], target_date: Optional[date] = None, betting_lines: Optional[List] = None, force_refresh: bool = False) -> Dict[str, Any]:
+    def process(self, games: List[Game], target_date: Optional[date] = None, betting_lines: Optional[List] = None, force_refresh: bool = False, slate_context: Optional[str] = None) -> Dict[str, Any]:
         """
         Research games and return insights using LLM with batch processing
         
@@ -122,6 +125,7 @@ class Researcher(BaseAgent):
             target_date: Target date for research
             betting_lines: Optional pre-scraped betting lines (to avoid duplicate scraping)
             force_refresh: Force refresh even if cached
+            slate_context: Optional slate context (e.g. "NCAA Tournament — Round of 64") for prompt guidance
             
         Returns:
             LLM response with game insights in JSON format
@@ -142,8 +146,8 @@ class Researcher(BaseAgent):
         
         self.log_info(f"Researching {len(games)} games using LLM (batch processing)")
         
-        # Batch processing: split games into smaller chunks for better reliability and token efficiency
-        batch_size = 5  # Process 5 games at a time
+        # Process one game per LLM call so each response is small and never truncated
+        batch_size = 1
         all_insights = []
         failed_batches = []
         # Track which games have been processed
@@ -158,11 +162,12 @@ class Researcher(BaseAgent):
             
             # Process batch with retry
             batch_insights = self._process_batch_with_retry(
-                batch_games, 
-                target_date, 
-                betting_lines, 
+                batch_games,
+                target_date,
+                betting_lines,
                 batch_num,
-                max_retries=2
+                max_retries=2,
+                slate_context=slate_context
             )
             
             if batch_insights and len(batch_insights) > 0:
@@ -211,12 +216,13 @@ class Researcher(BaseAgent):
         return result
     
     def _process_batch_with_retry(
-        self, 
-        batch_games: List[Game], 
-        target_date: Optional[date], 
+        self,
+        batch_games: List[Game],
+        target_date: Optional[date],
         betting_lines: Optional[List],
         batch_num: int,
-        max_retries: int = 2
+        max_retries: int = 2,
+        slate_context: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Process a batch of games with retry mechanism"""
         # Store input_data for logging if batch fails
@@ -225,7 +231,16 @@ class Researcher(BaseAgent):
         
         for attempt in range(max_retries + 1):
             try:
-                batch_result, input_data = self._process_batch(batch_games, target_date, betting_lines)
+                # Run batch processing in a separate thread so we can enforce a hard timeout.
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        self._process_batch,
+                        batch_games,
+                        target_date,
+                        betting_lines,
+                        slate_context=slate_context,
+                    )
+                    batch_result, input_data = future.result(timeout=LLM_BATCH_TIMEOUT_SECONDS)
                 if input_data_for_logging is None:
                     input_data_for_logging = input_data
                 
@@ -250,6 +265,20 @@ class Researcher(BaseAgent):
                     else:
                         self.log_error(f"❌ Batch {batch_num} failed after {max_retries + 1} attempts")
                     
+            except TimeoutError:
+                # Treat timeouts as hard failures for this attempt
+                self.log_error(
+                    f"⏰ Batch {batch_num} attempt {attempt + 1} timed out after "
+                    f"{LLM_BATCH_TIMEOUT_SECONDS} seconds"
+                )
+                if attempt < max_retries:
+                    self.log_warning(
+                        f"⚠️  Batch {batch_num} timed out on attempt {attempt + 1}, retrying..."
+                    )
+                else:
+                    self.log_error(
+                        f"❌ Batch {batch_num} failed after {max_retries + 1} attempts due to repeated timeouts"
+                    )
             except Exception as e:
                 # Log after first failure to help debug
                 if not first_failure_logged:
@@ -267,7 +296,7 @@ class Researcher(BaseAgent):
         
         return []
     
-    def _process_batch(self, games: List[Game], target_date: Optional[date] = None, betting_lines: Optional[List] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    def _process_batch(self, games: List[Game], target_date: Optional[date] = None, betting_lines: Optional[List] = None, slate_context: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Process a single batch of games (internal method)
         
@@ -275,6 +304,7 @@ class Researcher(BaseAgent):
             games: List of games to research (should be small batch, e.g., 5 games)
             target_date: Target date for research
             betting_lines: Optional pre-scraped betting lines
+            slate_context: Optional slate context (e.g. NCAA Tournament) for prompt guidance
             
         Returns:
             LLM response with game insights in JSON format
@@ -458,13 +488,17 @@ class Researcher(BaseAgent):
             "games": games_data,
             "target_date": target_date.isoformat() if target_date else None
         }
+        if slate_context:
+            input_data["slate_context"] = slate_context
         
         # Prepare web browsing tools for the LLM
         tools = self._get_web_browsing_tools()
         
         # Get user prompt from prompts file
-        from src.prompts import RESEARCHER_BATCH_PROMPT
+        from src.prompts import RESEARCHER_BATCH_PROMPT, RESEARCHER_NCAA_TOURNAMENT_BLOCK
         user_prompt = RESEARCHER_BATCH_PROMPT.format(num_games=len(games))
+        if slate_context and "NCAA Tournament" in (slate_context or ""):
+            user_prompt = user_prompt + RESEARCHER_NCAA_TOURNAMENT_BLOCK
         
         try:
             # First call: LLM may request web searches
@@ -600,7 +634,8 @@ class Researcher(BaseAgent):
             # CRITICAL: Preserve programmatic fields (KenPom stats) from games_data
             # Merge LLM response with programmatic data, ensuring programmatic fields are never overwritten
             response = self._preserve_programmatic_fields(response, games_data)
-            
+            # Fill missing games from batch programmatic data so we return one insight per game (Modeler can run when adv present)
+            response = self._fill_missing_games_from_batch_data(response, games_data, games)
             games_count = len(response.get('games', []))
             if games_count == 0:
                 self.log_warning(
@@ -719,7 +754,80 @@ class Researcher(BaseAgent):
                                 )
         
         return llm_response
-    
+
+    def _fill_missing_games_from_batch_data(
+        self,
+        response: Dict[str, Any],
+        games_data: List[Dict[str, Any]],
+        games: List[Game],
+    ) -> Dict[str, Any]:
+        """Append insights for any game_id present in games_data but missing from response['games'].
+        Uses programmatic adv/teams/market so Modeler can run when KenPom data exists."""
+        if "games" not in response:
+            return response
+        returned_ids = {str(g.get("game_id")) for g in response["games"] if g.get("game_id")}
+        entire_batch_programmatic = len(returned_ids) == 0
+        for i, gdata in enumerate(games_data):
+            gid = str(gdata.get("game_id", ""))
+            if not gid or gid in returned_ids:
+                continue
+            fill = self._build_fill_in_insight(
+                gdata, games[i] if i < len(games) else None, entire_batch_programmatic=entire_batch_programmatic
+            )
+            if fill:
+                response["games"].append(fill)
+                if entire_batch_programmatic:
+                    self.log_info(f"📋 Built insight for game {gid} from programmatic data (LLM response empty for batch)")
+                else:
+                    self.log_info(f"📋 Filled missing game {gid} from programmatic data (LLM returned partial batch)")
+        return response
+
+    def _build_fill_in_insight(
+        self,
+        game_data: Dict[str, Any],
+        game: Optional[Game],
+        entire_batch_programmatic: bool = False,
+    ) -> Dict[str, Any]:
+        """Build one insight dict from programmatic game_data (for fill-in when LLM returns partial or none)."""
+        game_id = str(game_data.get("game_id", ""))
+        if not game_id:
+            return {}
+        teams = game_data.get("teams", {}) or {}
+        adv = game_data.get("adv", {}) or {}
+        away_adv = (adv.get("away") if isinstance(adv, dict) else {}) or {}
+        home_adv = (adv.get("home") if isinstance(adv, dict) else {}) or {}
+        if not isinstance(away_adv, dict):
+            away_adv = {}
+        if not isinstance(home_adv, dict):
+            home_adv = {}
+        if entire_batch_programmatic:
+            context = ["Programmatic KenPom/market data only; LLM response empty or invalid for this batch"]
+            dq = ["Programmatic stats only; no LLM research for this batch"]
+            recent_notes = "programmatic only"
+        else:
+            context = ["Fill-in from programmatic data; LLM did not return this game"]
+            dq = ["Fill-in: programmatic stats only; limited research"]
+            recent_notes = "programmatic fill"
+        return {
+            "game_id": game_id,
+            "league": "UNKNOWN",
+            "teams": {
+                "away": teams.get("away", ""),
+                "home": teams.get("home", ""),
+                "away_id": teams.get("away_id"),
+                "home_id": teams.get("home_id"),
+            },
+            "start_time": game_data.get("date", ""),
+            "market": game_data.get("market", {}) or {},
+            "adv": {"away": away_adv, "home": home_adv, "matchup": []},
+            "injuries": [],
+            "recent": {"away": {"rec": "?", "notes": recent_notes}, "home": {"rec": "?", "notes": recent_notes}},
+            "experts": {},
+            "common_opp": [],
+            "context": context,
+            "dq": dq,
+        }
+
     def _create_fallback_insight(self, game: Game, target_date: Optional[date], betting_lines: Optional[List]) -> Dict[str, Any]:
         """
         Create a fallback insight entry for a game when processing fails
@@ -1161,7 +1269,7 @@ Input data:
                 parse_json=True,
                 tools=tools,
                 response_format=response_format,
-                max_tokens=16000  # Gemini 1.5 has large window
+                max_tokens=65536  # 5 games need large output; 16k was truncating and yielding no valid JSON
             )
             
             # Get usage stats after call and log delta

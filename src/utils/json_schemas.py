@@ -1,9 +1,50 @@
 """JSON schemas for OpenAI structured output (response_format)"""
 
 
+def _make_strict_schema(schema: dict) -> dict:
+    """
+    Recursively tighten a JSON schema for use with OpenAI strict structured outputs.
+
+    - Adds ``additionalProperties: False`` to every object that does not already
+      specify ``additionalProperties``.
+    - Sets ``required`` to include every key in ``properties`` (OpenAI strict mode
+      requires this). Optional fields should use nullable types (e.g. anyOf with null).
+    - Recurses into nested objects, arrays, and anyOf/oneOf/allOf combos.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    schema_type = schema.get("type")
+
+    if schema_type == "object":
+        props = schema.get("properties")
+        # Only set additionalProperties when not explicitly specified so callers
+        # can opt-out (e.g. for flexible dict-like fields).
+        if "additionalProperties" not in schema:
+            schema["additionalProperties"] = False
+        if isinstance(props, dict):
+            # OpenAI strict mode: required must be an array including every key in properties.
+            schema["required"] = list(props.keys())
+            for value in props.values():
+                _make_strict_schema(value)
+
+    elif schema_type == "array":
+        items = schema.get("items")
+        if items:
+            _make_strict_schema(items)
+
+    # Recurse into composed schemas if present
+    for key in ("anyOf", "oneOf", "allOf"):
+        if key in schema and isinstance(schema[key], list):
+            for sub in schema[key]:
+                _make_strict_schema(sub)
+
+    return schema
+
+
 def get_researcher_schema() -> dict:
     """Get JSON schema for Researcher agent response (token-efficient format)"""
-    return {
+    schema = {
         "type": "json_schema",
         "json_schema": {
             "name": "researcher_response",
@@ -23,10 +64,20 @@ def get_researcher_schema() -> dict:
                                         "away": {"type": "string"},
                                         "home": {"type": "string"}
                                     },
-                                    "required": ["away", "home"]
+                                    "required": ["away", "home"],
+                                    "additionalProperties": False
                                 },
                                 "start_time": {"type": "string"},
-                                "market": {"type": "object"},
+                                "market": {
+                                    "type": "object",
+                                    "properties": {
+                                        "moneyline": {"type": "string"},
+                                        "spread": {"type": "string"},
+                                        "total": {"type": "string"}
+                                    },
+                                    "required": [],
+                                    "additionalProperties": False
+                                },
                                 "adv": {
                                     "type": "object",
                                     "properties": {
@@ -46,7 +97,9 @@ def get_researcher_schema() -> dict:
                                                 "luck": {"type": "number"},
                                                 "sos": {"type": "number"},
                                                 "ncsos": {"type": "number"}
-                                            }
+                                            },
+                                            "required": ["adjo", "adjd", "adjt", "net", "kp_rank", "torvik_rank", "conference", "wins", "losses", "w_l", "luck", "sos", "ncsos"],
+                                            "additionalProperties": False
                                         },
                                         "home": {
                                             "type": "object",
@@ -64,13 +117,17 @@ def get_researcher_schema() -> dict:
                                                 "luck": {"type": "number"},
                                                 "sos": {"type": "number"},
                                                 "ncsos": {"type": "number"}
-                                            }
+                                            },
+                                            "required": ["adjo", "adjd", "adjt", "net", "kp_rank", "torvik_rank", "conference", "wins", "losses", "w_l", "luck", "sos", "ncsos"],
+                                            "additionalProperties": False
                                         },
                                         "matchup": {
                                             "type": "array",
                                             "items": {"type": "string"}
                                         }
-                                    }
+                                    },
+                                    "required": ["away", "home", "matchup"],
+                                    "additionalProperties": False
                                 },
                                 "injuries": {
                                     "type": "array",
@@ -78,12 +135,23 @@ def get_researcher_schema() -> dict:
                                         "type": "object",
                                         "properties": {
                                             "team": {"type": "string"},
-                                            "player": {"type": ["string", "null"]},
-                                            "pos": {"type": ["string", "null"]},
+                                            "player": {
+                                                "anyOf": [
+                                                    {"type": "string"},
+                                                    {"type": "null"},
+                                                ]
+                                            },
+                                            "pos": {
+                                                "anyOf": [
+                                                    {"type": "string"},
+                                                    {"type": "null"},
+                                                ]
+                                            },
                                             "status": {"type": "string"},
                                             "notes": {"type": "string"}
                                         },
-                                        "required": ["team", "status"]
+                                        "required": ["team", "player", "pos", "status", "notes"],
+                                        "additionalProperties": False
                                     }
                                 },
                                 "recent": {
@@ -94,16 +162,22 @@ def get_researcher_schema() -> dict:
                                             "properties": {
                                                 "rec": {"type": "string"},
                                                 "notes": {"type": "string"}
-                                            }
+                                            },
+                                            "required": ["rec", "notes"],
+                                            "additionalProperties": False
                                         },
                                         "home": {
                                             "type": "object",
                                             "properties": {
                                                 "rec": {"type": "string"},
                                                 "notes": {"type": "string"}
-                                            }
+                                            },
+                                            "required": ["rec", "notes"],
+                                            "additionalProperties": False
                                         }
-                                    }
+                                    },
+                                    "required": ["away", "home"],
+                                    "additionalProperties": False
                                 },
                                 "experts": {
                                     "type": "object",
@@ -122,7 +196,9 @@ def get_researcher_schema() -> dict:
                                             "items": {"type": "string"}
                                         },
                                         "reason": {"type": "string"}
-                                    }
+                                    },
+                                    "required": ["src", "spread_pick", "total_pick", "scores", "reason"],
+                                    "additionalProperties": False
                                 },
                                 "common_opp": {
                                     "type": "array",
@@ -137,19 +213,25 @@ def get_researcher_schema() -> dict:
                                     "items": {"type": "string"}
                                 }
                             },
-                            "required": ["game_id", "teams"]
+                            "required": ["game_id", "league", "teams", "start_time", "market", "adv", "injuries", "recent", "experts", "common_opp", "context", "dq"],
+                            "additionalProperties": False
                         }
                     }
                 },
-                "required": ["games"]
+                "required": ["games"],
+                "additionalProperties": False
             }
         }
     }
+    # Enable strict structured outputs and tighten nested object schemas.
+    schema["json_schema"]["strict"] = True
+    _make_strict_schema(schema["json_schema"]["schema"])
+    return schema
 
 
 def get_modeler_schema() -> dict:
     """Get JSON schema for Modeler agent response"""
-    return {
+    schema = {
         "type": "json_schema",
         "json_schema": {
             "name": "modeler_response",
@@ -169,17 +251,56 @@ def get_modeler_schema() -> dict:
                                     "properties": {
                                         "away": {"type": "string", "description": "Away team name"},
                                         "home": {"type": "string", "description": "Home team name"},
-                                        "away_id": {"type": ["integer", "null"], "description": "Away team database ID (authoritative identifier)"},
-                                        "home_id": {"type": ["integer", "null"], "description": "Home team database ID (authoritative identifier)"}
+                                        "away_id": {
+                                            "anyOf": [
+                                                {"type": "integer"},
+                                                {"type": "null"},
+                                            ],
+                                            "description": "Away team database ID (authoritative identifier)",
+                                        },
+                                        "home_id": {
+                                            "anyOf": [
+                                                {"type": "integer"},
+                                                {"type": "null"},
+                                            ],
+                                            "description": "Home team database ID (authoritative identifier)",
+                                        },
                                     },
-                                    "required": ["away", "home"]
+                                    "required": ["away", "home"],
+                                    "additionalProperties": False
                                 },
                                 "predictions": {
                                     "type": "object",
                                     "properties": {
-                                        "spread": {"type": "object"},
-                                        "total": {"type": "object"},
-                                        "moneyline": {"type": "object"},
+                                        "spread": {
+                                            "type": "object",
+                                            "properties": {
+                                                "line": {"type": "string"},
+                                                "away": {"type": "number"},
+                                                "home": {"type": "number"}
+                                            },
+                                            "required": [],
+                                            "additionalProperties": False
+                                        },
+                                        "total": {
+                                            "type": "object",
+                                            "properties": {
+                                                "line": {"type": "string"},
+                                                "over": {"type": "number"},
+                                                "under": {"type": "number"}
+                                            },
+                                            "required": [],
+                                            "additionalProperties": False
+                                        },
+                                        "moneyline": {
+                                            "type": "object",
+                                            "properties": {
+                                                "away": {"type": "number"},
+                                                "home": {"type": "number"}
+                                            },
+                                            "required": [],
+                                            "additionalProperties": False
+                                        },
                                         "confidence": {
                                             "type": "number",
                                             "description": "Model confidence 0.0-1.0 based on data quality and model certainty"
@@ -195,17 +316,21 @@ def get_modeler_schema() -> dict:
                                                 "away": {"type": "number", "description": "AWAY team's projected score"},
                                                 "home": {"type": "number", "description": "HOME team's projected score"}
                                             },
-                                            "required": ["away", "home"]
+                                            "required": ["away", "home"],
+                                            "additionalProperties": False
                                         },
                                         "win_probs": {
                                             "type": "object",
                                             "properties": {
                                                 "away": {"type": "number"},
                                                 "home": {"type": "number"}
-                                            }
+                                            },
+                                            "required": ["away", "home"],
+                                            "additionalProperties": False
                                         }
                                     },
-                                    "required": ["confidence", "margin", "scores"]
+                                    "required": ["confidence", "margin", "scores"],
+                                    "additionalProperties": False
                                 },
                                 "predicted_score": {
                                     "type": "object",
@@ -213,7 +338,8 @@ def get_modeler_schema() -> dict:
                                         "away_score": {"type": "number"},
                                         "home_score": {"type": "number"}
                                     },
-                                    "required": ["away_score", "home_score"]
+                                    "required": ["away_score", "home_score"],
+                                    "additionalProperties": False
                                 },
                                 "market_edges": {
                                     "type": "array",
@@ -226,7 +352,9 @@ def get_modeler_schema() -> dict:
                                             "implied_probability": {"type": "number"},
                                             "edge": {"type": "number"},
                                             "edge_confidence": {"type": "number"}
-                                        }
+                                        },
+                                        "required": ["market_type", "market_line", "model_estimated_probability", "implied_probability", "edge", "edge_confidence"],
+                                        "additionalProperties": False
                                     }
                                 },
                                 "ev_estimate": {
@@ -235,19 +363,24 @@ def get_modeler_schema() -> dict:
                                 },
                                 "model_notes": {"type": "string"}
                             },
-                            "required": ["game_id", "teams", "predictions"]
+                            "required": ["game_id", "teams", "predictions"],
+                            "additionalProperties": False
                         }
                     }
                 },
-                "required": ["game_models"]
+                "required": ["game_models"],
+                "additionalProperties": False
             }
         }
     }
+    schema["json_schema"]["strict"] = True
+    _make_strict_schema(schema["json_schema"]["schema"])
+    return schema
 
 
 def get_picker_schema() -> dict:
     """Get JSON schema for Picker agent response"""
-    return {
+    schema = {
         "type": "json_schema",
         "json_schema": {
             "name": "picker_response",
@@ -275,7 +408,8 @@ def get_picker_schema() -> dict:
                                 "notes": {"type": "string"},
                                 "book": {"type": "string"}
                             },
-                            "required": ["game_id", "bet_type", "selection", "odds"]
+                            "required": ["game_id", "bet_type", "selection", "odds", "justification", "edge_estimate", "confidence", "confidence_score", "best_bet", "correlation_group", "notes", "book"],
+                            "additionalProperties": False
                         }
                     },
                     "overall_strategy_summary": {
@@ -283,15 +417,19 @@ def get_picker_schema() -> dict:
                         "items": {"type": "string"}
                     }
                 },
-                "required": ["candidate_picks"]
+                "required": ["candidate_picks", "overall_strategy_summary"],
+                "additionalProperties": False
             }
         }
     }
+    schema["json_schema"]["strict"] = True
+    _make_strict_schema(schema["json_schema"]["schema"])
+    return schema
 
 
 def get_president_schema() -> dict:
     """Get JSON schema for President agent response"""
-    return {
+    schema = {
         "type": "json_schema",
         "json_schema": {
             "name": "president_response",
@@ -313,7 +451,8 @@ def get_president_schema() -> dict:
                                 "high_confidence": {"type": "boolean", "description": "True if picker_rating >= 6.0, indicating a strong pick even if not a best bet"},
                                 "final_decision_reasoning": {"type": "string", "description": "Comprehensive reasoning combining Picker's justification, model edge, research context, and unit assignment rationale"}
                             },
-                            "required": ["game_id", "units", "best_bet", "final_decision_reasoning"]
+                            "required": ["game_id", "bet_type", "selection", "odds", "edge_estimate", "units", "best_bet", "high_confidence", "final_decision_reasoning"],
+                            "additionalProperties": False
                         }
                     },
                     "daily_report_summary": {
@@ -327,18 +466,23 @@ def get_president_schema() -> dict:
                                 "items": {"type": "string"}
                             }
                         },
-                        "required": ["total_games", "total_units", "best_bets_count", "strategic_notes"]
+                        "required": ["total_games", "total_units", "best_bets_count", "strategic_notes"],
+                        "additionalProperties": False
                     }
                 },
-                "required": ["approved_picks", "daily_report_summary"]
+                "required": ["approved_picks", "daily_report_summary"],
+                "additionalProperties": False
             }
         }
     }
+    schema["json_schema"]["strict"] = True
+    _make_strict_schema(schema["json_schema"]["schema"])
+    return schema
 
 
 def get_auditor_schema() -> dict:
     """Get JSON schema for Auditor agent response (daily report: insights + recommendations)."""
-    return {
+    schema = {
         "type": "json_schema",
         "json_schema": {
             "name": "auditor_response",
@@ -360,10 +504,19 @@ def get_auditor_schema() -> dict:
                             },
                             "key_findings": {
                                 "type": "object",
-                                "description": "Optional summary (e.g. best_bet_type, worst_bet_type, parlay_performance, confidence_accuracy)"
+                                "description": "Optional summary (e.g. best_bet_type, worst_bet_type, parlay_performance, confidence_accuracy)",
+                                "properties": {
+                                    "best_bet_type": {"type": "string"},
+                                    "worst_bet_type": {"type": "string"},
+                                    "parlay_performance": {"type": "string"},
+                                    "confidence_accuracy": {"type": "string"}
+                                },
+                                "required": [],
+                                "additionalProperties": False
                             }
                         },
-                        "required": ["what_went_well", "what_needs_improvement"]
+                        "required": ["what_went_well", "what_needs_improvement", "key_findings"],
+                        "additionalProperties": False
                     },
                     "recommendations": {
                         "type": "array",
@@ -371,10 +524,14 @@ def get_auditor_schema() -> dict:
                         "description": "Actionable recommendations for the operator"
                     }
                 },
-                "required": ["insights", "recommendations"]
+                "required": ["insights", "recommendations"],
+                "additionalProperties": False
             }
         }
     }
+    schema["json_schema"]["strict"] = True
+    _make_strict_schema(schema["json_schema"]["schema"])
+    return schema
 
 
 def get_schema_for_agent(agent_name: str) -> dict:

@@ -47,14 +47,15 @@ Guidelines for the nickname:
 - Keep it short and punchy (2-4 words)
 - Match the vibe of the slate (exciting, grindy, chaotic, elite, etc.)
 - Be creative but not over-the-top
-- Examples: "Barn Burner Tuesday", "The Slog", "Prime Time Showdown", "Sleeper City"
+- CRITICAL: If you include a day of the week in the nickname, you MUST use the exact day provided in the slate data (day_of_week). For example, if day_of_week is "Saturday", use "Loaded Saturday" or "Saturday Slate"—never use a different day like "Tuesday".
+- Examples (use the actual day from slate data): "Barn Burner Tuesday", "Loaded Saturday", "The Slog", "Prime Time Showdown", "Sleeper City"
 
 Output must be valid JSON only."""
 
-SLATE_OVERVIEW_USER = """Today's slate data:
+SLATE_OVERVIEW_USER = """Slate data (day_of_week is the actual day for this email—use it in the nickname if you include a day):
 {slate_data_json}
 
-Generate a fun overview of today's slate. Output valid JSON only with two fields:
+Generate a fun overview of this slate. Output valid JSON only with two fields:
 1. "nickname": A catchy 2-4 word name for today's slate
 2. "description": 1-2 sentences giving a quick vibe check on the slate
 

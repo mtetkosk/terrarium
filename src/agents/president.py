@@ -169,17 +169,19 @@ class President(BaseAgent):
         candidate_picks: List[Dict[str, Any]],
         researcher_output: Optional[Dict[str, Any]] = None,
         modeler_output: Optional[Dict[str, Any]] = None,
-        auditor_feedback: Optional[Dict[str, Any]] = None
+        auditor_feedback: Optional[Dict[str, Any]] = None,
+        slate_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Assign units, select best bets, and generate comprehensive report
-        
+
         Args:
             candidate_picks: Picks from Picker (one per game)
             researcher_output: Researcher insights
             modeler_output: Model predictions
             auditor_feedback: Historical performance feedback
-            
+            slate_context: Optional slate context (e.g. NCAA Tournament) for prompt guidance
+
         Returns:
             LLM response with approved picks (with units and best_bet flags) and daily report summary
         """
@@ -229,7 +231,7 @@ class President(BaseAgent):
             "auditor_feedback": auditor_feedback or {}
         }
         
-        user_prompt = build_president_user_prompt(auditor_feedback)
+        user_prompt = build_president_user_prompt(auditor_feedback, slate_context=slate_context)
         
         try:
             response = self.call_llm(

@@ -171,12 +171,21 @@ class LLMClient:
     ) -> Dict[str, Any]:
         """Make OpenAI Chat API call"""
         try:
+            # GPT-5.x, o1, and o3 models don't support custom temperature
+            is_restricted_model = (
+                self.model.startswith("o1-")
+                or self.model.startswith("o3-")
+                or self.model.startswith("gpt-5")
+            )
+
             # Prepare request parameters
             request_params = {
                 "model": self.model,
                 "messages": messages,
-                "temperature": temperature,
             }
+
+            if not is_restricted_model:
+                request_params["temperature"] = temperature
             
             # GPT-5.x models use max_completion_tokens instead of max_tokens
             if max_tokens:
@@ -185,14 +194,22 @@ class LLMClient:
                 else:
                     request_params["max_tokens"] = max_tokens
             
-            # Handle response format (JSON mode)
+            # Handle response format (JSON / structured output mode)
             if response_format:
-                request_params["response_format"] = {"type": "json_object"}
-                # Also add instruction to prompt if not already there
-                if messages and messages[-1].get("role") == "user":
-                    user_msg = messages[-1]["content"]
-                    if "json" not in user_msg.lower():
-                        messages[-1]["content"] = f"{user_msg}\n\nRespond with valid JSON only."
+                # If caller provided a json_schema wrapper, pass it through so that
+                # GPT-5 / o1 / o3 models use full Structured Outputs rather than the
+                # generic json_object mode. This prevents the model from emitting
+                # multiple top-level JSON objects (e.g., analysis + data).
+                if isinstance(response_format, dict) and response_format.get("type") == "json_schema":
+                    request_params["response_format"] = response_format
+                else:
+                    # Fallback: basic JSON mode with a simple json_object wrapper.
+                    request_params["response_format"] = {"type": "json_object"}
+                    # Also add instruction to prompt if not already there
+                    if messages and messages[-1].get("role") == "user":
+                        user_msg = messages[-1]["content"]
+                        if isinstance(user_msg, str) and "json" not in user_msg.lower():
+                            messages[-1]["content"] = f"{user_msg}\n\nRespond with valid JSON only."
             
             # Handle tools
             if tools:
@@ -765,6 +782,7 @@ class LLMClient:
     def _repair_json(self, json_str: str) -> Optional[str]:
         """Attempt to repair common JSON issues"""
         import re
+        import json
         try:
             repaired = json_str
             # Remove markdown code blocks
@@ -777,6 +795,55 @@ class LLMClient:
             
             # Remove trailing commas
             repaired = re.sub(r',(\s*[}\]])', r'\1', repaired)
+            
+            # First, if the repaired string is already valid JSON, return it as-is.
+            try:
+                json.loads(repaired)
+                return repaired
+            except json.JSONDecodeError:
+                # Fall through to multi-object handling / best-effort repair.
+                pass
+
+            # Handle multiple concatenated JSON objects (common with GPT-5 models
+            # that emit an "analysis" object followed by the real payload).
+            try:
+                decoder = json.JSONDecoder()
+                pos = 0
+                length = len(repaired)
+                objects = []
+
+                while pos < length:
+                    # Skip leading whitespace
+                    while pos < length and repaired[pos].isspace():
+                        pos += 1
+                    if pos >= length:
+                        break
+                    try:
+                        obj, end = decoder.raw_decode(repaired, pos)
+                        objects.append(obj)
+                        pos = end
+                    except json.JSONDecodeError:
+                        break
+
+                if objects:
+                    # Prefer objects that look like our agent responses
+                    priority_keys = (
+                        "games",
+                        "game_models",
+                        "candidate_picks",
+                        "approved_picks",
+                        "insights",
+                    )
+                    for obj in objects:
+                        if isinstance(obj, dict) and any(key in obj for key in priority_keys):
+                            return json.dumps(obj)
+                    # Fallback: return the last successfully parsed object
+                    return json.dumps(objects[-1])
+            except Exception:
+                # If anything goes wrong during multi-object handling, just
+                # return the best-effort repaired string and let the caller log.
+                pass
+
             return repaired
         except Exception:
             return None

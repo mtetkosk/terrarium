@@ -308,8 +308,9 @@ class EmailGenerator:
                 min_rank = None
                 max_rank = None
             
-            # Prepare slate data for LLM
+            # Prepare slate data for LLM (include day of week so nickname matches the email date)
             slate_data = {
+                'day_of_week': target_date.strftime('%A'),  # e.g. "Saturday"
                 'num_games': num_games,
                 'avg_rank': round(avg_rank) if avg_rank else None,
                 'top_25_count': top_25_count,

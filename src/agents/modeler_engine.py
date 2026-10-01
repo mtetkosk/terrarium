@@ -612,6 +612,73 @@ class GameContext:
     def has_advanced_stats(self) -> bool:
         return True
 
+    @classmethod
+    def from_researcher_output_with_defaults(
+        cls,
+        game_data: Dict[str, Any],
+        default_adjo: float = 100.0,
+        default_adjd: float = 100.0,
+        default_adjt: float = 68.0,
+    ) -> Optional[Tuple["GameContext", bool]]:
+        """Build GameContext from researcher output; use defaults for missing AdjO/AdjD/AdjT when data unavailable.
+        Returns (ctx, used_defaults) or (None, False) if not buildable."""
+        ctx = cls.from_researcher_output(game_data)
+        if ctx is not None:
+            return (ctx, False)
+        adv = game_data.get("adv", {}) or {}
+        if adv is True or (isinstance(adv, dict) and adv.get("data_unavailable")):
+            adv = {}
+        teams = game_data.get("teams", {}) or {}
+        away_name = teams.get("away", "") or "Away"
+        home_name = teams.get("home", "") or "Home"
+        away_id = teams.get("away_id")
+        home_id = teams.get("home_id")
+        away_adv = adv.get("away", {}) if isinstance(adv, dict) else {}
+        home_adv = adv.get("home", {}) if isinstance(adv, dict) else {}
+        if not isinstance(away_adv, dict):
+            away_adv = {}
+        if not isinstance(home_adv, dict):
+            home_adv = {}
+        def _with_defaults(d: Dict[str, Any]) -> Dict[str, Any]:
+            out = dict(d)
+            if out.get("adjo") is None and out.get("adj_o") is None:
+                out["adjo"] = default_adjo
+            if out.get("adjd") is None and out.get("adj_d") is None:
+                out["adjd"] = default_adjd
+            if out.get("adjt") is None and out.get("adj_t") is None:
+                out["adjt"] = default_adjt
+            return out
+        away_adv = _with_defaults(away_adv)
+        home_adv = _with_defaults(home_adv)
+        try:
+            away_ctx = TeamContext.from_dict(away_name, away_id, away_adv, {})
+            home_ctx = TeamContext.from_dict(home_name, home_id, home_adv, {})
+        except ValueError:
+            return (None, False)
+        game_id = str(game_data.get("game_id") or "unknown")
+        market = game_data.get("market", {}) or {}
+        market_total = None
+        if isinstance(market, dict):
+            total_val = market.get("total")
+            if isinstance(total_val, (int, float)):
+                market_total = float(total_val)
+        market_spread_home = _parse_market_spread_static(teams, market if isinstance(market, dict) else {})
+        context_list = game_data.get("context", []) or []
+        is_neutral = any("neutral site" in str(c).lower() for c in context_list if isinstance(c, str))
+        is_rivalry = any("rivalry" in str(c).lower() for c in context_list if isinstance(c, str))
+        return (
+            cls(
+                game_id=game_id,
+                away=away_ctx,
+                home=home_ctx,
+                market_total=market_total,
+                market_spread_home=market_spread_home,
+                is_neutral_site=is_neutral,
+                is_rivalry=is_rivalry,
+            ),
+            True,
+        )
+
 
 def calculate_game_model(
     ctx: "GameContext",
