@@ -378,6 +378,53 @@ def simulate_game(
 
 
 # --------------------------------------------------------------------------
+# Venue resolution
+# --------------------------------------------------------------------------
+
+
+def home_venue(con: duckdb.DuckDBPyConnection, team: str, min_games: int = 3) -> str | None:
+    """A team's modal home venue from ``historical_games`` (home = team_a with
+    hca_eff > 0), if it hosted at least ``min_games`` there."""
+    row = con.execute(
+        """
+        SELECT venue, count(*) AS n FROM historical_games
+        WHERE team_a = ? AND hca_eff > 0 AND venue IS NOT NULL
+        GROUP BY venue ORDER BY n DESC, venue LIMIT 1
+        """,
+        [team],
+    ).fetchone()
+    return row[0] if row and row[1] >= min_games else None
+
+
+def resolve_venue_hca(
+    con: duckdb.DuckDBPyConnection,
+    team_a: str,
+    team_b: str,
+    venue: str,
+    hca_eff: float = DEFAULT_HCA_EFF,
+) -> tuple[float, str]:
+    """Map a venue spec to signed HCA for team A plus a human description.
+
+    ``venue`` is "home" (A hosts), "away" (B hosts), "neutral", or an arena
+    name matched case-insensitively against each team's modal home venue;
+    unknown arenas are treated as neutral.
+    """
+    v = venue.strip()
+    key = v.lower()
+    if key == "home":
+        return hca_eff, f"{team_a} home"
+    if key == "away":
+        return -hca_eff, f"{team_b} home"
+    if key == "neutral":
+        return 0.0, "neutral"
+    for team, sign in ((team_a, 1.0), (team_b, -1.0)):
+        arena = home_venue(con, team)
+        if arena and arena.lower() == key:
+            return sign * hca_eff, f"{team} home ({arena})"
+    return 0.0, f"neutral ({v}: not a known home arena for either team)"
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 

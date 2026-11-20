@@ -330,3 +330,24 @@ def test_simulate_game_applies_stretch_by_date(db_path):
 
 def test_default_hca_is_calibrated_value():
     assert sg.DEFAULT_HCA_EFF == 1.9 and sg.SPEC_HCA_EFF == 3.3
+
+
+# --- venue resolution -----------------------------------------------------------------
+
+
+def test_resolve_venue_hca(db_path):
+    with db.get_db_connection(db_path=db_path) as con:
+        con.executemany("INSERT INTO historical_games VALUES (?, ?, 'Duke', 'X', 70, 60, ?, 1.9)", [
+            ("v1", date(2026, 1, 1), "Cameron Indoor Stadium"),
+            ("v2", date(2026, 1, 2), "Cameron Indoor Stadium"),
+            ("v3", date(2026, 1, 3), "Cameron Indoor Stadium"),
+            ("v4", date(2026, 1, 4), "Madison Square Garden"),
+        ])
+        assert sg.home_venue(con, "Duke") == "Cameron Indoor Stadium"
+        assert sg.home_venue(con, "Michigan St.") is None
+        r = lambda v: sg.resolve_venue_hca(con, "Michigan St.", "Duke", v, 2.0)
+        assert r("home") == (2.0, "Michigan St. home")
+        assert r("away") == (-2.0, "Duke home")
+        assert r("Neutral")[0] == 0.0
+        assert r("cameron indoor stadium") == (-2.0, "Duke home (Cameron Indoor Stadium)")
+        assert r("Madison Square Garden")[0] == 0.0          # not Duke's modal venue
