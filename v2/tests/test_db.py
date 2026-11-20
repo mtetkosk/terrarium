@@ -33,12 +33,28 @@ EXPECTED_COLUMNS = {
         ("vegas_ml_a", "DOUBLE"),
         ("vegas_ml_b", "DOUBLE"),
     ],
+    "model_predictions": [
+        ("game_id", "VARCHAR"),
+        ("model_version", "VARCHAR"),
+        ("as_of", "DATE"),
+        ("snapshot_date", "DATE"),
+        ("pred_score_a", "DOUBLE"),
+        ("pred_score_b", "DOUBLE"),
+        ("pred_spread_a", "DOUBLE"),
+        ("pred_total", "DOUBLE"),
+        ("win_prob_a", "DOUBLE"),
+        ("cover_prob_a", "DOUBLE"),
+        ("hca_eff", "DOUBLE"),
+        ("n_sims", "INTEGER"),
+        ("created_at", "TIMESTAMP"),
+    ],
 }
 
 EXPECTED_PRIMARY_KEYS = {
     "kenpom_snapshots": ["snapshot_date", "team"],
     "historical_games": ["game_id"],
     "vegas_closing_odds": ["game_id"],
+    "model_predictions": ["game_id", "model_version"],
 }
 
 

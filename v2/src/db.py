@@ -1,8 +1,9 @@
 """DuckDB storage layer for the CBB prediction engine.
 
-Owns the embedded warehouse at ``data/cbb_engine.duckdb`` and the three
-Lean V1.0 tables. All other modules should obtain connections through
-:func:`get_db_connection` so the schema is guaranteed to exist.
+Owns the embedded warehouse at ``data/cbb_engine.duckdb``: the three
+Lean V1.0 tables plus ``model_predictions`` (Milestone 4). All other
+modules should obtain connections through :func:`get_db_connection` so the
+schema is guaranteed to exist.
 """
 
 from __future__ import annotations
@@ -47,6 +48,26 @@ SCHEMA: dict[str, str] = {
             closing_spread_a DOUBLE,
             vegas_ml_a DOUBLE,
             vegas_ml_b DOUBLE
+        )
+    """,
+    # Milestone 4: simulator output per game, keyed by model_version so
+    # configurations (e.g. HCA values) can be backtested side by side.
+    "model_predictions": """
+        CREATE TABLE IF NOT EXISTS model_predictions (
+            game_id VARCHAR,
+            model_version VARCHAR,
+            as_of DATE,
+            snapshot_date DATE,
+            pred_score_a DOUBLE,
+            pred_score_b DOUBLE,
+            pred_spread_a DOUBLE,
+            pred_total DOUBLE,
+            win_prob_a DOUBLE,
+            cover_prob_a DOUBLE,
+            hca_eff DOUBLE,
+            n_sims INTEGER,
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (game_id, model_version)
         )
     """,
 }
