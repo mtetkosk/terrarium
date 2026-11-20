@@ -1,0 +1,413 @@
+"""Vectorized Monte Carlo game simulator with 3PA-scaled efficiency variance.
+
+Latent means (ARCHITECTURE.md §2.1):
+    E[T]     = AdjT_A * AdjT_B / T_bar
+    E[Eff_A] = AdjO_A * AdjD_B / E_bar + HCA
+    E[Eff_B] = AdjO_B * AdjD_A / E_bar - HCA
+
+T_bar / E_bar are the D-I means of AdjT / AdjO on the same snapshot date as
+the ratings (leak-safe, and they drift ~67-71 / ~105-109 within and across
+seasons). The spec's fixed 67.8 / 105.4 are only a fallback.
+
+Variance (§9.1): sigma_T = 3.5 possessions, sigma_Eff_i = 7.2 + 8.5 * 3PA_i.
+Each trial samples one shared tempo and independent efficiencies, scores are
+round(T * Eff / 100), and regulation ties go to 5-minute overtimes.
+
+Leakage: ratings are always the latest snapshot with snapshot_date <= as_of.
+Pass the game date as ``as_of`` for any historical simulation.
+
+Sign conventions: team A is the home side when ``hca_eff > 0``; margins are
+A minus B; ``spread_a`` uses the betting convention (negative = A favored).
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import logging
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+
+import duckdb
+import numpy as np
+
+from src.db import get_db_connection
+
+log = logging.getLogger(__name__)
+
+# Spec baselines; used only when no usable snapshot averages exist.
+LEAGUE_AVG_TEMPO = 67.8        # T_bar, possessions per 40 minutes
+LEAGUE_AVG_EFFICIENCY = 105.4  # E_bar, points per 100 possessions
+# A snapshot needs at least this many teams for its means to be trusted.
+MIN_TEAMS_FOR_LEAGUE_AVG = 300
+SIGMA_TEMPO = 3.5
+SIGMA_EFF_BASE = 7.2
+SIGMA_EFF_3PA_SLOPE = 8.5
+# Fallback when a team has no known point-in-time 3PA rate (e.g. archive
+# backfill rows). Roughly the D-I mean (0.41 observed on 2026-11-20).
+LEAGUE_AVG_THREE_PA_RATE = 0.40
+# Home-court advantage in points per 100 possessions, applied +HCA to A and
+# -HCA to B (§2.1). Note the margin swing is ~2 * HCA * T / 100 (~4.5 pts at
+# 3.3); calibrate against closing lines in Milestone 4.
+DEFAULT_HCA_EFF = 3.3
+OT_TEMPO_FRACTION = 5 / 40     # 5-minute overtime = 12.5% of game tempo
+MAX_OVERTIMES = 4
+DEFAULT_N_SIMS = 10_000
+
+
+class SimulationError(RuntimeError):
+    """Ratings unavailable or invalid simulation inputs."""
+
+
+@dataclass(frozen=True)
+class TeamRatings:
+    team: str
+    snapshot_date: date
+    adj_o: float
+    adj_d: float
+    adj_t: float
+    three_pa_rate: float
+    three_pa_imputed: bool = False
+
+    @property
+    def sigma_eff(self) -> float:
+        return efficiency_sigma(self.three_pa_rate)
+
+
+@dataclass(frozen=True)
+class LeagueAverages:
+    tempo: float = LEAGUE_AVG_TEMPO
+    efficiency: float = LEAGUE_AVG_EFFICIENCY
+    snapshot_date: date | None = None  # None = spec constants
+
+
+SPEC_LEAGUE_AVERAGES = LeagueAverages()
+
+
+@dataclass(frozen=True)
+class SimulationResult:
+    team_a: str
+    team_b: str
+    n_sims: int
+    hca_eff: float
+    expected_possessions: float
+    expected_eff_a: float
+    expected_eff_b: float
+    sigma_eff_a: float
+    sigma_eff_b: float
+    expected_score_a: float
+    expected_score_b: float
+    expected_margin_a: float
+    spread_a: float
+    expected_total: float
+    win_prob_a: float
+    win_prob_b: float
+    prob_a_by_5: float
+    prob_a_by_10: float
+    prob_b_by_5: float
+    prob_b_by_10: float
+    ot_prob: float
+    league_tempo: float = LEAGUE_AVG_TEMPO
+    league_efficiency: float = LEAGUE_AVG_EFFICIENCY
+    league_snapshot_date: date | None = None
+    snapshot_date_a: date | None = None
+    snapshot_date_b: date | None = None
+    three_pa_imputed_a: bool = False
+    three_pa_imputed_b: bool = False
+    margins: np.ndarray = field(default=None, repr=False, compare=False)
+    totals: np.ndarray = field(default=None, repr=False, compare=False)
+
+    def cover_prob_a(self, spread_a: float) -> float:
+        """P(A covers spread_a), pushes excluded from numerator and denominator."""
+        adj = self.margins + spread_a
+        decided = adj != 0
+        return float((adj[decided] > 0).mean()) if decided.any() else 0.5
+
+    def over_prob(self, total: float) -> float:
+        """P(total > line), pushes excluded."""
+        decided = self.totals != total
+        return float((self.totals[decided] > total).mean()) if decided.any() else 0.5
+
+    @property
+    def fair_ml_a(self) -> float:
+        return prob_to_american(self.win_prob_a)
+
+    @property
+    def fair_ml_b(self) -> float:
+        return prob_to_american(self.win_prob_b)
+
+
+def efficiency_sigma(three_pa_rate: float) -> float:
+    return SIGMA_EFF_BASE + SIGMA_EFF_3PA_SLOPE * three_pa_rate
+
+
+def prob_to_american(p: float) -> float:
+    """No-vig American odds for win probability p."""
+    if p <= 0.0:
+        return float("inf")
+    if p >= 1.0:
+        return float("-inf")
+    return -100.0 * p / (1.0 - p) if p >= 0.5 else 100.0 * (1.0 - p) / p
+
+
+# --------------------------------------------------------------------------
+# Ratings lookup (point-in-time)
+# --------------------------------------------------------------------------
+
+_RATINGS_SQL = """
+    SELECT s.snapshot_date, s.adj_o, s.adj_d, s.adj_t, s.three_pa_rate,
+           (SELECT k.three_pa_rate FROM kenpom_snapshots k
+             WHERE k.team = s.team AND k.snapshot_date <= ?
+               AND k.three_pa_rate IS NOT NULL
+             ORDER BY k.snapshot_date DESC LIMIT 1) AS last_known_3pa
+    FROM kenpom_snapshots s
+    WHERE s.team = ? AND s.snapshot_date <= ?
+    ORDER BY s.snapshot_date DESC
+    LIMIT 1
+"""
+
+
+def get_team_ratings(
+    con: duckdb.DuckDBPyConnection, team: str, as_of: date
+) -> TeamRatings:
+    """Latest ratings with snapshot_date <= as_of (Cardinal Leakage Rule).
+
+    A NULL 3PA rate falls back to the team's latest known rate (also
+    <= as_of), then to LEAGUE_AVG_THREE_PA_RATE.
+    """
+    row = con.execute(_RATINGS_SQL, [as_of, team, as_of]).fetchone()
+    if row is None:
+        known = [r[0] for r in con.execute(
+            "SELECT DISTINCT team FROM kenpom_snapshots").fetchall()]
+        if team in known:
+            raise SimulationError(f"No ratings for {team!r} on or before {as_of}")
+        hint = difflib.get_close_matches(team, known, n=3)
+        raise SimulationError(
+            f"Unknown team {team!r}" + (f"; did you mean {hint}?" if hint else "")
+        )
+
+    snapshot_date, adj_o, adj_d, adj_t, rate, last_known = row
+    imputed = rate is None
+    if imputed:
+        rate = last_known if last_known is not None else LEAGUE_AVG_THREE_PA_RATE
+    return TeamRatings(team, snapshot_date, adj_o, adj_d, adj_t, rate, imputed)
+
+
+def get_league_averages(
+    con: duckdb.DuckDBPyConnection,
+    snapshot_date: date,
+    min_teams: int | None = None,
+) -> LeagueAverages:
+    """D-I mean AdjT and AdjO on ``snapshot_date``; spec constants if the
+    snapshot has fewer than ``min_teams`` teams."""
+    min_teams = MIN_TEAMS_FOR_LEAGUE_AVG if min_teams is None else min_teams
+    n, tempo, eff = con.execute(
+        "SELECT count(*), avg(adj_t), avg(adj_o) FROM kenpom_snapshots "
+        "WHERE snapshot_date = ?",
+        [snapshot_date],
+    ).fetchone()
+    if n < min_teams or tempo is None or eff is None:
+        log.warning("Snapshot %s has %d teams (< %d); using spec league averages",
+                    snapshot_date, n, min_teams)
+        return SPEC_LEAGUE_AVERAGES
+    return LeagueAverages(float(tempo), float(eff), snapshot_date)
+
+
+# --------------------------------------------------------------------------
+# Simulation core
+# --------------------------------------------------------------------------
+
+
+def expected_means(
+    a: TeamRatings,
+    b: TeamRatings,
+    hca_eff: float = 0.0,
+    league: LeagueAverages = SPEC_LEAGUE_AVERAGES,
+) -> tuple[float, float, float]:
+    """(E[T], E[Eff_A], E[Eff_B]) per §2.1."""
+    tempo = a.adj_t * b.adj_t / league.tempo
+    eff_a = a.adj_o * b.adj_d / league.efficiency + hca_eff
+    eff_b = b.adj_o * a.adj_d / league.efficiency - hca_eff
+    return tempo, eff_a, eff_b
+
+
+def simulate_matchup(
+    a: TeamRatings,
+    b: TeamRatings,
+    hca_eff: float = 0.0,
+    n_sims: int = DEFAULT_N_SIMS,
+    seed: int | np.random.Generator | None = None,
+    league: LeagueAverages = SPEC_LEAGUE_AVERAGES,
+) -> SimulationResult:
+    if n_sims <= 0:
+        raise SimulationError("n_sims must be positive")
+    rng = np.random.default_rng(seed)
+    mu_t, mu_a, mu_b = expected_means(a, b, hca_eff, league)
+    sd_a, sd_b = a.sigma_eff, b.sigma_eff
+
+    tempo = np.maximum(rng.normal(mu_t, SIGMA_TEMPO, n_sims), 1.0)
+
+    def points(poss: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        eff_a = np.maximum(rng.normal(mu_a, sd_a, poss.size), 0.0)
+        eff_b = np.maximum(rng.normal(mu_b, sd_b, poss.size), 0.0)
+        return np.rint(poss * eff_a / 100).astype(np.int64), \
+            np.rint(poss * eff_b / 100).astype(np.int64)
+
+    score_a, score_b = points(tempo)
+    went_to_ot = score_a == score_b
+
+    ot_tempo = tempo * OT_TEMPO_FRACTION
+    for _ in range(MAX_OVERTIMES):
+        tied = np.flatnonzero(score_a == score_b)
+        if tied.size == 0:
+            break
+        add_a, add_b = points(ot_tempo[tied])
+        score_a[tied] += add_a
+        score_b[tied] += add_b
+
+    # Sudden death for anything still tied: one point to a side weighted by
+    # expected efficiency.
+    tied = np.flatnonzero(score_a == score_b)
+    if tied.size:
+        p_a = mu_a / (mu_a + mu_b) if (mu_a + mu_b) > 0 else 0.5
+        a_wins = rng.random(tied.size) < p_a
+        score_a[tied[a_wins]] += 1
+        score_b[tied[~a_wins]] += 1
+
+    margins = score_a - score_b
+    totals = score_a + score_b
+    mean_margin = float(margins.mean())
+
+    return SimulationResult(
+        team_a=a.team,
+        team_b=b.team,
+        n_sims=n_sims,
+        hca_eff=hca_eff,
+        expected_possessions=mu_t,
+        expected_eff_a=mu_a,
+        expected_eff_b=mu_b,
+        sigma_eff_a=sd_a,
+        sigma_eff_b=sd_b,
+        expected_score_a=float(score_a.mean()),
+        expected_score_b=float(score_b.mean()),
+        expected_margin_a=mean_margin,
+        spread_a=-mean_margin,
+        expected_total=float(totals.mean()),
+        win_prob_a=float((margins > 0).mean()),
+        win_prob_b=float((margins < 0).mean()),
+        prob_a_by_5=float((margins >= 5).mean()),
+        prob_a_by_10=float((margins >= 10).mean()),
+        prob_b_by_5=float((margins <= -5).mean()),
+        prob_b_by_10=float((margins <= -10).mean()),
+        ot_prob=float(went_to_ot.mean()),
+        league_tempo=league.tempo,
+        league_efficiency=league.efficiency,
+        league_snapshot_date=league.snapshot_date,
+        snapshot_date_a=a.snapshot_date,
+        snapshot_date_b=b.snapshot_date,
+        three_pa_imputed_a=a.three_pa_imputed,
+        three_pa_imputed_b=b.three_pa_imputed,
+        margins=margins,
+        totals=totals,
+    )
+
+
+def simulate_game(
+    team_a: str,
+    team_b: str,
+    as_of: date | None = None,
+    hca_eff: float = 0.0,
+    n_sims: int = DEFAULT_N_SIMS,
+    seed: int | None = None,
+    db_path: str | Path | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
+) -> SimulationResult:
+    """Simulate A vs B using ratings known on ``as_of`` (default: today).
+
+    Pass an open ``con`` to reuse a connection across many games (backtests).
+    """
+    if team_a == team_b:
+        raise SimulationError("team_a and team_b must differ")
+    as_of = as_of or date.today()
+    if con is None:
+        with get_db_connection(read_only=True, db_path=db_path) as own:
+            return simulate_game(team_a, team_b, as_of, hca_eff, n_sims, seed, con=own)
+
+    ra, rb = get_team_ratings(con, team_a, as_of), get_team_ratings(con, team_b, as_of)
+    if ra.snapshot_date != rb.snapshot_date:
+        log.warning("Snapshot dates differ: %s=%s, %s=%s",
+                    team_a, ra.snapshot_date, team_b, rb.snapshot_date)
+    # Both dates are <= as_of, so the later one is still leak-safe.
+    league = get_league_averages(con, max(ra.snapshot_date, rb.snapshot_date))
+    return simulate_matchup(ra, rb, hca_eff, n_sims, seed, league)
+
+
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
+
+
+def _fmt_ml(ml: float) -> str:
+    return f"{ml:+.0f}" if np.isfinite(ml) else "n/a"
+
+
+def format_result(r: SimulationResult) -> str:
+    fav = r.team_a if r.spread_a <= 0 else r.team_b
+    venue = "neutral" if r.hca_eff == 0 else (
+        f"{r.team_a} home (HCA {r.hca_eff:+.1f}/100)" if r.hca_eff > 0
+        else f"{r.team_b} home (HCA {-r.hca_eff:+.1f}/100)")
+    notes = []
+    for team, imputed in ((r.team_a, r.three_pa_imputed_a), (r.team_b, r.three_pa_imputed_b)):
+        if imputed:
+            notes.append(f"{team} 3PA rate imputed")
+    lines = [
+        f"{r.team_a} vs {r.team_b} — {venue}, {r.n_sims:,} sims",
+        f"Ratings as of: {r.team_a} {r.snapshot_date_a}, {r.team_b} {r.snapshot_date_b}"
+        + (f" ({'; '.join(notes)})" if notes else ""),
+        f"League avg ({r.league_snapshot_date or 'spec constants'}): "
+        f"tempo {r.league_tempo:.1f}, eff {r.league_efficiency:.1f}",
+        f"E[poss] {r.expected_possessions:.1f} | E[eff] {r.team_a} {r.expected_eff_a:.1f} "
+        f"(σ {r.sigma_eff_a:.1f}), {r.team_b} {r.expected_eff_b:.1f} (σ {r.sigma_eff_b:.1f})",
+        "",
+        f"Predicted score: {r.team_a} {r.expected_score_a:.1f} - {r.team_b} {r.expected_score_b:.1f}",
+        f"Predicted line:  {fav} {-abs(r.spread_a):.1f}  (total {r.expected_total:.1f})",
+        f"{r.team_a}: win {r.win_prob_a:.1%} (fair ML {_fmt_ml(r.fair_ml_a)}) | "
+        f"by 5+ {r.prob_a_by_5:.1%} | by 10+ {r.prob_a_by_10:.1%}",
+        f"{r.team_b}: win {r.win_prob_b:.1%} (fair ML {_fmt_ml(r.fair_ml_b)}) | "
+        f"by 5+ {r.prob_b_by_5:.1%} | by 10+ {r.prob_b_by_10:.1%}",
+        f"Overtime: {r.ot_prob:.1%}",
+    ]
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Monte Carlo simulation of one game")
+    parser.add_argument("--team1", required=True, help="Team A (home unless --neutral)")
+    parser.add_argument("--team2", required=True, help="Team B")
+    venue = parser.add_mutually_exclusive_group()
+    venue.add_argument("--neutral", action="store_true", help="Neutral court (HCA 0)")
+    venue.add_argument("--hca", type=float, default=None,
+                       help=f"HCA for team1 in pts/100 poss (default {DEFAULT_HCA_EFF}; "
+                       "negative = team2 home)")
+    parser.add_argument("--date", type=date.fromisoformat, default=None,
+                        help="Game date; uses ratings on or before it (default: today)")
+    parser.add_argument("--sims", type=int, default=DEFAULT_N_SIMS)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--db-path", type=Path, default=None)
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
+    hca = 0.0 if args.neutral else (args.hca if args.hca is not None else DEFAULT_HCA_EFF)
+    try:
+        result = simulate_game(args.team1, args.team2, args.date, hca, args.sims,
+                               args.seed, args.db_path)
+    except (SimulationError, FileNotFoundError) as exc:
+        log.error("%s", exc)
+        return 1
+    print(format_result(result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
