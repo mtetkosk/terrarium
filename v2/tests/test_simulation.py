@@ -293,3 +293,40 @@ def test_simulate_game_mixed_snapshot_dates_use_later_one(tmp_path, monkeypatch)
     r = sg.simulate_game("A", "B", as_of=D_LATE, n_sims=1_000, seed=1, db_path=path)
     assert (r.snapshot_date_a, r.snapshot_date_b) == (D_LATE, D_EARLY)
     assert r.league_snapshot_date == D_LATE and r.league_tempo == 72.0
+
+
+# --- early-season margin stretch ----------------------------------------------------
+
+
+@pytest.mark.parametrize("as_of, expected", [
+    (date(2025, 11, 1), 1.48), (date(2025, 10, 20), 1.48),          # season start / preseason clamp
+    (date(2025, 11, 24), 1 + 0.48 * (1 - 23 / 70)),
+    (date(2026, 1, 9), 1.0), (date(2026, 2, 15), 1.0),               # day 69 -> ~1.007; after day 70 -> 1
+    (date(2026, 11, 20), 1 + 0.48 * (1 - 19 / 70)),                  # new season resets
+])
+def test_early_season_stretch_schedule(as_of, expected):
+    assert sg.early_season_stretch(as_of) == pytest.approx(expected, abs=0.01)
+
+
+def test_stretch_scales_neutral_gap_and_keeps_total():
+    t0, a0, b0 = sg.expected_means(DUKE, MSU)
+    t1, a1, b1 = sg.expected_means(DUKE, MSU, margin_stretch=1.3)
+    assert t1 == t0
+    assert a1 + b1 == pytest.approx(a0 + b0)
+    assert a1 - b1 == pytest.approx(1.3 * (a0 - b0))
+    # HCA is added after stretching, unscaled.
+    _, a2, b2 = sg.expected_means(DUKE, MSU, hca_eff=2.0, margin_stretch=1.3)
+    assert (a2 - b2) - (a1 - b1) == pytest.approx(4.0)
+
+
+def test_simulate_game_applies_stretch_by_date(db_path):
+    on = sg.simulate_game("Duke", "Michigan St.", as_of=D_LATE, n_sims=20_000, seed=1, db_path=db_path)
+    off = sg.simulate_game("Duke", "Michigan St.", as_of=D_LATE, n_sims=20_000, seed=1, db_path=db_path,
+                           early_stretch=False)
+    assert on.margin_stretch == pytest.approx(sg.early_season_stretch(D_LATE)) and off.margin_stretch == 1.0
+    assert on.expected_margin_a > off.expected_margin_a > 0
+    assert on.expected_total == pytest.approx(off.expected_total, abs=0.5)
+
+
+def test_default_hca_is_calibrated_value():
+    assert sg.DEFAULT_HCA_EFF == 1.9 and sg.SPEC_HCA_EFF == 3.3

@@ -9,6 +9,13 @@ T_bar / E_bar are the D-I means of AdjT / AdjO on the same snapshot date as
 the ratings (leak-safe, and they drift ~67-71 / ~105-109 within and across
 seasons). The spec's fixed 67.8 / 105.4 are only a fallback.
 
+Early-season stretch (calibrated in Milestone 4): KenPom ratings are pulled
+toward the mean early in the season, so neutral-court margins are too
+compressed. The neutral efficiency gap is multiplied by
+    b(t) = 1 + 0.48 * max(0, 1 - days_since_Nov1 / 70)
+(~1.32 in late Nov, ~1.18 mid-Dec, 1.0 from mid-Jan) before HCA is applied;
+the expected total is unchanged. Fitted on the 2025-26 season only.
+
 Variance (§9.1): sigma_T = 3.5 possessions, sigma_Eff_i = 7.2 + 8.5 * 3PA_i.
 Each trial samples one shared tempo and independent efficiencies, scores are
 round(T * Eff / 100), and regulation ties go to 5-minute overtimes.
@@ -48,9 +55,13 @@ SIGMA_EFF_3PA_SLOPE = 8.5
 # backfill rows). Roughly the D-I mean (0.41 observed on 2026-11-20).
 LEAGUE_AVG_THREE_PA_RATE = 0.40
 # Home-court advantage in points per 100 possessions, applied +HCA to A and
-# -HCA to B (§2.1). Note the margin swing is ~2 * HCA * T / 100 (~4.5 pts at
-# 3.3); calibrate against closing lines in Milestone 4.
-DEFAULT_HCA_EFF = 3.3
+# -HCA to B (§2.1), so the margin swing is ~2 * HCA * T / 100 (~2.6 pts at
+# 1.9). Spec value 3.3 over-credited home teams by 1.6 pts/game in the
+# 2025-26 backtest; 1.9 is the joint fit with the early-season stretch.
+SPEC_HCA_EFF = 3.3
+DEFAULT_HCA_EFF = 1.9
+EARLY_STRETCH_K = 0.48
+EARLY_STRETCH_DAYS = 70
 OT_TEMPO_FRACTION = 5 / 40     # 5-minute overtime = 12.5% of game tempo
 MAX_OVERTIMES = 4
 DEFAULT_N_SIMS = 10_000
@@ -108,6 +119,7 @@ class SimulationResult:
     prob_b_by_5: float
     prob_b_by_10: float
     ot_prob: float
+    margin_stretch: float = 1.0
     league_tempo: float = LEAGUE_AVG_TEMPO
     league_efficiency: float = LEAGUE_AVG_EFFICIENCY
     league_snapshot_date: date | None = None
@@ -219,17 +231,33 @@ def get_league_averages(
 # --------------------------------------------------------------------------
 
 
+def season_start(d: date) -> date:
+    """Nov 1 of the season containing ``d`` (seasons roll over on Jul 1)."""
+    return date(d.year if d.month >= 7 else d.year - 1, 11, 1)
+
+
+def early_season_stretch(as_of: date) -> float:
+    """Margin stretch b(t) for games on ``as_of`` (see module docstring)."""
+    days = max(0, (as_of - season_start(as_of)).days)
+    return 1.0 + EARLY_STRETCH_K * max(0.0, 1.0 - days / EARLY_STRETCH_DAYS)
+
+
 def expected_means(
     a: TeamRatings,
     b: TeamRatings,
     hca_eff: float = 0.0,
     league: LeagueAverages = SPEC_LEAGUE_AVERAGES,
+    margin_stretch: float = 1.0,
 ) -> tuple[float, float, float]:
-    """(E[T], E[Eff_A], E[Eff_B]) per §2.1."""
+    """(E[T], E[Eff_A], E[Eff_B]) per §2.1, with the neutral efficiency gap
+    scaled by ``margin_stretch`` about its midpoint before HCA."""
     tempo = a.adj_t * b.adj_t / league.tempo
-    eff_a = a.adj_o * b.adj_d / league.efficiency + hca_eff
-    eff_b = b.adj_o * a.adj_d / league.efficiency - hca_eff
-    return tempo, eff_a, eff_b
+    eff_a = a.adj_o * b.adj_d / league.efficiency
+    eff_b = b.adj_o * a.adj_d / league.efficiency
+    mid = 0.5 * (eff_a + eff_b)
+    eff_a = mid + margin_stretch * (eff_a - mid)
+    eff_b = mid + margin_stretch * (eff_b - mid)
+    return tempo, eff_a + hca_eff, eff_b - hca_eff
 
 
 def simulate_matchup(
@@ -239,11 +267,12 @@ def simulate_matchup(
     n_sims: int = DEFAULT_N_SIMS,
     seed: int | np.random.Generator | None = None,
     league: LeagueAverages = SPEC_LEAGUE_AVERAGES,
+    margin_stretch: float = 1.0,
 ) -> SimulationResult:
     if n_sims <= 0:
         raise SimulationError("n_sims must be positive")
     rng = np.random.default_rng(seed)
-    mu_t, mu_a, mu_b = expected_means(a, b, hca_eff, league)
+    mu_t, mu_a, mu_b = expected_means(a, b, hca_eff, league, margin_stretch)
     sd_a, sd_b = a.sigma_eff, b.sigma_eff
 
     tempo = np.maximum(rng.normal(mu_t, SIGMA_TEMPO, n_sims), 1.0)
@@ -301,6 +330,7 @@ def simulate_matchup(
         prob_b_by_5=float((margins <= -5).mean()),
         prob_b_by_10=float((margins <= -10).mean()),
         ot_prob=float(went_to_ot.mean()),
+        margin_stretch=margin_stretch,
         league_tempo=league.tempo,
         league_efficiency=league.efficiency,
         league_snapshot_date=league.snapshot_date,
@@ -322,17 +352,20 @@ def simulate_game(
     seed: int | None = None,
     db_path: str | Path | None = None,
     con: duckdb.DuckDBPyConnection | None = None,
+    early_stretch: bool = True,
 ) -> SimulationResult:
     """Simulate A vs B using ratings known on ``as_of`` (default: today).
 
     Pass an open ``con`` to reuse a connection across many games (backtests).
+    ``early_stretch`` applies the early-season margin stretch for ``as_of``.
     """
     if team_a == team_b:
         raise SimulationError("team_a and team_b must differ")
     as_of = as_of or date.today()
     if con is None:
         with get_db_connection(read_only=True, db_path=db_path) as own:
-            return simulate_game(team_a, team_b, as_of, hca_eff, n_sims, seed, con=own)
+            return simulate_game(team_a, team_b, as_of, hca_eff, n_sims, seed,
+                                 con=own, early_stretch=early_stretch)
 
     ra, rb = get_team_ratings(con, team_a, as_of), get_team_ratings(con, team_b, as_of)
     if ra.snapshot_date != rb.snapshot_date:
@@ -340,7 +373,8 @@ def simulate_game(
                     team_a, ra.snapshot_date, team_b, rb.snapshot_date)
     # Both dates are <= as_of, so the later one is still leak-safe.
     league = get_league_averages(con, max(ra.snapshot_date, rb.snapshot_date))
-    return simulate_matchup(ra, rb, hca_eff, n_sims, seed, league)
+    stretch = early_season_stretch(as_of) if early_stretch else 1.0
+    return simulate_matchup(ra, rb, hca_eff, n_sims, seed, league, stretch)
 
 
 # --------------------------------------------------------------------------
@@ -366,7 +400,9 @@ def format_result(r: SimulationResult) -> str:
         f"Ratings as of: {r.team_a} {r.snapshot_date_a}, {r.team_b} {r.snapshot_date_b}"
         + (f" ({'; '.join(notes)})" if notes else ""),
         f"League avg ({r.league_snapshot_date or 'spec constants'}): "
-        f"tempo {r.league_tempo:.1f}, eff {r.league_efficiency:.1f}",
+        f"tempo {r.league_tempo:.1f}, eff {r.league_efficiency:.1f}"
+        + (f" | early-season margin stretch x{r.margin_stretch:.2f}"
+           if r.margin_stretch != 1.0 else ""),
         f"E[poss] {r.expected_possessions:.1f} | E[eff] {r.team_a} {r.expected_eff_a:.1f} "
         f"(σ {r.sigma_eff_a:.1f}), {r.team_b} {r.expected_eff_b:.1f} (σ {r.sigma_eff_b:.1f})",
         "",
@@ -390,6 +426,8 @@ def main(argv: list[str] | None = None) -> int:
     venue.add_argument("--hca", type=float, default=None,
                        help=f"HCA for team1 in pts/100 poss (default {DEFAULT_HCA_EFF}; "
                        "negative = team2 home)")
+    parser.add_argument("--no-early-stretch", action="store_true",
+                        help="Disable the early-season margin stretch")
     parser.add_argument("--date", type=date.fromisoformat, default=None,
                         help="Game date; uses ratings on or before it (default: today)")
     parser.add_argument("--sims", type=int, default=DEFAULT_N_SIMS)
@@ -401,7 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     hca = 0.0 if args.neutral else (args.hca if args.hca is not None else DEFAULT_HCA_EFF)
     try:
         result = simulate_game(args.team1, args.team2, args.date, hca, args.sims,
-                               args.seed, args.db_path)
+                               args.seed, args.db_path,
+                               early_stretch=not args.no_early_stretch)
     except (SimulationError, FileNotFoundError) as exc:
         log.error("%s", exc)
         return 1

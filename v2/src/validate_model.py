@@ -33,7 +33,9 @@ from src.simulate_game import DEFAULT_N_SIMS, SimulationError, simulate_game
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL_VERSION = "lean-v1"
+# lean-v1 = spec HCA 3.3, no stretch (initial backtest). lean-v1.1 = HCA 1.9 +
+# early-season margin stretch (Milestone 4 calibration).
+DEFAULT_MODEL_VERSION = "lean-v1.1"
 # Skip games whose ratings snapshot is older than this (stale, e.g. a March
 # game priced off a February snapshot when the archive has a gap).
 DEFAULT_MAX_STALENESS_DAYS = 3
@@ -260,8 +262,13 @@ _PREDICTION_UPSERT = """
 """
 
 
-def default_model_version(hca_override: float | None) -> str:
-    return DEFAULT_MODEL_VERSION if hca_override is None else f"{DEFAULT_MODEL_VERSION}-hca{hca_override:g}"
+def default_model_version(hca_override: float | None, early_stretch: bool = True) -> str:
+    version = DEFAULT_MODEL_VERSION
+    if hca_override is not None:
+        version += f"-hca{hca_override:g}"
+    if not early_stretch:
+        version += "-nostretch"
+    return version
 
 
 def generate_predictions(
@@ -273,6 +280,7 @@ def generate_predictions(
     seed: int | None = 0,
     hca_override: float | None = None,
     max_staleness_days: int = DEFAULT_MAX_STALENESS_DAYS,
+    early_stretch: bool = True,
 ) -> PredictionRun:
     """Simulate every historical game in [start, end] with point-in-time ratings.
 
@@ -281,7 +289,7 @@ def generate_predictions(
     Seeds are derived per game from ``seed`` and the game_id, so results don't
     depend on which other games are in the run.
     """
-    model_version = model_version or default_model_version(hca_override)
+    model_version = model_version or default_model_version(hca_override, early_stretch)
     run = PredictionRun(model_version)
     games = con.execute(
         """
@@ -302,7 +310,8 @@ def generate_predictions(
         game_seed = None if seed is None else (seed ^ zlib.crc32(game_id.encode()))
         try:
             r = simulate_game(team_a, team_b, as_of=game_date, hca_eff=hca,
-                              n_sims=n_sims, seed=game_seed, con=con)
+                              n_sims=n_sims, seed=game_seed, con=con,
+                              early_stretch=early_stretch)
         except SimulationError as exc:
             log.debug("Skipping %s: %s", game_id, exc)
             run.skipped_no_ratings.append(game_id)
@@ -493,6 +502,8 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--sims", type=int, default=DEFAULT_N_SIMS)
             p.add_argument("--seed", type=int, default=0)
             p.add_argument("--max-staleness", type=int, default=DEFAULT_MAX_STALENESS_DAYS)
+            p.add_argument("--no-early-stretch", action="store_true",
+                           help="Disable the early-season margin stretch")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
@@ -504,7 +515,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "predict":
         with get_db_connection(db_path=args.db_path) as con:
             run = generate_predictions(con, lo, hi, args.model_version, args.sims, args.seed,
-                                       args.hca, args.max_staleness)
+                                       args.hca, args.max_staleness,
+                                       early_stretch=not args.no_early_stretch)
         print(f"{run.model_version}: wrote {run.written} predictions for {lo}..{hi}; "
               f"skipped {len(run.skipped_no_ratings)} without ratings, "
               f"{len(run.skipped_stale)} with snapshots > {args.max_staleness}d old")
