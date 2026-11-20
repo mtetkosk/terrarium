@@ -57,3 +57,9 @@ data/debug/
 .DS_Store
 Thumbs.db
 
+# Ignore data directories and secrets
+**/data/
+data/
+.env
+*.json
+!requirements.json
