@@ -44,6 +44,15 @@ data/db/*.db
 *.log
 data/logs/
 
+# Cache
+data/cache/
+
+# Reports
+data/reports/
+
+# Debug artifacts
+data/debug/
+
 # OS
 .DS_Store
 Thumbs.db

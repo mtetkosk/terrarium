@@ -20,30 +20,37 @@ agents:
 
 llm:
   # Default model (used if agent-specific model not specified)
-  model: "gpt-4o-mini"  # Using OpenAI as default (fast and reliable)
+  model: "gpt-5-mini"  # Using OpenAI as default (fast and reliable)
   
   # Per-agent model optimization
   agent_models:
     # Planning/Coordinator (Medium importance, 1x per run)
-    coordinator: "gpt-4o-mini"
+    coordinator: "gpt-5-mini"
     
     # President (Very High importance, final gatekeeper, 1x per run) - requires thinking
-    president: "gpt-5.2" 
+    president: "gpt-5.4" 
     
     # Researcher (High importance, many calls per run)
-    researcher: "gpt-4o-mini"  
+    researcher: "gpt-5-mini"  
     
     # Modeler (High importance, per game) - requires thinking
-    modeler: "gpt-5.2"  
+    modeler: "gpt-5.4"  
     
     # Picker (High importance, 1-2x per run) - requires thinking
-    picker: "gpt-5.2" 
+    picker: "gpt-5.4" 
     
     # Auditor (Medium importance, 1x per day/week)
-    auditor: "gpt-4o-mini"
+    auditor: "gpt-5-mini"
     
     # Email Generator (Creative writing, needs better instruction following) - requires thinking
-    email: "gpt-5.2"
+    email: "gpt-5.4"
+
+# NCAA Tournament: when enabled, slate_context is set for dates in the window (e.g. "NCAA Tournament — Round of 64")
+# Agents use this to reason about neutral site, single-elimination, and variance. Set enabled: false to disable.
+ncaa_tournament:
+  enabled: true
+  start_month_day: "03-17"  # First Four (approximate)
+  end_month_day: "04-08"    # Championship (approximate)
 
 scheduler:
   run_time: "09:00"  # Daily run time
