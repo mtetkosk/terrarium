@@ -68,6 +68,11 @@ class FakeSheets:
                 props, tab = args["properties"], self._tab(args["properties"]["sheetId"])
                 if "title" in props:
                     tab["title"] = props["title"]
+                if "index" in props:
+                    self.tabs.remove(tab)
+                    self.tabs.insert(props["index"], tab)
+                if "tabColorStyle" in props:
+                    tab["color"] = props["tabColorStyle"]["rgbColor"]
                 grid = props.get("gridProperties")
                 if grid:
                     tab["rows"], tab["cols"] = grid["rowCount"], grid["columnCount"]
@@ -200,8 +205,9 @@ def plain_tab(title):
 # --- tabs --------------------------------------------------------------------------------------
 
 
-def test_build_tabs_has_four_designed_tabs(tabs):
-    assert [t.title for t in tabs] == list(pg.TAB_TITLES)
+def test_build_tabs_desktop_then_phone_tabs(tabs):
+    assert [t.title for t in tabs] == [*pg.TAB_TITLES, *pg.MOBILE_TITLES]
+    assert [t.layout.tab_color for t in tabs] == [None] * 4 + [pg.MOBILE_TAB_COLOR] * 3
     assert all(isinstance(t, pg.GridTab) for t in tabs)
     assert all(pg.cell_text(t.layout.rows[0][0]) for t in tabs)            # every tab has a title bar
 
@@ -220,7 +226,7 @@ def test_publish_creates_tabs_and_writes_cells(tabs):
     sheets, drive = FakeSheets(), FakeDrive()
     url = pg.SheetsPublisher(sheets, drive, "SHEET").publish(tabs)
     assert url == "https://docs.google.com/spreadsheets/d/SHEET/edit"
-    assert [t["title"] for t in sheets.tabs] == list(pg.TAB_TITLES)   # "Sheet1" renamed, 3 added
+    assert [t["title"] for t in sheets.tabs] == [*pg.TAB_TITLES, *pg.MOBILE_TITLES]   # "Sheet1" renamed, rest added
     for tab in tabs:
         grid, lay = sheets.display(tab.title), tab.layout
         assert len(grid) == len(lay.rows) + 1                           # exact fit + spare row
@@ -240,24 +246,35 @@ def test_republish_shrinks_and_clears(tabs):
     stale["cells"][(1, 1)] = {"userEnteredValue": {"stringValue": "old"}}
     publisher.publish(tabs)
     publisher.publish(tabs)
-    assert len(sheets.tabs) == 4
+    assert len(sheets.tabs) == 7
     flat = [v for row in sheets.display("Daily Picks") for v in row]
     assert "old" not in flat
     assert stale["rows"] == len(tabs[0].layout.rows) + 1
 
 
 def test_existing_tabs_are_reused_and_extra_tabs_kept(tabs):
-    sheets = FakeSheets(titles=(*pg.TAB_TITLES, "My notes"))
+    sheets = FakeSheets(titles=(*pg.TAB_TITLES, "My notes", *pg.MOBILE_TITLES))
     pg.SheetsPublisher(sheets, FakeDrive(), "SHEET").publish(tabs)
-    assert [t["sheetId"] for t in sheets.tabs] == [0, 1, 2, 3, 4]
+    assert [t["title"] for t in sheets.tabs] == [*[*pg.TAB_TITLES, *pg.MOBILE_TITLES], "My notes"]      # ours first, in order
     assert sheets.by_title("My notes")["cells"] == {}
     assert not any("addSheet" in r for b in sheets.batches for r in b)
 
 
+def test_tabs_are_reordered_only_when_needed(tabs):
+    sheets = FakeSheets(titles=(pg.MOBILE_TITLES[0], *pg.TAB_TITLES))
+    publisher = pg.SheetsPublisher(sheets, FakeDrive(), "SHEET")
+    publisher.publish(tabs)
+    assert [t["title"] for t in sheets.tabs] == [*pg.TAB_TITLES, *pg.MOBILE_TITLES]
+    assert sheets.by_title(pg.MOBILE_TITLES[0])["color"] == pg._hex(pg.MOBILE_TAB_COLOR)
+    before = len(sheets.batches)
+    publisher.publish(tabs)
+    assert len(sheets.batches) - before == len(tabs)                       # no reorder batch second time
+
+
 def test_one_batch_per_tab(tabs):
-    sheets = FakeSheets(titles=pg.TAB_TITLES)
+    sheets = FakeSheets(titles=[*pg.TAB_TITLES, *pg.MOBILE_TITLES])
     pg.SheetsPublisher(sheets, FakeDrive(), "SHEET").publish(tabs)
-    assert len(sheets.batches) == 4
+    assert len(sheets.batches) == 7
     assert all([next(iter(r)) for r in b[:2]] == ["unmergeCells", "updateSheetProperties"]
                for b in sheets.batches)                                   # unmerge, then resize
 
@@ -368,7 +385,7 @@ def test_cli_publish_dry_run_and_unconfigured(db_path, tmp_path, clean_env):
     res = runner.invoke(cli.app, ["publish", "--dry-run", "--date", str(TODAY), "--preview-path",
                                   str(preview), "--db-path", str(db_path)])
     assert res.exit_code == 0, res.output
-    assert "# Daily Power Rankings 1-N" in preview.read_text()
+    assert "# Daily Power Rankings" in preview.read_text()
 
     res = runner.invoke(cli.app, ["publish", "--date", str(TODAY), "--db-path", str(db_path)])
     assert res.exit_code == 1 and "GOOGLE_SHEET_ID" in res.output
@@ -387,7 +404,7 @@ def test_cli_publish_uses_google_services(db_path, clean_env, tmp_path):
     res = CliRunner().invoke(cli.app, ["publish", "--make-public", "--date", str(TODAY),
                                        "--db-path", str(db_path)])
     assert res.exit_code == 0, res.output
-    assert [t["title"] for t in sheets.tabs] == list(pg.TAB_TITLES)
+    assert [t["title"] for t in sheets.tabs] == [*pg.TAB_TITLES, *pg.MOBILE_TITLES]
     assert drive.permissions_created == [("SHEET", {"type": "anyone", "role": "reader"})]
 
 
@@ -548,9 +565,9 @@ def test_rankings_grid_publishes(rank_grid, tabs):
     publisher = pg.SheetsPublisher(sheets, FakeDrive(), "SHEET")
     publisher.publish([*tabs[:3], rank_grid])
     publisher.publish([*tabs[:3], rank_grid])
-    tab = sheets.by_title("Daily Power Rankings 1-N")
+    tab = sheets.by_title("Daily Power Rankings")
     assert (tab["frozen"], tab["frozen_cols"]) == (4, 6) and len(tab["merges"]) == 2
-    assert sheets.display("Daily Power Rankings 1-N")[4][1] in TEAMS
+    assert sheets.display("Daily Power Rankings")[4][1] in TEAMS
 
 
 def test_l30d_note_explains_early_season_fallback(rank_grid):
@@ -626,11 +643,11 @@ def test_performance_metric_rows_are_single_values(perf_grid):
         assert r[0].get("note")                                   # definition on hover
         v = [c.get("userEnteredValue", {}) for c in r]
         assert "numberValue" in v[1]                              # model value
-        assert set(v[4]) == {"stringValue"}                        # status chip
-        assert v[4]["stringValue"] in ("Good", "OK", "Poor", "Too early", "—")
+        assert set(v[2]) == {"stringValue"}                        # status chip, right after the value
+        assert v[2]["stringValue"] in ("Good", "OK", "Poor", "Too early", "—")
         assert "numberValue" in v[7]                               # games
         if labels[label].benchmark is not None:
-            assert "numberValue" in v[2] and "numberValue" in v[3]
+            assert "numberValue" in v[3] and "numberValue" in v[4]
             assert v[6]["formulaValue"].startswith("=SPARKLINE(") and '"column"' in v[6]["formulaValue"]
         seen += 1
     assert seen == len(labels)
@@ -647,10 +664,10 @@ def test_performance_grid_before_first_live_final(db_path):
 
 def test_status_chip_colors(perf_grid):
     for r in perf_grid.layout.rows:
-        chip = r[4].get("userEnteredValue", {}).get("stringValue")
+        chip = r[2].get("userEnteredValue", {}).get("stringValue")
         for key, (label, fill, _) in pg.STATUS_STYLE.items():
             if chip == label and pg.cell_text(r[0]) in {m.label for m in pg.sc.METRICS}:
-                assert r[4]["userEnteredFormat"]["backgroundColor"] == pg._hex(fill)
+                assert r[2]["userEnteredFormat"]["backgroundColor"] == pg._hex(fill)
 
 
 def test_performance_grid_publishes(perf_grid, tabs):
@@ -670,7 +687,7 @@ def test_lookup_tabs_get_header_filters(grid, rank_grid, tabs):
     publisher = pg.SheetsPublisher(sheets, FakeDrive(), "SHEET")
     publisher.publish([grid, tabs[1], tabs[2], rank_grid])
     picks = sheets.by_title("Daily Picks")["filter"]
-    ranks = sheets.by_title("Daily Power Rankings 1-N")["filter"]
+    ranks = sheets.by_title("Daily Power Rankings")["filter"]
     assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 22)
     assert (ranks["startRowIndex"], ranks["endRowIndex"]) == (3, 4 + len(TEAMS))
     assert sheets.by_title("Model Performance & Stats")["filter"] is None
@@ -685,3 +702,84 @@ def test_filter_is_cleared_when_tab_loses_it(grid, tabs):
     pg.SheetsPublisher(sheets, FakeDrive(), "SHEET").publish(plain)
     assert sheets.by_title("Daily Picks")["filter"] is None
     pg.SheetsPublisher(sheets, FakeDrive(), "SHEET").publish(plain)     # no filter: nothing to clear
+
+
+# --- phone layout ---------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mobile_grid(db_path):
+    with db.get_db_connection(db_path=db_path) as con:
+        return pg.build_mobile_grid(con, TODAY, generated_at=STAMP)
+
+
+def test_mobile_grid_fits_a_phone(mobile_grid):
+    lay = mobile_grid.layout
+    assert lay.n_cols == 3 and sum(lay.col_widths) <= 340 and lay.frozen_cols == 0
+    assert all(len(r) == 3 for r in lay.rows)
+
+
+def test_mobile_card_rows(mobile_grid):
+    text = {pg.cell_text(r[0]): [pg.cell_text(c) for c in r[1:]] for r in mobile_grid.layout.rows}
+    assert text["Away · Home"] == ["Houston", "Kansas"]
+    assert text["8:00 PM · Game 1"] == ["", ""]
+    assert text["Market line"] == ["-1.5", "+1.5"]                  # each team's own spread
+    away, home = (float(x.rstrip("%")) for x in text["Win chance"])
+    assert away + home == pytest.approx(100, abs=1)
+    for label in ("Wins by 10+", "Wins by 5–9", "Wins by 1–4", "Pick", "Edge (pts)", "Proj. total"):
+        assert label in text
+    ladder = sum(float(x.rstrip("%")) for k in ("Wins by 10+", "Wins by 5–9", "Wins by 1–4") for x in text[k])
+    assert ladder == pytest.approx(100, abs=3)                         # whole-percent rounding
+
+
+def test_mobile_grid_publishes(mobile_grid, tabs):
+    sheets = FakeSheets()
+    pg.SheetsPublisher(sheets, FakeDrive(), "SHEET").publish(tabs)          # phone tab is part of build_tabs
+    tab = sheets.by_title(pg.MOBILE_TITLE)
+    assert tab["cols"] == 3 and tab["frozen"] == 1 and tab["color"] == pg._hex(pg.MOBILE_TAB_COLOR)
+
+
+@pytest.fixture
+def mobile_ranks(db_path):
+    with db.get_db_connection(db_path=db_path) as con:
+        return pg.build_mobile_rankings_grid(con, TODAY, generated_at=STAMP)
+
+
+def test_mobile_rankings_list(mobile_ranks, rank_grid):
+    lay = mobile_ranks.layout
+    assert sum(lay.col_widths) <= 340 and lay.frozen_cols == 0
+    assert [pg.cell_text(c) for c in lay.rows[2]] == ["#", "Team", "NDI", "7D", "Trend"]
+    assert lay.frozen_rows == 3 and lay.filter_row == 2
+    mobile = [[pg.cell_text(c) for c in r[:4]] for r in lay.rows[3:]]
+    desktop = [[pg.cell_text(r[i]) for i in (0, 1, 2, 3)] for r in rank_grid.layout.rows[4:]]
+    assert mobile == desktop                                                # same ranks, NDI, 7-day change
+    assert all(r[4]["userEnteredValue"]["formulaValue"].startswith("=SPARKLINE(") for r in lay.rows[3:])
+
+
+@pytest.fixture
+def mobile_ledger(db_path):
+    with db.get_db_connection(db_path=db_path) as con:
+        return pg.build_mobile_ledger_grid(con, TODAY, generated_at=STAMP)
+
+
+def test_mobile_ledger(mobile_ledger):
+    lay = mobile_ledger.layout
+    assert sum(lay.col_widths) <= 345
+    text = [[pg.cell_text(c) for c in r] for r in lay.rows]
+    stats = {r[0]: r[3] for r in text if r[0] and r[3]}
+    assert stats["Against the spread"] == "100.0%" and stats["Units @ −110"] == "+1.0"
+    assert stats["Avg closing-line value"] == "+1.50"
+    header = next(i for i, r in enumerate(text) if r[0] == "Date")
+    assert text[header + 1] == ["11/19", "Duke", "Michigan St.", "-3.0", "Cover"]   # Duke's own line
+    assert lay.filter_row == header
+
+
+def test_mobile_ledger_caps_rows(db_path):
+    with db.get_db_connection(db_path=db_path) as con:
+        grid = pg.build_mobile_ledger_grid(con, TODAY, max_rows=0)
+    assert "last 0 below" in pg.cell_text(grid.layout.rows[1][0])
+
+
+def test_performance_status_fits_on_a_phone(perf_grid):
+    assert sum(pg.PERF_WIDTHS[:3]) <= 340
+    assert pg.cell_text(next(r for r in perf_grid.layout.rows if pg.cell_text(r[0]) == "Metric")[2]) == "Status"

@@ -40,7 +40,7 @@ from src import validate_model as vm
 from src.odds_api import EASTERN
 
 TAB_TITLES = ("Daily Picks", "Historical Picks", "Model Performance & Stats",
-              "Daily Power Rankings 1-N")
+              "Daily Power Rankings")
 SCOPES = ("https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive")
 DEFAULT_ROW_PX = 21
 
@@ -55,11 +55,14 @@ def season_of(d: date) -> int:
 
 def build_tabs(con: duckdb.DuckDBPyConnection, today: date,
                generated_at: datetime | None = None) -> list["GridTab"]:
-    """The four published tabs, in order."""
+    """The published tabs, in order: four desktop tabs, then the phone versions."""
     return [build_daily_grid(con, today, generated_at=generated_at),
             build_ledger_grid(con, today, generated_at=generated_at),
             build_performance_grid(con, today, generated_at=generated_at),
-            build_rankings_grid(con, today, generated_at=generated_at)]
+            build_rankings_grid(con, today, generated_at=generated_at),
+            build_mobile_grid(con, today, generated_at=generated_at),
+            build_mobile_ledger_grid(con, today, generated_at=generated_at),
+            build_mobile_rankings_grid(con, today, generated_at=generated_at)]
 
 
 def cell_text(cell: dict) -> str:
@@ -122,6 +125,7 @@ class SheetLayout:
     row_heights: dict[int, int] = field(default_factory=dict)              # row index -> pixels
     default_row_px: int = DEFAULT_ROW_PX
     filter_row: int | None = None      # header row of a filterable table (to the last row)
+    tab_color: str | None = None       # hex color of the tab label
 
 
 @dataclass
@@ -463,7 +467,7 @@ STATUS_STYLE = {   # status -> (label, fill, text)
 DIRECTION_STYLE = {"up": ("▲ Improving", TREND_UP), "flat": ("● Steady", TREND_FLAT),
                    "down": ("▼ Slipping", TREND_DOWN)}
 PERF_COLORS = {"live": "#0F766E", "backtest": "#2F5D8A"}
-PERF_WIDTHS = [250, 84, 84, 96, 84, 108, 150, 70, 200]
+PERF_WIDTHS = [176, 72, 84, 84, 96, 108, 150, 70, 200]   # Metric · Model · Status fit a phone
 UNIT_FMT = {"pct": ("0.0%", "PERCENT"), "pts": ("0.00", "NUMBER"), "brier": ("0.000", "NUMBER"),
             "bss": ("+0.000;-0.000;0.000", "NUMBER"), "signed_pts": ("+0.00;-0.00;0.00", "NUMBER")}
 DIFF_FMT = {"pct": ('+0.0%;-0.0%;0.0%', "PERCENT"), "pts": ("+0.00;-0.00;0.00", "NUMBER"),
@@ -535,10 +539,10 @@ def _scorecard_block(sh: _Sheet, rows: list[tuple], color: str) -> None:
     recent_sc = sc.scorecard(sc.recent(rows))
     sh.header([("Metric", "What is being measured. Hover a metric name for its definition."),
                ("Model", "The model's value."),
-               ("Benchmark", "What the model is measured against (see the last column)."),
-               ("vs. Benchmark", "Model minus benchmark. Green = the model is ahead, red = behind."),
                ("Status", f"Good = at or ahead of the benchmark; OK = slightly behind; Poor = clearly "
                           f"behind. 'Too early' until {sc.MIN_SAMPLE} games are graded."),
+               ("Benchmark", "What the model is measured against (see the last column)."),
+               ("vs. Benchmark", "Model minus benchmark. Green = the model is ahead, red = behind."),
                ("Direction", f"Last {sc.RECENT_DAYS} days vs. the whole sample: Improving, Steady or "
                              "Slipping."),
                ("Weekly trend", "Bars: each week's margin over the benchmark (green = model ahead, "
@@ -549,9 +553,11 @@ def _scorecard_block(sh: _Sheet, rows: list[tuple], color: str) -> None:
         bg = ZEBRA if i % 2 else WHITE
         value, bench = m.value(season), (m.benchmark(season) if m.benchmark else None)
         pattern, ptype = UNIT_FMT[m.unit]
-        cells = [{**_text(m.label, _fmt(bg=bg, bold=True)), "note": m.note},
+        st = sc.status(m, season)
+        cells = [{**_text(m.label, _fmt(bg=bg, bold=True, wrap="WRAP")), "note": m.note},
                  _numcell(value if sc._finite(value) else None,
                           _fmt(bg=bg, bold=True, align="CENTER", pattern=pattern, pattern_type=ptype)),
+                 _chip(*STATUS_STYLE[st]) if st else _text("—", _fmt(bg=bg, fg=MUTED, align="CENTER")),
                  _numcell(bench if sc._finite(bench) else None,
                           _fmt(bg=bg, fg=MUTED, align="CENTER", pattern=pattern, pattern_type=ptype))]
         adv = sc.advantage(m, season)
@@ -562,8 +568,6 @@ def _scorecard_block(sh: _Sheet, rows: list[tuple], color: str) -> None:
                                                       pattern=dpat, pattern_type=dtype)))
         else:
             cells.append(_text("—", _fmt(bg=bg, fg=MUTED, align="CENTER")))
-        st = sc.status(m, season)
-        cells.append(_chip(*STATUS_STYLE[st]) if st else _text("—", _fmt(bg=bg, fg=MUTED, align="CENTER")))
         trend = sc.direction(m, season, recent_sc, len(weeks))
         if trend:
             label, tcolor = DIRECTION_STYLE[trend]
@@ -573,7 +577,7 @@ def _scorecard_block(sh: _Sheet, rows: list[tuple], color: str) -> None:
         cells.append({**_weekly_chart(m, sc.weekly_series(m, weeks), trend), "userEnteredFormat": _fmt(bg=bg)})
         cells.append(_numcell(m.sample(season), _fmt(bg=bg, fg=MUTED, align="CENTER", pattern="#,##0")))
         cells.append(_text(m.benchmark_label or "No benchmark", _fmt(bg=bg, fg=MUTED, size=9)))
-        sh.add(cells, 28)
+        sh.add(cells, 36)
 
 
 def _tranche_block(sh: _Sheet, rows: list[tuple], color: str) -> None:
@@ -854,6 +858,211 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
 
 
 # --------------------------------------------------------------------------
+# Daily Picks for phones: one vertical card per game, three narrow columns
+# --------------------------------------------------------------------------
+
+MOBILE_TITLES = ("📱 Daily Picks", "📱 Historical Picks", "📱 Power Rankings")
+MOBILE_TITLE = MOBILE_TITLES[0]
+MOBILE_TAB_COLOR = "#0F766E"
+MOBILE_WIDTHS = [104, 108, 108]          # ~320 px: fits a phone screen in the Sheets app
+
+
+def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
+                      generated_at: datetime | None = None) -> GridTab:
+    games = lp.slate_games(con, today)
+    stamp = (generated_at or datetime.now(EASTERN)).astimezone(EASTERN)
+    sh = _Sheet(3)
+    bar = _fmt(bg=_hex(NAVY), fg=WHITE, bold=True, size=13)
+    r = sh.add([_text(f"Daily Picks · {today:%a %b %-d}", bar), {"userEnteredFormat": bar},
+                {"userEnteredFormat": bar}], 34)
+    sh.merges.append((r, r + 1, 0, 3))
+    sub = _fmt(bg=_hex("#EEF2F7"), fg=MUTED, size=8, italic=True, wrap="WRAP")
+    r = sh.add([_text(f"{len(games)} games · updated {stamp:%-I:%M %p} ET · lines are each team's spread · "
+                      "tap ⋮ › Find to search", sub), {"userEnteredFormat": sub}, {"userEnteredFormat": sub}], 32)
+    sh.merges.append((r, r + 1, 0, 3))
+    label_fmt = lambda bg: _fmt(bg=bg, fg=MUTED, bold=True, size=9)          # noqa: E731
+
+    def pair(label, away, home, pattern, ptype="NUMBER", bg=WHITE, tint=None, bold_fav=None):
+        cells = [_text(label, label_fmt(bg))]
+        for k, (v, color) in enumerate(((away, AWAY_COLOR), (home, HOME_COLOR))):
+            t = 0.0 if tint is None or v is None else min(1.0, v / tint) * 0.85
+            fmt = _fmt(bg=_tint(color, t) if t else bg, fg=WHITE if t > 0.55 else INK,
+                       bold=(bold_fav == k) or t > 0.55, align="CENTER", pattern=pattern, pattern_type=ptype)
+            cells.append(_numcell(v, fmt))
+        sh.add(cells)
+
+    def merged(label, cell, bg=WHITE, height=None):
+        r = sh.add([_text(label, label_fmt(bg)), cell, {"userEnteredFormat": cell.get("userEnteredFormat", {})}],
+                   height)
+        sh.merges.append((r, r + 1, 1, 3))
+
+    for i, g in enumerate(games):
+        sh.add([], 10)
+        head = _fmt(bg=_hex("#475569"), fg=WHITE, bold=True, size=10)
+        r = sh.add([_text(f"{g.tip_et:%-I:%M %p} · Game {i + 1}", head), {"userEnteredFormat": head},
+                    {"userEnteredFormat": head}], 26)
+        sh.merges.append((r, r + 1, 0, 3))
+        fav = 0 if g.model_fav == g.away else 1
+        team = lambda name, k: _text(name, _fmt(bold=k == fav, align="CENTER", wrap="WRAP",   # noqa: E731
+                                                fg=_hex(AWAY_COLOR if k == 0 else HOME_COLOR)))
+        sh.add([_text("Away · Home", label_fmt(WHITE)), team(g.away, 0), team(g.home, 1)], 34)
+        pair("Projected", round(g.away_pts), round(g.home_pts), "0", bg=ZEBRA, bold_fav=fav)
+        pair("Win chance", g.away_win, g.home_win, "0%", "PERCENT", tint=1.0)
+        neg = lambda x: None if x is None else -x                                           # noqa: E731
+        pair("Model line", neg(g.model_line), g.model_line, SPREAD_FMT, bg=ZEBRA)
+        pair("Market line", neg(g.market_line), g.market_line, SPREAD_FMT)
+        if g.pick is None:
+            pick = _text("—", _fmt(bg=ZEBRA, fg=MUTED, align="CENTER"))
+        elif g.edge >= EDGE_STRONG:
+            pick = _text(g.pick, _fmt(bg=_hex(PICK_STRONG), fg=WHITE, bold=True, align="CENTER"))
+        elif g.edge >= EDGE_LEAN:
+            pick = _text(g.pick, _fmt(bg=_hex(PICK_LEAN), fg=_hex("#14532D"), bold=True, align="CENTER"))
+        else:
+            pick = _text(g.pick, _fmt(bg=ZEBRA, fg=MUTED, align="CENTER"))
+        merged("Pick", pick, bg=ZEBRA)
+        merged("Edge (pts)", _numcell(g.edge, _fmt(align="CENTER", pattern="0.0")))
+        if g.buckets:
+            b = g.buckets
+            pair("Wins by 10+", b[0], b[5], "0%", "PERCENT", bg=ZEBRA, tint=0.5)
+            pair("Wins by 5–9", b[1], b[4], "0%", "PERCENT", tint=0.5)
+            pair("Wins by 1–4", b[2], b[3], "0%", "PERCENT", bg=ZEBRA, tint=0.5)
+        merged("Proj. total", _numcell(g.total, _fmt(align="CENTER", pattern="0.0")))
+        merged("Market total", _numcell(g.market_total, _fmt(bg=ZEBRA, fg=MUTED, align="CENTER", pattern="0.0")),
+               bg=ZEBRA)
+    if not games:
+        sh.add([_text("No locked picks for today yet.", _fmt(fg=MUTED, italic=True, wrap="WRAP"))])
+    return GridTab(title, SheetLayout(sh.rows, 3, frozen_rows=1, col_widths=list(MOBILE_WIDTHS),
+                                      merges=sh.merges, row_heights=sh.heights, default_row_px=24,
+                                      tab_color=MOBILE_TAB_COLOR))
+
+
+# --------------------------------------------------------------------------
+# Phone versions of Power Rankings and Historical Picks
+# --------------------------------------------------------------------------
+
+MOBILE_RANK_WIDTHS = [36, 134, 54, 48, 64]       # Rank · Team · NDI · 7D · Trend  (~336 px)
+MOBILE_LEDGER_WIDTHS = [44, 104, 96, 46, 54]     # Date · Pick · Opponent · Line · ATS (~344 px)
+MOBILE_LEDGER_ROWS = 50
+
+
+def _mobile_top(sh: _Sheet, title: str, subtitle: str) -> None:
+    bar = _fmt(bg=_hex(NAVY), fg=WHITE, bold=True, size=13)
+    r = sh.add([_text(title, bar)] + [{"userEnteredFormat": bar} for _ in range(sh.n_cols - 1)], 34)
+    sh.merges.append((r, r + 1, 0, sh.n_cols))
+    sub = _fmt(bg=_hex("#EEF2F7"), fg=MUTED, size=8, italic=True, wrap="WRAP")
+    r = sh.add([_text(subtitle, sub)] + [{"userEnteredFormat": sub} for _ in range(sh.n_cols - 1)], 32)
+    sh.merges.append((r, r + 1, 0, sh.n_cols))
+
+
+def _mobile_header(sh: _Sheet, labels: list[str], color: str) -> int:
+    cells = []
+    for label in labels:
+        fmt = _fmt(bg=_tint(color, 0.16), bold=True, size=9, align="CENTER", wrap="WRAP")
+        fmt["borders"] = {"bottom": {"style": "SOLID_MEDIUM", "color": _hex(color)}}
+        cells.append(_text(label, fmt))
+    return sh.add(cells, 28)
+
+
+def build_mobile_rankings_grid(con, today: date, title: str = MOBILE_TITLES[2],
+                               generated_at: datetime | None = None) -> GridTab:
+    current = pr.ensure_rankings(con, today)
+    history = pr.rank_history(con, today, RANK_HISTORY_DAYS)
+    week_ago = dict(history).get(today - timedelta(days=7))
+    stamp = (generated_at or datetime.now(EASTERN)).astimezone(EASTERN)
+    sh = _Sheet(len(MOBILE_RANK_WIDTHS))
+    _mobile_top(sh, f"Power Rankings · {today:%a %b %-d}",
+                f"{len(current)} teams by NDI (avg. chance to beat every D-I team on a neutral floor) · "
+                f"updated {stamp:%-I:%M %p} ET · tap ⋮ › Find to search")
+    header = _mobile_header(sh, ["#", "Team", "NDI", "7D", "Trend"], TEAM_COLOR)
+    for i, r in enumerate(current):
+        bg = ZEBRA if i % 2 else WHITE
+        fmt = lambda **kw: _fmt(bg=kw.pop("bg", bg), **kw)                          # noqa: E731
+        if week_ago is None or r.team not in week_ago:
+            change = _text("new" if week_ago is not None else "—", fmt(fg=MUTED, align="CENTER"))
+        else:
+            d = week_ago[r.team] - r.rank
+            fg = _hex(TREND_UP) if d > 0 else _hex(TREND_DOWN) if d < 0 else MUTED
+            change = _numcell(d, fmt(fg=fg, bold=d != 0, size=9, align="CENTER", pattern=CHANGE_FMT))
+        trend = [ranks[r.team] for _, ranks in reversed(history) if r.team in ranks] + [r.rank]
+        row = [_numcell(r.rank, fmt(bold=True, align="CENTER", pattern="0")),
+               _text(r.team, fmt(bold=r.rank <= TOP_N_DIVIDER)),
+               _numcell(r.ndi, fmt(bg=_tint("#0F766E", 0.55 * r.ndi ** 2), size=9, align="CENTER",
+                                   pattern="0.0%", pattern_type="PERCENT")),
+               change,
+               {**_trend_cell(trend), "userEnteredFormat": fmt()}]
+        if r.rank == TOP_N_DIVIDER and len(current) > TOP_N_DIVIDER:
+            for c in row:
+                c.setdefault("userEnteredFormat", {})["borders"] = {
+                    "bottom": {"style": "SOLID_MEDIUM", "color": _hex(NAVY)}}
+        sh.add(row)
+    return GridTab(title, SheetLayout(sh.rows, sh.n_cols, frozen_rows=header + 1,
+                                      col_widths=list(MOBILE_RANK_WIDTHS), merges=sh.merges,
+                                      row_heights=sh.heights, default_row_px=24,
+                                      filter_row=header if current else None, tab_color=MOBILE_TAB_COLOR))
+
+
+def build_mobile_ledger_grid(con, today: date, title: str = MOBILE_TITLES[1],
+                             generated_at: datetime | None = None,
+                             max_rows: int = MOBILE_LEDGER_ROWS) -> GridTab:
+    games = lp.ledger_games(con)
+    rec = _record(games)
+    stamp = (generated_at or datetime.now(EASTERN)).astimezone(EASTERN)
+    sh = _Sheet(len(MOBILE_LEDGER_WIDTHS))
+    shown = games[:max_rows]
+    _mobile_top(sh, "Historical Picks",
+                f"{rec['n']:,} graded picks · last {len(shown)} below (full ledger on the Historical Picks tab) · "
+                f"updated {stamp:%-I:%M %p} ET")
+
+    def grade(x, bench, ok):
+        return None if x is None else ("good" if x >= bench else "ok" if x >= bench - ok else "poor")
+
+    stats = [("Against the spread", rec["ats_pct"], "0.0%", "PERCENT", grade(rec["ats_pct"], sc.ATS_BREAK_EVEN, 0.024)),
+             ("Covers", rec["covers"], "0", "NUMBER", None),
+             ("Losses", rec["losses"], "0", "NUMBER", None),
+             ("Pushes", rec["pushes"], "0", "NUMBER", None),
+             ("Units @ −110", rec["units"], "+0.0;-0.0;0.0", "NUMBER", grade(rec["units"], 0.0, 3.0)),
+             ("Straight up", rec["su_pct"], "0.0%", "PERCENT", None),
+             ("Avg closing-line value", rec["clv"], "+0.00;-0.00;0.00", "NUMBER", grade(rec["clv"], 0.0, 0.25)),
+             ("Beat the closing line", rec["beat_close"], "0%", "PERCENT", grade(rec["beat_close"], 0.5, 0.05))]
+    for i, (label, value, pattern, ptype, g) in enumerate(stats):
+        bg = ZEBRA if i % 2 else WHITE
+        lab = _fmt(bg=bg, fg=MUTED, bold=True, size=9)
+        val = _fmt(bg=GRADE_TINT.get(g, bg), bold=True, size=11, align="CENTER", pattern=pattern, pattern_type=ptype)
+        r = sh.add([_text(label, lab), {"userEnteredFormat": lab}, {"userEnteredFormat": lab},
+                    _numcell(value, val), {"userEnteredFormat": val}], 26)
+        sh.merges += [(r, r + 1, 0, 3), (r, r + 1, 3, 5)]
+    if len(rec["running"]) >= 2:
+        color = TREND_UP if rec["running"][-1] >= 0 else TREND_DOWN
+        nums = ",".join(f"{u:.1f}" for u in rec["running"])
+        lab = _fmt(fg=MUTED, bold=True, size=9)
+        r = sh.add([_text("Units over time", lab), {"userEnteredFormat": lab}, {"userEnteredFormat": lab},
+                    {"userEnteredValue": {"formulaValue":
+                     f'=SPARKLINE({{{nums}}},{{"charttype","line";"linewidth",2;"color","{color}"}})'}}, {}], 30)
+        sh.merges += [(r, r + 1, 0, 3), (r, r + 1, 3, 5)]
+    sh.add([], 12)
+    header = _mobile_header(sh, ["Date", "Pick", "Opponent", "Line", "ATS"], "#2F5D8A")
+    for i, g in enumerate(shown):
+        bg = ZEBRA if i % 2 else WHITE
+        if g.pick is None:
+            pick, opp, line = "No pick", "—", None
+        else:
+            home_pick = g.pick == g.home
+            pick, opp = g.pick, (g.away if home_pick else g.home)
+            line = None if g.pick_line is None else (g.pick_line if home_pick else -g.pick_line)
+        sh.add([_text(f"{g.game_date.month}/{g.game_date.day}", _fmt(bg=bg, fg=MUTED, size=9, align="CENTER")),
+                _text(pick, _fmt(bg=bg, bold=g.pick is not None, size=9, wrap="WRAP")),
+                _text(opp, _fmt(bg=bg, fg=MUTED, size=9, wrap="WRAP")),
+                _numcell(line, _fmt(bg=bg, size=9, align="CENTER", pattern=SPREAD_FMT)),
+                _chip_cell(g.ats, bg)], 30)
+    if not games:
+        sh.add([_text("No graded picks yet: tonight's games are graded once they go final.",
+                      _fmt(fg=MUTED, italic=True, wrap="WRAP"))])
+    return GridTab(title, SheetLayout(sh.rows, sh.n_cols, frozen_rows=1, col_widths=list(MOBILE_LEDGER_WIDTHS),
+                                      merges=sh.merges, row_heights=sh.heights, default_row_px=24,
+                                      filter_row=header if shown else None, tab_color=MOBILE_TAB_COLOR))
+
+
+# --------------------------------------------------------------------------
 # Google Sheets / Drive
 # --------------------------------------------------------------------------
 
@@ -915,6 +1124,10 @@ class SheetsPublisher:
             reply = self._batch([{"addSheet": {"properties": {"title": t, "index": i}}} for i, t in missing])
             for (_, t), r in zip(missing, reply["replies"]):
                 by_title[t] = r["addSheet"]["properties"]["sheetId"]
+        current = [p["title"] for p in self._properties()]
+        if [t for t in current if t in titles] != list(titles) or current[:len(titles)] != list(titles):
+            self._batch([{"updateSheetProperties": {"properties": {"sheetId": by_title[t], "index": i},
+                                                    "fields": "index"}} for i, t in enumerate(titles)])
         return {t: by_title[t] for t in titles}
 
     def write_tab(self, sheet_id: int, content: GridTab) -> None:
@@ -930,8 +1143,9 @@ class SheetsPublisher:
             {"updateSheetProperties": {
                 "properties": {"sheetId": sheet_id, "gridProperties": {
                     "rowCount": n_rows, "columnCount": lay.n_cols,
-                    "frozenRowCount": lay.frozen_rows, "frozenColumnCount": lay.frozen_cols}},
-                "fields": "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount)"}},
+                    "frozenRowCount": lay.frozen_rows, "frozenColumnCount": lay.frozen_cols},
+                    **({"tabColorStyle": {"rgbColor": _hex(lay.tab_color)}} if lay.tab_color else {})},
+                "fields": "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount),tabColorStyle"}},
             # fields="*" on every cell in range also wipes the previous publish's values/formats/notes.
             {"updateCells": {"range": whole, "rows": [{"values": r} for r in lay.rows], "fields": "*"}},
             *[{"mergeCells": {"range": {"sheetId": sheet_id, "startRowIndex": r0, "endRowIndex": r1,
