@@ -29,8 +29,9 @@ from src import odds_api
 from src import power_rankings as pr
 from src import publish_gsheet as pg
 from src import sanity
+from src import state as state_mod
 from src import validate_model as vm
-from src.db import PROJECT_ROOT, get_db_connection
+from src.db import DEFAULT_DB_PATH, PROJECT_ROOT, get_db_connection
 from src.import_v1 import DEFAULT_V1_DB, import_v1
 from src.simulate_game import (
     DEFAULT_HCA_EFF,
@@ -401,6 +402,34 @@ def publish(
     with console.status("Publishing to Google Sheets..."):
         url = pg.SheetsPublisher(sheets, drive, sheet_id).publish(tabs, make_public=make_public)
     console.print(f"[green]Published[/] {url}" + (" (link sharing turned on)" if make_public else ""))
+
+
+state_app = typer.Typer(no_args_is_help=True, help="Save/restore the warehouse as CSVs (cloud daily job).")
+app.add_typer(state_app, name="state")
+
+
+@state_app.command("export")
+def state_export(out_dir: Path = typer.Argument(..., help="Directory for <table>.csv files"),
+                 db_path: Path = DbPath):
+    """Write every table to sorted CSVs."""
+    try:
+        with get_db_connection(read_only=True, db_path=db_path) as con:
+            counts = state_mod.export_state(con, out_dir)
+    except state_mod.StateError as exc:
+        _fail(str(exc))
+    console.print(f"[green]Exported[/] {sum(counts.values()):,} rows to {out_dir}: "
+                  + ", ".join(f"{t} {n:,}" for t, n in counts.items()))
+
+
+@state_app.command("import")
+def state_import(in_dir: Path = typer.Argument(..., help="Directory with <table>.csv files"),
+                 db_path: Path = DbPath):
+    """Rebuild the warehouse from CSVs (replaces the database file)."""
+    try:
+        counts = state_mod.import_state(in_dir, db_path or DEFAULT_DB_PATH)
+    except state_mod.StateError as exc:
+        _fail(str(exc))
+    console.print(f"[green]Imported[/] {sum(counts.values()):,} rows from {in_dir}")
 
 
 if __name__ == "__main__":
