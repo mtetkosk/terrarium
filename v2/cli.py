@@ -310,11 +310,22 @@ def odds(
 def picks(
     date_: str = typer.Option(None, "--date", help="Slate date, US/Eastern (default today)"),
     sims: int = typer.Option(DEFAULT_N_SIMS),
+    relock: bool = typer.Option(False, "--relock",
+                                help="Release today's picks for games that haven't tipped, refresh venues, "
+                                     "and lock them again (after a fix). Started games are never changed."),
     db_path: Path = DbPath,
 ):
     """Lock pre-game picks for the day's slate (never overwrites existing picks)."""
     day = _date(date_) or date.today()
     with get_db_connection(db_path=db_path) as con:
+        if relock:
+            released = lp.unlock_unstarted(con, day)
+            console.print(f"[yellow]Released {len(released)} unstarted pick(s)[/] for {day}; started games untouched")
+            try:
+                v = venues_mod.update(con, day)
+                console.print(f"Venues: {v.neutral} neutral site(s); home-court removed from {v.hca_zeroed} game(s)")
+            except requests.RequestException as exc:
+                console.print(f"[yellow]Venue lookup failed ({exc}); re-locking with home-court as listed[/]")
         run = lp.make_picks(con, day, n_sims=sims)
         rows = lp.daily_picks(con, day)
     console.print(f"[green]{run.created} new picks[/] for {day}; {run.already_locked} already locked; "

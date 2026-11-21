@@ -52,6 +52,23 @@ def slate(con: duckdb.DuckDBPyConnection, day: date) -> list[tuple]:
     return rows
 
 
+def unlock_unstarted(con: duckdb.DuckDBPyConnection, day: date, now: datetime | None = None) -> list[str]:
+    """Release ``day``'s locked live picks for games that have NOT tipped yet, so
+    they can be re-locked after a fix (e.g. venue data). Started games are never
+    touched, so the ledger stays a pre-game record. Returns the released ids."""
+    now = now or utc_now()
+    ids = [r[0] for r in con.execute(
+        """SELECT p.game_id FROM model_predictions p
+           JOIN scheduled_games s USING (game_id) JOIN historical_games g USING (game_id)
+           WHERE p.model_version = ? AND g.game_date = ? AND s.commence_time > ?""",
+        [LIVE_MODEL_VERSION, day, now]).fetchall()]
+    if ids:
+        marks = ",".join("?" for _ in ids)
+        con.execute(f"DELETE FROM model_predictions WHERE model_version = ? AND game_id IN ({marks})",
+                    [LIVE_MODEL_VERSION, *ids])
+    return ids
+
+
 def make_picks(
     con: duckdb.DuckDBPyConnection,
     day: date,

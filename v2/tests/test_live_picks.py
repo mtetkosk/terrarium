@@ -92,3 +92,13 @@ def test_make_picks_holds_back_suspicious_games(con):
     again = lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 16), n_sims=2000)
     assert again.created == 1 and again.held_back == []
     assert con.execute("SELECT count(*) FROM sanity_issues").fetchone()[0] == 0
+
+
+
+def test_unlock_releases_only_unstarted_games(con):
+    lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 15), n_sims=2000)          # both games locked
+    released = lp.unlock_unstarted(con, DAY, now=datetime(2026, 1, 20, 18))      # "early" tipped at 17:00
+    assert released == ["late"]
+    assert [r[0] for r in con.execute("SELECT game_id FROM model_predictions").fetchall()] == ["early"]
+    again = lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 18), n_sims=2000)
+    assert (again.created, again.already_locked, again.started) == (1, 1, 0)
