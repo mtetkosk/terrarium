@@ -76,6 +76,7 @@ The 10,000 simulated final scores give:
 | Projected total | Average combined points |
 | Win probability | Share of trials each team wins |
 | Margin of victory | Share of trials in each band: Away 10+, Away 5–9, Away 1–4, Home 1–4, Home 5–9, Home 10+ (these add up to 100%) |
+| Game type | From the projected margin: Toss-up (under 3 points; the favorite wins about 50–62% of the time), Competitive (3–9.9; 62–84%), Comfortable (10–19.9; 84–98%), Blowout (20+; 98%+). Filterable on the sheet |
 
 ## 6. Worked example: Kent St. at Cleveland St. (November 21, 2026)
 

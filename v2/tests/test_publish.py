@@ -325,12 +325,12 @@ def test_ledger_grid_record_strip(ledger_grid):
 def test_ledger_grid_rows_one_value_per_cell(ledger_grid):
     lay = ledger_grid.layout
     header = [pg.cell_text(c) for c in lay.rows[6]]
-    assert header == ["Date", "Away", "Home", "Site", "Venue", "City", "Model", "Model Margin", "Pick", "Pick Line",
-                      "Close Line", "CLV", "Away Pts", "Home Pts", "Final Margin", "SU", "ATS"]
+    assert header == ["Date", "Away", "Home", "Site", "Venue", "City", "Model", "Game Type", "Model Margin", "Pick",
+                      "Pick Line", "Close Line", "CLV", "Away Pts", "Home Pts", "Final Margin", "SU", "ATS"]
     row = [pg.cell_text(c) for c in lay.rows[7]]
-    assert row == ["2026-11-19", "Michigan St.", "Duke", "—", "—", "—", "lean-v1.1", row[7], "Duke", "-3.0", "-4.5",
-                   "+1.5", "72", "80", "+8", "W", "Cover"]
-    assert lay.rows[7][16]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
+    assert row == ["2026-11-19", "Michigan St.", "Duke", "—", "—", "—", "lean-v1.1", pg.game_type(float(row[8])),
+                   row[8], "Duke", "-3.0", "-4.5", "+1.5", "72", "80", "+8", "W", "Cover"]
+    assert lay.rows[7][17]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
     assert (lay.frozen_rows, lay.frozen_cols, lay.filter_row) == (7, 3, 6)
     assert all(c.get("note") for c in lay.rows[6])
 
@@ -441,38 +441,41 @@ def test_buckets_from_tail_probs():
 def test_daily_grid_one_value_per_cell(grid):
     lay = grid.layout
     header = [pg.cell_text(c) for c in lay.rows[3]]
-    assert header[:7] == ["#", "Tip (ET)", "Away", "Home", "Site", "Venue", "City"] and header[-1] == "Home 10+"
-    assert len(header) == lay.n_cols == 25
+    assert header[:8] == ["#", "Tip (ET)", "Away", "Home", "Site", "Venue", "City", "Game Type"]
+    assert header[-1] == "Home 10+" and len(header) == lay.n_cols == 26
     assert all(c.get("note") for c in lay.rows[3])                    # every header has a hover note
     row = lay.rows[4]
     texts = [pg.cell_text(c) for c in row]
     assert texts[:7] == ["1", "8:00 PM", "Houston", "Kansas", "—", "—", "—"]       # no venue data in fixture
-    assert texts[12] == "+1.5" and texts[16] == "[chart]"
+    assert texts[7] in ("Toss-up", "Competitive", "Comfortable", "Blowout")
+    assert texts[13] == "+1.5" and texts[17] == "[chart]"
     # numbers are numbers, names are single strings: no cell mixes a team name with a value
     for c, cell in enumerate(row):
         v = cell.get("userEnteredValue", {})
-        if c in (2, 3, 14):
+        if c in (2, 3, 15):
             assert v["stringValue"] in ("Houston", "Kansas")
         elif c in (4, 5, 6):
             assert v["stringValue"] == "—"
-        elif c == 16:
+        elif c == 7:
+            assert v["stringValue"] == pg.game_type(-float(texts[12]))
+        elif c == 17:
             assert v["formulaValue"].startswith("=SPARKLINE(")
         else:
             assert "numberValue" in v, (c, v)
-    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(19, 25)) == pytest.approx(1.0)
+    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(20, 26)) == pytest.approx(1.0)
 
 
 def test_daily_grid_structure(grid):
     lay = grid.layout
     assert (lay.frozen_rows, lay.frozen_cols) == (4, 4)
-    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 11), (2, 3, 11, 15), (2, 3, 15, 19), (2, 3, 19, 25)]
+    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 12), (2, 3, 12, 16), (2, 3, 16, 20), (2, 3, 20, 26)]
     assert all(len(r) == lay.n_cols for r in lay.rows)
     assert pg.cell_text(lay.rows[1][0]) == "1 games · updated 2:05 PM ET"
 
 
 def test_pick_cell_shading_by_edge(grid):
-    pick = grid.layout.rows[4][14]
-    edge = grid.layout.rows[4][13]["userEnteredValue"]["numberValue"]
+    pick = grid.layout.rows[4][15]
+    edge = grid.layout.rows[4][14]["userEnteredValue"]["numberValue"]
     bg = pick["userEnteredFormat"].get("backgroundColor")
     if edge >= pg.EDGE_STRONG:
         assert bg == pg._hex(pg.PICK_STRONG)
@@ -694,7 +697,7 @@ def test_lookup_tabs_get_header_filters(grid, rank_grid, tabs):
     publisher.publish([grid, tabs[1], tabs[2], rank_grid])
     picks = sheets.by_title("Daily Picks")["filter"]
     ranks = sheets.by_title("Daily Power Rankings")["filter"]
-    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 25)
+    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 26)
     assert (ranks["startRowIndex"], ranks["endRowIndex"]) == (3, 4 + len(TEAMS))
     assert sheets.by_title("Model Performance & Stats")["filter"] is None
     assert pg.SEARCH_HINT in pg.cell_text(grid.layout.rows[1][4])
@@ -728,7 +731,9 @@ def test_mobile_grid_fits_a_phone(mobile_grid):
 def test_mobile_card_rows(mobile_grid):
     text = {pg.cell_text(r[0]): [pg.cell_text(c) for c in r[1:]] for r in mobile_grid.layout.rows}
     assert text["Away · Home"] == ["Houston", "Kansas"]
-    assert text["8:00 PM · Game 1"] == ["", ""]
+    header = next(k for k in text if k.startswith("8:00 PM · Game 1 · "))
+    assert header.split(" · ")[-1] in ("Toss-up", "Competitive", "Comfortable", "Blowout")
+    assert text[header] == ["", ""]
     assert text["Market line"] == ["-1.5", "+1.5"]                  # each team's own spread
     away, home = (float(x.rstrip("%")) for x in text["Win chance"])
     assert away + home == pytest.approx(100, abs=1)
@@ -887,7 +892,7 @@ def test_venues_match_either_orientation_and_zero_hca(db_path):
         mobile = pg.build_mobile_grid(con, TODAY)
     row = [pg.cell_text(c) for c in grid.layout.rows[4][4:7]]
     assert row == ["Neutral", "Baha Mar Convention Center", "Nassau, Bahamas"]
-    assert any("Neutral site" in pg.cell_text(r[0]) for r in mobile.layout.rows)
+    assert any(" · Neutral · " in pg.cell_text(r[0]) for r in mobile.layout.rows)
 
 
 def test_locked_picks_keep_their_hca(db_path):
@@ -949,3 +954,21 @@ def test_ndi_explained_as_expected_record(rank_grid):
     note = rank_grid.layout.rows[3][2]["note"]
     assert "expected record of about" in note and "NOT the chance to beat any one team" in note
     assert pg.ndi_record(0.979, 365) == "356–8"
+
+
+
+# --- projected game type ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("margin, label", [(0.0, "Toss-up"), (-2.9, "Toss-up"), (3.0, "Competitive"),
+                                           (-9.9, "Competitive"), (10.0, "Comfortable"), (19.9, "Comfortable"),
+                                           (-20.0, "Blowout"), (45.0, "Blowout"), (None, None)])
+def test_game_type_buckets(margin, label):
+    assert pg.game_type(margin) == label
+
+
+def test_game_type_column_is_filterable(grid):
+    lay = grid.layout
+    col = [pg.cell_text(c) for c in lay.rows[3]].index("Game Type")
+    assert lay.filter_row == 3 and col < lay.n_cols
+    assert "Blowout 20+" in lay.rows[3][col]["note"]

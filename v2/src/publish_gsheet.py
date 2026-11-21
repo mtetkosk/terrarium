@@ -237,6 +237,14 @@ EDGE_STRONG, EDGE_LEAN = 3.0, 1.5
 SPREAD_FMT = '+0.0;-0.0;"PK"'
 SEARCH_HINT = "🔍 Find a team: ⌘F / Ctrl+F, or ▾ on a header to filter"
 
+# Projected game type by the model's margin (same cut points as the Model Performance spread ranges).
+GAME_TYPES = ((3.0, "Toss-up", "#F9AB00", "#3C2A00"), (10.0, "Competitive", "#D2E3FC", "#174EA6"),
+              (20.0, "Comfortable", "#E6F4EA", "#137333"), (float("inf"), "Blowout", "#5F6368", "#FFFFFF"))
+GAME_TYPE_NOTE = ("Projected game type from the model's margin: Toss-up under 3 pts (favorite ~50-62% to win), "
+                  "Competitive 3-9.9 (~62-84%), Comfortable 10-19.9 (~84-98%), Blowout 20+ (98%+). "
+                  "Use the ▾ filter to hide or show a type.")
+
+
 # (group label, color, [(column header, width px, hover note)])
 DAILY_GROUPS = [
     ("GAME", "#475569", [
@@ -253,6 +261,7 @@ DAILY_GROUPS = [
         ("City", 110, "City of the venue."),
     ]),
     ("PROJECTED SCORE", "#2F5D8A", [
+        ("Game Type", 96, GAME_TYPE_NOTE),
         ("Away", 54, "Model's projected points for the away team (mean of 10,000 simulations)."),
         ("Home", 54, "Model's projected points for the home team."),
         ("Total", 58, "Model's projected combined score."),
@@ -317,6 +326,20 @@ def _split_bar(away: float, home: float) -> dict:
     formula = (f'=SPARKLINE({{{away:.4f},{home:.4f}}},{{"charttype","bar";"max",1;'
                f'"color1","{AWAY_COLOR}";"color2","{HOME_COLOR}"}})')
     return {"userEnteredValue": {"formulaValue": formula}}
+
+
+def game_type(margin: float | None) -> str | None:
+    if margin is None:
+        return None
+    return next(label for cut, label, _, _ in GAME_TYPES if abs(margin) < cut)
+
+
+def _game_type_cell(margin: float | None, bg) -> dict:
+    label = game_type(margin)
+    if label is None:
+        return _text("—", _fmt(bg=bg, fg=MUTED, align="CENTER"))
+    _, _, fill, text = next(t for t in GAME_TYPES if t[1] == label)
+    return _text(label, _fmt(bg=_hex(fill), fg=_hex(text), bold=True, size=9, align="CENTER", left_border=True))
 
 
 def _site_cells(neutral: bool, known: bool, venue: str | None, city: str | None, f, c0: int) -> list[dict]:
@@ -388,32 +411,33 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
             _text(g.away, f(2, bold=fav == g.away)),
             _text(g.home, f(3, bold=fav == g.home)),
             *_site_cells(g.neutral, g.site_known, g.venue, g.city, f, 4),
-            _numcell(round(g.away_pts), f(7, align="CENTER", pattern="0")),
-            _numcell(round(g.home_pts), f(8, align="CENTER", pattern="0")),
-            _numcell(g.total, f(9, align="CENTER", pattern="0.0")),
-            _numcell(g.market_total, f(10, align="CENTER", pattern="0.0", fg=MUTED)),
-            _numcell(g.model_line, f(11, align="CENTER", pattern=SPREAD_FMT, bold=True)),
-            _numcell(g.market_line, f(12, align="CENTER", pattern=SPREAD_FMT, fg=MUTED)),
-            _numcell(g.edge, f(13, align="CENTER", pattern="0.0")),
+            _game_type_cell(g.model_line, bg),
+            _numcell(round(g.away_pts), f(8, align="CENTER", pattern="0")),
+            _numcell(round(g.home_pts), f(9, align="CENTER", pattern="0")),
+            _numcell(g.total, f(10, align="CENTER", pattern="0.0")),
+            _numcell(g.market_total, f(11, align="CENTER", pattern="0.0", fg=MUTED)),
+            _numcell(g.model_line, f(12, align="CENTER", pattern=SPREAD_FMT, bold=True)),
+            _numcell(g.market_line, f(13, align="CENTER", pattern=SPREAD_FMT, fg=MUTED)),
+            _numcell(g.edge, f(14, align="CENTER", pattern="0.0")),
         ]
         if g.pick is None:
-            cells.append(_text("—", f(14, fg=MUTED, align="CENTER")))
+            cells.append(_text("—", f(15, fg=MUTED, align="CENTER")))
         elif g.edge >= EDGE_STRONG:
             cells.append(_text(g.pick, _fmt(bg=_hex(PICK_STRONG), fg=WHITE, bold=True, left_border=False)))
         elif g.edge >= EDGE_LEAN:
             cells.append(_text(g.pick, _fmt(bg=_hex(PICK_LEAN), fg=_hex("#14532D"), bold=True)))
         else:
-            cells.append(_text(g.pick, f(14, fg=MUTED)))
+            cells.append(_text(g.pick, f(15, fg=MUTED)))
         cells += [
-            _numcell(g.away_win, f(15, align="CENTER", pattern="0%", pattern_type="PERCENT",
+            _numcell(g.away_win, f(16, align="CENTER", pattern="0%", pattern_type="PERCENT",
                                bold=fav == g.away)),
-            {**_split_bar(g.away_win, g.home_win), "userEnteredFormat": f(16)},
-            _numcell(g.home_win, f(17, align="CENTER", pattern="0%", pattern_type="PERCENT",
+            {**_split_bar(g.away_win, g.home_win), "userEnteredFormat": f(17)},
+            _numcell(g.home_win, f(18, align="CENTER", pattern="0%", pattern_type="PERCENT",
                                bold=fav == g.home)),
-            _numcell(g.market_home_win, f(18, align="CENTER", pattern="0%", pattern_type="PERCENT", fg=MUTED)),
+            _numcell(g.market_home_win, f(19, align="CENTER", pattern="0%", pattern_type="PERCENT", fg=MUTED)),
         ]
         for k in range(6):
-            c = 19 + k
+            c = 20 + k
             if g.buckets is None:
                 cells.append(_text("—", f(c, fg=MUTED, align="CENTER")))
                 continue
@@ -816,6 +840,7 @@ LEDGER_GROUPS = [
     ("MODEL PICK", "#B7791F", [
         ("Model", 76, "Model version that locked this pick. Picks are never re-made when the model is "
                       "updated, so each row keeps the version that was live at pick time."),
+        ("Game Type", 96, GAME_TYPE_NOTE.replace("model's margin", "model's margin when the pick was locked")),
         ("Model Margin", 72, "Model's projected HOME margin when the pick was locked: +6.0 = home by 6."),
         ("Pick", 150, "Side the model took against the spread at pick time."),
         ("Pick Line", 66, "HOME team's spread when the pick was locked (-4.5 = home favored by 4.5)."),
@@ -957,14 +982,15 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
             _text(g.home, f(2, bold=g.pred_margin >= 0)),
             *_site_cells(g.neutral, g.site_known, g.venue, g.city, f, 3),
             _text(g.model_version or "—", f(6, fg=MUTED, size=9, align="CENTER")),
-            _numcell(round(g.pred_margin, 1), f(7, align="CENTER", pattern="+0.0;-0.0;0.0")),
-            _text(g.pick, f(8, bold=True)) if g.pick else _text("—", f(8, fg=MUTED, align="CENTER")),
-            _numcell(g.pick_line, f(9, align="CENTER", pattern=SPREAD_FMT)),
-            _numcell(g.closing_line, f(10, fg=MUTED, align="CENTER", pattern=SPREAD_FMT)),
-            _numcell(g.clv, f(11, fg=clv_fg, bold=bool(g.clv), align="CENTER", pattern="+0.0;-0.0;0.0")),
-            _numcell(g.away_pts, f(12, align="CENTER", pattern="0")),
-            _numcell(g.home_pts, f(13, align="CENTER", pattern="0")),
-            _numcell(g.final_margin, f(14, bold=True, align="CENTER", pattern="+0;-0;0")),
+            _game_type_cell(g.pred_margin, bg),
+            _numcell(round(g.pred_margin, 1), f(8, align="CENTER", pattern="+0.0;-0.0;0.0")),
+            _text(g.pick, f(9, bold=True)) if g.pick else _text("—", f(9, fg=MUTED, align="CENTER")),
+            _numcell(g.pick_line, f(10, align="CENTER", pattern=SPREAD_FMT)),
+            _numcell(g.closing_line, f(11, fg=MUTED, align="CENTER", pattern=SPREAD_FMT)),
+            _numcell(g.clv, f(12, fg=clv_fg, bold=bool(g.clv), align="CENTER", pattern="+0.0;-0.0;0.0")),
+            _numcell(g.away_pts, f(13, align="CENTER", pattern="0")),
+            _numcell(g.home_pts, f(14, align="CENTER", pattern="0")),
+            _numcell(g.final_margin, f(15, bold=True, align="CENTER", pattern="+0;-0;0")),
             _chip_cell(g.su, bg),
             _chip_cell(g.ats, bg),
         ])
@@ -1026,7 +1052,7 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
     for i, g in enumerate(games):
         sh.add([], 10)
         head = _fmt(bg=_hex("#475569"), fg=WHITE, bold=True, size=10)
-        tag = " · Neutral site" if g.neutral else ""
+        tag = (" · Neutral" if g.neutral else "") + f" · {game_type(g.model_line)}"
         r = sh.add([_text(f"{g.tip_et:%-I:%M %p} · Game {i + 1}{tag}",
                           {**head, "backgroundColor": _hex("#6D4C9F")} if g.neutral else head),
                     {"userEnteredFormat": {**head, "backgroundColor": _hex("#6D4C9F")} if g.neutral else head},
