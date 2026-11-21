@@ -47,6 +47,35 @@ EXPECTED_COLUMNS = {
         ("hca_eff", "DOUBLE"),
         ("n_sims", "INTEGER"),
         ("created_at", "TIMESTAMP"),
+        ("prob_a_by_5", "DOUBLE"),
+        ("prob_a_by_10", "DOUBLE"),
+        ("prob_b_by_5", "DOUBLE"),
+        ("prob_b_by_10", "DOUBLE"),
+    ],
+    "scheduled_games": [
+        ("game_id", "VARCHAR"),
+        ("source", "VARCHAR"),
+        ("source_event_id", "VARCHAR"),
+        ("commence_time", "TIMESTAMP"),
+        ("team_a", "VARCHAR"),
+        ("team_b", "VARCHAR"),
+    ],
+    "odds_snapshots": [
+        ("game_id", "VARCHAR"),
+        ("fetched_at", "TIMESTAMP"),
+        ("book", "VARCHAR"),
+        ("spread_a", "DOUBLE"),
+        ("ml_a", "DOUBLE"),
+        ("ml_b", "DOUBLE"),
+        ("total", "DOUBLE"),
+    ],
+    "power_rankings": [
+        ("ranking_date", "DATE"),
+        ("team", "VARCHAR"),
+        ("rank", "INTEGER"),
+        ("ndi", "DOUBLE"),
+        ("adj_em", "DOUBLE"),
+        ("snapshot_date", "DATE"),
     ],
 }
 
@@ -55,6 +84,9 @@ EXPECTED_PRIMARY_KEYS = {
     "historical_games": ["game_id"],
     "vegas_closing_odds": ["game_id"],
     "model_predictions": ["game_id", "model_version"],
+    "scheduled_games": ["game_id"],
+    "odds_snapshots": ["game_id", "fetched_at", "book"],
+    "power_rankings": ["ranking_date", "team"],
 }
 
 
@@ -183,3 +215,15 @@ def test_read_only_missing_database_raises(db_path):
     with pytest.raises(FileNotFoundError):
         db.get_db_connection(read_only=True, db_path=db_path)
     assert not db_path.exists()
+
+
+def test_migration_adds_columns_to_old_table(db_path):
+    db_path.parent.mkdir(parents=True)
+    with duckdb.connect(str(db_path)) as raw:
+        raw.execute("CREATE TABLE model_predictions (game_id VARCHAR, model_version VARCHAR, "
+                    "PRIMARY KEY (game_id, model_version))")
+    with db.get_db_connection(db_path=db_path) as con:
+        cols = [r[0] for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'model_predictions'").fetchall()]
+    assert {"prob_a_by_5", "prob_b_by_10"} <= set(cols)

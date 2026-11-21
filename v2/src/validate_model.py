@@ -254,12 +254,26 @@ class PredictionRun:
     skipped_stale: list[str] = field(default_factory=list)
 
 
-_PREDICTION_UPSERT = """
-    INSERT OR REPLACE INTO model_predictions
-        (game_id, model_version, as_of, snapshot_date, pred_score_a, pred_score_b,
-         pred_spread_a, pred_total, win_prob_a, cover_prob_a, hca_eff, n_sims)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
+PREDICTION_COLUMNS = (
+    "game_id", "model_version", "as_of", "snapshot_date", "pred_score_a", "pred_score_b",
+    "pred_spread_a", "pred_total", "win_prob_a", "cover_prob_a", "hca_eff", "n_sims",
+    "prob_a_by_5", "prob_a_by_10", "prob_b_by_5", "prob_b_by_10",
+)
+_PREDICTION_UPSERT = (
+    f"INSERT OR REPLACE INTO model_predictions ({', '.join(PREDICTION_COLUMNS)}) "
+    f"VALUES ({', '.join('?' for _ in PREDICTION_COLUMNS)})"
+)
+
+
+def prediction_row(game_id: str, model_version: str, game_date: date, r, cover: float | None,
+                   hca: float, n_sims: int) -> tuple:
+    """model_predictions row (PREDICTION_COLUMNS order) from a SimulationResult."""
+    return (
+        game_id, model_version, game_date, min(r.snapshot_date_a, r.snapshot_date_b),
+        r.expected_score_a, r.expected_score_b, r.spread_a, r.expected_total,
+        r.win_prob_a, cover, hca, n_sims,
+        r.prob_a_by_5, r.prob_a_by_10, r.prob_b_by_5, r.prob_b_by_10,
+    )
 
 
 def default_model_version(hca_override: float | None, early_stretch: bool = True) -> str:
@@ -323,11 +337,7 @@ def generate_predictions(
             continue
 
         cover = r.cover_prob_a(closing_spread) if closing_spread is not None else None
-        rows.append((
-            game_id, model_version, game_date, snapshot,
-            r.expected_score_a, r.expected_score_b, r.spread_a, r.expected_total,
-            r.win_prob_a, cover, hca, n_sims,
-        ))
+        rows.append(prediction_row(game_id, model_version, game_date, r, cover, hca, n_sims))
 
     if rows:
         con.executemany(_PREDICTION_UPSERT, rows)

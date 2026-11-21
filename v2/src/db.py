@@ -1,7 +1,8 @@
 """DuckDB storage layer for the CBB prediction engine.
 
 Owns the embedded warehouse at ``data/cbb_engine.duckdb``: the three
-Lean V1.0 tables plus ``model_predictions`` (Milestone 4). All other
+Lean V1.0 tables plus ``model_predictions`` (Milestone 4) and
+``scheduled_games`` / ``odds_snapshots`` / ``power_rankings`` (Milestone 6). All other
 modules should obtain connections through :func:`get_db_connection` so the
 schema is guaranteed to exist.
 """
@@ -67,15 +68,67 @@ SCHEMA: dict[str, str] = {
             hca_eff DOUBLE,
             n_sims INTEGER,
             created_at TIMESTAMP DEFAULT current_timestamp,
+            prob_a_by_5 DOUBLE,
+            prob_a_by_10 DOUBLE,
+            prob_b_by_5 DOUBLE,
+            prob_b_by_10 DOUBLE,
             PRIMARY KEY (game_id, model_version)
+        )
+    """,
+    # Milestone 6: live slate from The Odds API. commence_time is UTC.
+    "scheduled_games": """
+        CREATE TABLE IF NOT EXISTS scheduled_games (
+            game_id VARCHAR PRIMARY KEY,
+            source VARCHAR,
+            source_event_id VARCHAR,
+            commence_time TIMESTAMP,
+            team_a VARCHAR,
+            team_b VARCHAR
+        )
+    """,
+    # Every pre-tipoff odds pull, per book, from team A's perspective. The
+    # earliest row per game is the pick-time line, the latest the closing line.
+    "odds_snapshots": """
+        CREATE TABLE IF NOT EXISTS odds_snapshots (
+            game_id VARCHAR,
+            fetched_at TIMESTAMP,
+            book VARCHAR,
+            spread_a DOUBLE,
+            ml_a DOUBLE,
+            ml_b DOUBLE,
+            total DOUBLE,
+            PRIMARY KEY (game_id, fetched_at, book)
+        )
+    """,
+    # Milestone 6: daily neutral-court power rankings.
+    "power_rankings": """
+        CREATE TABLE IF NOT EXISTS power_rankings (
+            ranking_date DATE,
+            team VARCHAR,
+            rank INTEGER,
+            ndi DOUBLE,
+            adj_em DOUBLE,
+            snapshot_date DATE,
+            PRIMARY KEY (ranking_date, team)
         )
     """,
 }
 
 
+# Additive migrations for databases created before a column existed.
+MIGRATIONS = [
+    "ALTER TABLE model_predictions ADD COLUMN IF NOT EXISTS prob_a_by_5 DOUBLE",
+    "ALTER TABLE model_predictions ADD COLUMN IF NOT EXISTS prob_a_by_10 DOUBLE",
+    "ALTER TABLE model_predictions ADD COLUMN IF NOT EXISTS prob_b_by_5 DOUBLE",
+    "ALTER TABLE model_predictions ADD COLUMN IF NOT EXISTS prob_b_by_10 DOUBLE",
+]
+
+
 def init_schema(con: duckdb.DuckDBPyConnection) -> None:
-    """Create all tables on an open read-write connection (idempotent)."""
+    """Create all tables and apply migrations on a read-write connection (idempotent)."""
     for ddl in SCHEMA.values():
+        con.execute(ddl)
+    for ddl in MIGRATIONS:
         con.execute(ddl)
 
 

@@ -67,6 +67,7 @@ MASCOT_WORDS = frozenset({
 MASCOT_WORDS = MASCOT_WORDS | frozenset({
     "governors", "rattlers", "vandals", "roos", "greyhounds", "wolfpack", "norse",
     "pilots", "colonials", "bearkats", "tommies", "hatters", "gauchos", "mountain",
+    "kangaroos", "argonauts",
 })
 
 # Normalized alias key -> KenPom name.
@@ -249,6 +250,8 @@ ALIASES = {
     "new orleans": "New Orleans",
     "south carolina upst": "USC Upstate",
     "ul monroe war": "Louisiana Monroe",
+    "florida intl": "FIU",
+    "n colorado": "Northern Colorado",
 }
 
 

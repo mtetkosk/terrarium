@@ -5,6 +5,10 @@
     python cli.py import-v1
     python cli.py predict --season 2026 [--start D --end D] [--hca X]
     python cli.py audit --season 2026 [--start D --end D] [--model-version V]
+    python cli.py odds                      # live slate, lines, scores (The Odds API)
+    python cli.py picks [--date D]          # lock today's pre-game picks
+    python cli.py power-rankings [--date D] [--top N]
+    python cli.py publish [--dry-run] [--make-public]
 """
 
 from __future__ import annotations
@@ -20,6 +24,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from src import ingest_kenpom as ik
+from src import live_picks as lp
+from src import odds_api
+from src import power_rankings as pr
+from src import publish_gsheet as pg
 from src import validate_model as vm
 from src.db import PROJECT_ROOT, get_db_connection
 from src.import_v1 import DEFAULT_V1_DB, import_v1
@@ -264,6 +272,119 @@ def audit(
     console.print(tranches)
     console.print(f"HCA check (actual − predicted margin): home {_num(r.margin_residual_home, '+.2f')} "
                   f"(n={r.n_home}), neutral {_num(r.margin_residual_neutral, '+.2f')} (n={r.n_neutral})")
+
+
+# --------------------------------------------------------------------------
+# live slate, picks, rankings, publishing (Milestone 6)
+# --------------------------------------------------------------------------
+
+
+def _load_env() -> None:
+    ik.load_env_files([PROJECT_ROOT / ".env", PROJECT_ROOT.parent / ".env"])
+
+
+@app.command()
+def odds(
+    scores_days: int = typer.Option(3, help="Days of completed scores to fetch (1-3)"),
+    db_path: Path = DbPath,
+):
+    """Pull today's slate, market lines and recent scores from The Odds API (5 credits)."""
+    _load_env()
+    try:
+        with get_db_connection(db_path=db_path) as con:
+            st = odds_api.update(con, scores_days=scores_days)
+    except (odds_api.OddsApiError, OSError) as exc:
+        _fail(str(exc))
+    console.print(f"[green]{st.games} D-I games[/] from {st.events} events; {st.snapshots} line "
+                  f"snapshots; {st.closing_lines} closing lines refreshed; {st.finals} finals stored")
+    if st.unmatched:
+        console.print(f"[dim]Unmatched names (non-D-I or new alias needed): {sorted(st.unmatched)}[/]")
+    console.print(f"[dim]Odds API credits remaining: {st.quota.remaining}[/]")
+
+
+@app.command()
+def picks(
+    date_: str = typer.Option(None, "--date", help="Slate date, US/Eastern (default today)"),
+    sims: int = typer.Option(DEFAULT_N_SIMS),
+    db_path: Path = DbPath,
+):
+    """Lock pre-game picks for the day's slate (never overwrites existing picks)."""
+    day = _date(date_) or date.today()
+    with get_db_connection(db_path=db_path) as con:
+        run = lp.make_picks(con, day, n_sims=sims)
+        rows = lp.daily_picks(con, day)
+    console.print(f"[green]{run.created} new picks[/] for {day}; {run.already_locked} already locked; "
+                  f"{run.started} already started; {len(run.no_ratings)} without ratings")
+    table = Table(show_header=True, header_style="bold")
+    for col in ("Tip ET", "Matchup", "Model line", "Market line", "Edge", "Model win", "Mkt win"):
+        table.add_column(col)
+    for p in rows:
+        table.add_row(p.tip_et, p.matchup, p.model_line, p.market_line, p.edge, p.model_win,
+                      p.market_win)
+    if rows:
+        console.print(table)
+
+
+@app.command("power-rankings")
+def power_rankings_cmd(
+    date_: str = typer.Option(None, "--date", help="Ranking date (default today)"),
+    top: int = typer.Option(25, help="Rows to print (0 = all)"),
+    db_path: Path = DbPath,
+):
+    """Compute and store today's 1-N neutral-court power rankings."""
+    day = _date(date_) or date.today()
+    with get_db_connection(db_path=db_path) as con:
+        rows = pr.ladder(con, day, recompute_today=True)
+    if not rows:
+        _fail(f"No KenPom snapshot on or before {day}")
+    table = Table(title=f"Power rankings {day} (ratings {rows[0].today.snapshot_date})",
+                  show_header=True, header_style="bold")
+    for col, j in (("Rk", "right"), ("Team", "left"), ("NDI", "right"), ("AdjEM", "right"),
+                   ("Record", "right"), ("D-1", "left"), ("D-7", "left"), ("7d Δ", "right")):
+        table.add_column(col, justify=j)
+    for r in rows[: top or None]:
+        delta = pr.delta_text(r.delta_7d)
+        style = "green" if (r.delta_7d or 0) > 0 else "red" if (r.delta_7d or 0) < 0 else "dim"
+        table.add_row(str(r.rank), r.today.team, f"{r.today.ndi:.1%}", f"{r.today.adj_em:+.1f}",
+                      r.record, r.d1, r.d7, f"[{style}]{delta}[/]")
+    console.print(table)
+
+
+@app.command()
+def publish(
+    date_: str = typer.Option(None, "--date", help="Slate/ranking date (default today)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Write a markdown preview instead"),
+    preview_path: Path = typer.Option(PROJECT_ROOT / "data" / "publish_preview.md"),
+    make_public: bool = typer.Option(False, "--make-public",
+                                     help="Anyone with the link can view (owner keeps write access)"),
+    skip_if_unconfigured: bool = typer.Option(False, "--skip-if-unconfigured",
+                                              help="Exit 0 when Google settings are missing (for cron)"),
+    db_path: Path = DbPath,
+):
+    """Publish the four-tab Google Sheet (or a local preview with --dry-run)."""
+    _load_env()
+    day = _date(date_) or date.today()
+    with get_db_connection(db_path=db_path) as con:
+        tabs = pg.build_tabs(con, day)
+    if dry_run:
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        preview_path.write_text(pg.render_markdown(tabs), encoding="utf-8")
+        for t in tabs:
+            n = len(t.layout.rows)
+            console.print(f"  {t.title}: {n} rows")
+        console.print(f"[green]Preview written to {preview_path}[/]")
+        return
+    try:
+        sheet_id, key = pg.config_from_env()
+    except pg.PublishConfigError as exc:
+        if skip_if_unconfigured:
+            console.print(f"[yellow]Skipping publish:[/] {exc}")
+            return
+        _fail(str(exc))
+    sheets, drive = pg.build_services(key)
+    with console.status("Publishing to Google Sheets..."):
+        url = pg.SheetsPublisher(sheets, drive, sheet_id).publish(tabs, make_public=make_public)
+    console.print(f"[green]Published[/] {url}" + (" (public view-only)" if make_public else " (private)"))
 
 
 if __name__ == "__main__":
