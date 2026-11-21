@@ -442,40 +442,43 @@ def test_daily_grid_one_value_per_cell(grid):
     lay = grid.layout
     header = [pg.cell_text(c) for c in lay.rows[3]]
     assert header[:8] == ["#", "Tip (ET)", "Away", "Home", "Site", "Venue", "City", "Game Type"]
-    assert header[-1] == "Home 10+" and len(header) == lay.n_cols == 26
+    assert header[12] == "O/U Lean" and header[-1] == "Home 10+" and len(header) == lay.n_cols == 27
     assert all(c.get("note") for c in lay.rows[3])                    # every header has a hover note
     row = lay.rows[4]
     texts = [pg.cell_text(c) for c in row]
     assert texts[:7] == ["1", "8:00 PM", "Houston", "Kansas", "—", "—", "—"]       # no venue data in fixture
     assert texts[7] in ("Toss-up", "Competitive", "Comfortable", "Blowout")
-    assert texts[13] == "+1.5" and texts[17] == "[chart]"
+    assert texts[14] == "+1.5" and texts[18] == "[chart]"
+    assert texts[12] == pg.total_lean(float(texts[10]), 139.5)
     # numbers are numbers, names are single strings: no cell mixes a team name with a value
     for c, cell in enumerate(row):
         v = cell.get("userEnteredValue", {})
-        if c in (2, 3, 15):
+        if c in (2, 3, 16):
             assert v["stringValue"] in ("Houston", "Kansas")
         elif c in (4, 5, 6):
             assert v["stringValue"] == "—"
         elif c == 7:
-            assert v["stringValue"] == pg.game_type(-float(texts[12]))
-        elif c == 17:
+            assert v["stringValue"] == pg.game_type(-float(texts[13]))
+        elif c == 12:
+            assert v["stringValue"] in ("Strong Over", "Lean Over", "No Lean", "Lean Under", "Strong Under")
+        elif c == 18:
             assert v["formulaValue"].startswith("=SPARKLINE(")
         else:
             assert "numberValue" in v, (c, v)
-    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(20, 26)) == pytest.approx(1.0)
+    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(21, 27)) == pytest.approx(1.0)
 
 
 def test_daily_grid_structure(grid):
     lay = grid.layout
     assert (lay.frozen_rows, lay.frozen_cols) == (4, 4)
-    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 12), (2, 3, 12, 16), (2, 3, 16, 20), (2, 3, 20, 26)]
+    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 13), (2, 3, 13, 17), (2, 3, 17, 21), (2, 3, 21, 27)]
     assert all(len(r) == lay.n_cols for r in lay.rows)
     assert pg.cell_text(lay.rows[1][0]) == "1 games · updated 2:05 PM ET"
 
 
 def test_pick_cell_shading_by_edge(grid):
-    pick = grid.layout.rows[4][15]
-    edge = grid.layout.rows[4][14]["userEnteredValue"]["numberValue"]
+    pick = grid.layout.rows[4][16]
+    edge = grid.layout.rows[4][15]["userEnteredValue"]["numberValue"]
     bg = pick["userEnteredFormat"].get("backgroundColor")
     if edge >= pg.EDGE_STRONG:
         assert bg == pg._hex(pg.PICK_STRONG)
@@ -697,7 +700,7 @@ def test_lookup_tabs_get_header_filters(grid, rank_grid, tabs):
     publisher.publish([grid, tabs[1], tabs[2], rank_grid])
     picks = sheets.by_title("Daily Picks")["filter"]
     ranks = sheets.by_title("Daily Power Rankings")["filter"]
-    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 26)
+    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 27)
     assert (ranks["startRowIndex"], ranks["endRowIndex"]) == (3, 4 + len(TEAMS))
     assert sheets.by_title("Model Performance & Stats")["filter"] is None
     assert pg.SEARCH_HINT in pg.cell_text(grid.layout.rows[1][4])
@@ -972,3 +975,17 @@ def test_game_type_column_is_filterable(grid):
     col = [pg.cell_text(c) for c in lay.rows[3]].index("Game Type")
     assert lay.filter_row == 3 and col < lay.n_cols
     assert "Blowout 20+" in lay.rows[3][col]["note"]
+
+
+
+@pytest.mark.parametrize("model, market, label", [
+    (150.0, 145.0, "Strong Over"), (148.0, 145.0, "Strong Over"), (147.0, 145.0, "Lean Over"),
+    (146.0, 145.0, "No Lean"), (143.6, 145.0, "No Lean"), (143.0, 145.0, "Lean Under"),
+    (141.0, 145.0, "Strong Under"), (150.0, None, None)])
+def test_total_lean_buckets(model, market, label):
+    assert pg.total_lean(model, market) == label
+
+
+def test_total_lean_on_mobile_card(mobile_grid):
+    text = {pg.cell_text(r[0]): pg.cell_text(r[1]) for r in mobile_grid.layout.rows}
+    assert text["O/U lean"] in ("Strong Over", "Lean Over", "No Lean", "Lean Under", "Strong Under")

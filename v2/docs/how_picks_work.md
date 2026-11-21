@@ -101,6 +101,8 @@ The 10,000 simulated final scores give:
 
 and the Pick is the side the model prefers against the market line. On the sheet, a solid green Pick means an edge of 3+ points, light green 1.5–3, and gray under 1.5.
 
+**Over/under lean.** The model's projected total is compared with the market total in the same way. A gap of 3+ points is shown as Strong Over or Strong Under, 1.5–3 points as Lean Over or Lean Under, and under 1.5 as No Lean. Unlike the spread, the totals have not yet been tested against the market: the 2025-26 backtest had no market totals. Treat the over/under lean as unproven until the live record builds up on the Model Performance tab.
+
 **Market win probability.** Sportsbook moneylines include a margin (the "vig"), so the implied probabilities add up to more than 100%. The model removes it with the power method: it finds the exponent k such that
 
 <p style="text-align:center"><i>p<sub>A</sub><sup>k</sup> + p<sub>B</sub><sup>k</sup> = 1</i></p>

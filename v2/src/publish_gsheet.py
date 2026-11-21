@@ -245,6 +245,36 @@ GAME_TYPE_NOTE = ("Projected game type from the model's margin: Toss-up under 3 
                   "Use the ▾ filter to hide or show a type.")
 
 
+# Over/under lean: model total minus market total, same 1.5 / 3-point tiers as the spread Pick.
+TOTAL_LEAN_STRONG, TOTAL_LEAN_MIN = 3.0, 1.5
+OVER_COLOR, UNDER_COLOR = "#C2410C", "#1D4ED8"
+TOTAL_LEAN_NOTE = ("Model's projected total vs. the market total: Strong Over/Under = 3+ points apart, "
+                   "Lean Over/Under = 1.5-3, No Lean = under 1.5. Totals have not yet been tested against "
+                   "Vegas (the backtest had no market totals), so treat these as unproven. Filterable with ▾.")
+
+
+def total_lean(model_total: float | None, market_total: float | None) -> str | None:
+    if model_total is None or market_total is None:
+        return None
+    diff = model_total - market_total
+    if abs(diff) < TOTAL_LEAN_MIN:
+        return "No Lean"
+    side = "Over" if diff > 0 else "Under"
+    return f"{'Strong' if abs(diff) >= TOTAL_LEAN_STRONG else 'Lean'} {side}"
+
+
+def _total_lean_cell(model_total, market_total, bg) -> dict:
+    label = total_lean(model_total, market_total)
+    if label is None:
+        return _text("—", _fmt(bg=bg, fg=MUTED, align="CENTER"))
+    if label == "No Lean":
+        return _text(label, _fmt(bg=bg, fg=MUTED, size=9, align="CENTER"))
+    color = OVER_COLOR if label.endswith("Over") else UNDER_COLOR
+    if label.startswith("Strong"):
+        return _text(label, _fmt(bg=_hex(color), fg=WHITE, bold=True, size=9, align="CENTER"))
+    return _text(label, _fmt(bg=_tint(color, 0.15), fg=_hex(color), bold=True, size=9, align="CENTER"))
+
+
 # (group label, color, [(column header, width px, hover note)])
 DAILY_GROUPS = [
     ("GAME", "#475569", [
@@ -266,6 +296,7 @@ DAILY_GROUPS = [
         ("Home", 54, "Model's projected points for the home team."),
         ("Total", 58, "Model's projected combined score."),
         ("Mkt Total", 66, "Sportsbook over/under (DraftKings, else FanDuel)."),
+        ("O/U Lean", 104, TOTAL_LEAN_NOTE),
     ]),
     ("SPREAD (HOME TEAM)", "#B7791F", [
         ("Model", 60, "Model's spread for the HOME team: -4.5 = home favored by 4.5, "
@@ -416,28 +447,29 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
             _numcell(round(g.home_pts), f(9, align="CENTER", pattern="0")),
             _numcell(g.total, f(10, align="CENTER", pattern="0.0")),
             _numcell(g.market_total, f(11, align="CENTER", pattern="0.0", fg=MUTED)),
-            _numcell(g.model_line, f(12, align="CENTER", pattern=SPREAD_FMT, bold=True)),
-            _numcell(g.market_line, f(13, align="CENTER", pattern=SPREAD_FMT, fg=MUTED)),
-            _numcell(g.edge, f(14, align="CENTER", pattern="0.0")),
+            _total_lean_cell(g.total, g.market_total, bg),
+            _numcell(g.model_line, f(13, align="CENTER", pattern=SPREAD_FMT, bold=True)),
+            _numcell(g.market_line, f(14, align="CENTER", pattern=SPREAD_FMT, fg=MUTED)),
+            _numcell(g.edge, f(15, align="CENTER", pattern="0.0")),
         ]
         if g.pick is None:
-            cells.append(_text("—", f(15, fg=MUTED, align="CENTER")))
+            cells.append(_text("—", f(16, fg=MUTED, align="CENTER")))
         elif g.edge >= EDGE_STRONG:
             cells.append(_text(g.pick, _fmt(bg=_hex(PICK_STRONG), fg=WHITE, bold=True, left_border=False)))
         elif g.edge >= EDGE_LEAN:
             cells.append(_text(g.pick, _fmt(bg=_hex(PICK_LEAN), fg=_hex("#14532D"), bold=True)))
         else:
-            cells.append(_text(g.pick, f(15, fg=MUTED)))
+            cells.append(_text(g.pick, f(16, fg=MUTED)))
         cells += [
-            _numcell(g.away_win, f(16, align="CENTER", pattern="0%", pattern_type="PERCENT",
+            _numcell(g.away_win, f(17, align="CENTER", pattern="0%", pattern_type="PERCENT",
                                bold=fav == g.away)),
-            {**_split_bar(g.away_win, g.home_win), "userEnteredFormat": f(17)},
-            _numcell(g.home_win, f(18, align="CENTER", pattern="0%", pattern_type="PERCENT",
+            {**_split_bar(g.away_win, g.home_win), "userEnteredFormat": f(18)},
+            _numcell(g.home_win, f(19, align="CENTER", pattern="0%", pattern_type="PERCENT",
                                bold=fav == g.home)),
-            _numcell(g.market_home_win, f(19, align="CENTER", pattern="0%", pattern_type="PERCENT", fg=MUTED)),
+            _numcell(g.market_home_win, f(20, align="CENTER", pattern="0%", pattern_type="PERCENT", fg=MUTED)),
         ]
         for k in range(6):
-            c = 20 + k
+            c = 21 + k
             if g.buckets is None:
                 cells.append(_text("—", f(c, fg=MUTED, align="CENTER")))
                 continue
@@ -1087,6 +1119,7 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
         merged("Proj. total", _numcell(g.total, _fmt(align="CENTER", pattern="0.0")))
         merged("Market total", _numcell(g.market_total, _fmt(bg=ZEBRA, fg=MUTED, align="CENTER", pattern="0.0")),
                bg=ZEBRA)
+        merged("O/U lean", _total_lean_cell(g.total, g.market_total, WHITE))
     if not games:
         sh.add([_text("No locked picks for today yet.", _fmt(fg=MUTED, italic=True, wrap="WRAP"))])
     return GridTab(title, SheetLayout(sh.rows, 3, frozen_rows=1, col_widths=list(MOBILE_WIDTHS),
