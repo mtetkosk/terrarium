@@ -77,6 +77,14 @@ EXPECTED_COLUMNS = {
         ("adj_em", "DOUBLE"),
         ("snapshot_date", "DATE"),
     ],
+    "game_venues": [
+        ("game_id", "VARCHAR"),
+        ("neutral", "BOOLEAN"),
+        ("venue", "VARCHAR"),
+        ("city", "VARCHAR"),
+        ("source", "VARCHAR"),
+        ("fetched_at", "TIMESTAMP"),
+    ],
     "sanity_issues": [
         ("check_date", "DATE"),
         ("stage", "VARCHAR"),
@@ -96,6 +104,7 @@ EXPECTED_PRIMARY_KEYS = {
     "scheduled_games": ["game_id"],
     "odds_snapshots": ["game_id", "fetched_at", "book"],
     "power_rankings": ["ranking_date", "team"],
+    "game_venues": ["game_id"],
 }
 
 

@@ -112,6 +112,17 @@ SCHEMA: dict[str, str] = {
             PRIMARY KEY (ranking_date, team)
         )
     """,
+    # Venue + neutral-site flag per scheduled game (src/venues.py, ESPN scoreboard).
+    "game_venues": """
+        CREATE TABLE IF NOT EXISTS game_venues (
+            game_id VARCHAR PRIMARY KEY,
+            neutral BOOLEAN,
+            venue VARCHAR,
+            city VARCHAR,
+            source VARCHAR,
+            fetched_at TIMESTAMP
+        )
+    """,
     # Pre-lock / pre-publish sanity checks (src/sanity.py); rewritten per date + stage.
     "sanity_issues": """
         CREATE TABLE IF NOT EXISTS sanity_issues (

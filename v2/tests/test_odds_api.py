@@ -149,3 +149,39 @@ def test_current_teams_ignore_retired_kenpom_names(tmp_path):
         teams = oa.current_teams(con, date(2026, 11, 21))
     assert teams == ["LSU New Orleans"]
     assert TeamNameMapper(teams).to_kenpom("New Orleans Privateers") == "LSU New Orleans"
+
+
+
+def _game(gid, eid, a, b):
+    return oa.ScheduledGame(gid, eid, datetime(2026, 11, 20, 20), date(2026, 11, 20), a, b)
+
+
+@pytest.fixture
+def stored(tmp_path):
+    with db.get_db_connection(db_path=tmp_path / "x.duckdb") as con:
+        oa.store_games(con, [_game("2026-11-20_virginia-tech_northwestern", "EV1", "Virginia Tech", "Northwestern")])
+        yield con
+
+
+def test_final_with_home_and_away_swapped_grades_the_stored_game(stored):
+    # scores feed lists the same event as Virginia Tech @ Northwestern (home = Northwestern 70, VT 87)
+    flipped = _game("2026-11-20_northwestern_virginia-tech", "EV1", "Northwestern", "Virginia Tech")
+    oa.store_finals(stored, [(flipped, 70, 87)])
+    rows = stored.execute("SELECT game_id, actual_score_a, actual_score_b FROM historical_games").fetchall()
+    assert rows == [("2026-11-20_virginia-tech_northwestern", 87, 70)]                # VT's 87 as team A
+    assert stored.execute("SELECT count(*) FROM scheduled_games").fetchone()[0] == 1   # no phantom game
+
+
+def test_odds_with_home_and_away_swapped_are_flipped(stored):
+    flipped = _game("2026-11-20_northwestern_virginia-tech", "EV1", "Northwestern", "Virginia Tech")
+    snap = oa.OddsSnapshot(flipped.game_id, datetime(2026, 11, 20, 14), "draftkings", 3.5, 140, -165, 150.5)
+    games, snaps = oa.reconcile(stored, [flipped], [snap])
+    assert games == []
+    assert snaps == [oa.OddsSnapshot("2026-11-20_virginia-tech_northwestern", datetime(2026, 11, 20, 14),
+                                     "draftkings", -3.5, -165, 140, 150.5)]
+
+
+def test_new_events_are_untouched(stored):
+    other = _game("2026-11-20_duke_kansas", "EV2", "Duke", "Kansas")
+    snap = oa.OddsSnapshot(other.game_id, datetime(2026, 11, 20, 14), "draftkings", -2.0, -130, 110, 140.0)
+    assert oa.reconcile(stored, [other], [snap]) == ([other], [snap])

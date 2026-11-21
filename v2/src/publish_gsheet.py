@@ -137,6 +137,53 @@ class GridTab:
 
 
 # --------------------------------------------------------------------------
+# Column fitting: widen columns so headers and values stay on one line
+# --------------------------------------------------------------------------
+
+# Arial/Helvetica advance widths (1/1000 em). Sheets renders in Arial by default.
+_GLYPH = {**{c: 556 for c in "0123456789abdeghnopqu$#?_"}, **dict(zip("cksvxyzJ", [500] * 8)),
+          **dict(zip("fijlt ", [278, 222, 222, 222, 278, 278])), "r": 333, "m": 833, "w": 722,
+          **dict(zip("ABEKPSVXY", [667] * 9)), **dict(zip("CDHNRUw", [722] * 7)), "F": 611, "T": 611, "Z": 611,
+          "G": 778, "O": 778, "Q": 778, "I": 278, "L": 556, "M": 833, "W": 944,
+          ".": 278, ",": 278, ":": 278, ";": 278, "'": 191, "(": 333, ")": 333, "-": 333, "/": 278,
+          "+": 584, "%": 889, "&": 667, "–": 556, "—": 1000, "▲": 1000, "▼": 1000, "●": 600, "@": 1015}
+CELL_PADDING_PX = 12          # left + right padding and gridline, with a little slack
+MAX_FIT_PX = 260
+
+
+def text_px(text: str, size: float = 10, bold: bool = False) -> float:
+    """Approximate rendered width of ``text`` in Arial at ``size`` pt."""
+    units = sum(_GLYPH.get(ch, 600) for ch in text)
+    return units / 1000 * size * 96 / 72 * (1.1 if bold else 1.0)
+
+
+def fit_columns(layout: "SheetLayout", skip_rows: int = 0) -> None:
+    """Widen ``layout.col_widths`` in place so no single-line cell wraps or clips.
+
+    Skips merged cells (title bars, group bands), text set to overflow into
+    neighbors (key lines), charts, and data cells deliberately set to WRAP;
+    header cells are always fitted so labels like "Home 10+" stay on one line.
+    """
+    merged = {(r, c) for r0, r1, c0, c1 in layout.merges for r in range(r0, r1) for c in range(c0, c1)}
+    for r, row in enumerate(layout.rows[skip_rows:], start=skip_rows):
+        labeled = [cell for cell in row if cell_text(cell)]
+        header = len(labeled) > 1 and all("note" in cell for cell in labeled)   # column headers
+        for c, cell in enumerate(row):
+            if (r, c) in merged or "formulaValue" in cell.get("userEnteredValue", {}):
+                continue
+            fmt = cell.get("userEnteredFormat", {})
+            wrap = fmt.get("wrapStrategy")
+            if wrap == "OVERFLOW_CELL" or (wrap == "WRAP" and not header):
+                continue
+            text = cell_text(cell)
+            if not text:
+                continue
+            tf = fmt.get("textFormat", {})
+            need = text_px(text, tf.get("fontSize", 10), tf.get("bold", False)) + CELL_PADDING_PX
+            layout.col_widths[c] = int(min(MAX_FIT_PX, max(layout.col_widths[c], round(need))))
+
+
+# --------------------------------------------------------------------------
 # Daily Picks: designed grid (one value per cell)
 # --------------------------------------------------------------------------
 
@@ -177,8 +224,14 @@ DAILY_GROUPS = [
         ("#", 34, "Game number, in tip-off order."),
         ("Tip (ET)", 70, "Scheduled tip-off, Eastern time."),
         ("Away", 150, "Visiting team (bold = model favorite)."),
-        ("Home", 150, "Home team (bold = model favorite). The odds feed has no neutral-site flag, "
-                      "so every game is modeled with home-court for this team."),
+        ("Home", 150, "Home team (bold = model favorite). Modeled with home-court advantage "
+                      "unless the Site column says Neutral."),
+    ]),
+    ("SITE", "#6D4C9F", [
+        ("Site", 66, "Neutral = a neutral-site game (tournaments, showcases): the model gives neither team "
+                     "home-court advantage. Home = played at the listed home team's arena. Source: ESPN."),
+        ("Venue", 150, "Arena where the game is played (ESPN)."),
+        ("City", 110, "City of the venue."),
     ]),
     ("PROJECTED SCORE", "#2F5D8A", [
         ("Away", 54, "Model's projected points for the away team (mean of 10,000 simulations)."),
@@ -247,6 +300,19 @@ def _split_bar(away: float, home: float) -> dict:
     return {"userEnteredValue": {"formulaValue": formula}}
 
 
+def _site_cells(neutral: bool, known: bool, venue: str | None, city: str | None, f, c0: int) -> list[dict]:
+    """Site chip + venue + city (one value each); ``f(c, **fmt)`` formats column ``c``."""
+    if not known and not neutral:
+        site = _text("—", f(c0, fg=MUTED, align="CENTER"))
+    elif neutral:
+        site = _text("Neutral", _fmt(bg=_hex("#6D4C9F"), fg=WHITE, bold=True, size=9, align="CENTER",
+                                     left_border=True))
+    else:
+        site = _text("Home", f(c0, fg=MUTED, size=9, align="CENTER"))
+    return [site, _text(venue or "—", f(c0 + 1, fg=INK if venue else MUTED, size=9)),
+            _text(city or "—", f(c0 + 2, fg=MUTED, size=9))]
+
+
 def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
                      generated_at: datetime | None = None) -> GridTab:
     games = lp.slate_games(con, today)
@@ -301,32 +367,33 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
             _numcell(tip, f(1, align="CENTER", pattern="h:mm AM/PM", pattern_type="TIME")),
             _text(g.away, f(2, bold=fav == g.away)),
             _text(g.home, f(3, bold=fav == g.home)),
-            _numcell(round(g.away_pts), f(4, align="CENTER", pattern="0")),
-            _numcell(round(g.home_pts), f(5, align="CENTER", pattern="0")),
-            _numcell(g.total, f(6, align="CENTER", pattern="0.0")),
-            _numcell(g.market_total, f(7, align="CENTER", pattern="0.0", fg=MUTED)),
-            _numcell(g.model_line, f(8, align="CENTER", pattern=SPREAD_FMT, bold=True)),
-            _numcell(g.market_line, f(9, align="CENTER", pattern=SPREAD_FMT, fg=MUTED)),
-            _numcell(g.edge, f(10, align="CENTER", pattern="0.0")),
+            *_site_cells(g.neutral, g.site_known, g.venue, g.city, f, 4),
+            _numcell(round(g.away_pts), f(7, align="CENTER", pattern="0")),
+            _numcell(round(g.home_pts), f(8, align="CENTER", pattern="0")),
+            _numcell(g.total, f(9, align="CENTER", pattern="0.0")),
+            _numcell(g.market_total, f(10, align="CENTER", pattern="0.0", fg=MUTED)),
+            _numcell(g.model_line, f(11, align="CENTER", pattern=SPREAD_FMT, bold=True)),
+            _numcell(g.market_line, f(12, align="CENTER", pattern=SPREAD_FMT, fg=MUTED)),
+            _numcell(g.edge, f(13, align="CENTER", pattern="0.0")),
         ]
         if g.pick is None:
-            cells.append(_text("—", f(11, fg=MUTED, align="CENTER")))
+            cells.append(_text("—", f(14, fg=MUTED, align="CENTER")))
         elif g.edge >= EDGE_STRONG:
             cells.append(_text(g.pick, _fmt(bg=_hex(PICK_STRONG), fg=WHITE, bold=True, left_border=False)))
         elif g.edge >= EDGE_LEAN:
             cells.append(_text(g.pick, _fmt(bg=_hex(PICK_LEAN), fg=_hex("#14532D"), bold=True)))
         else:
-            cells.append(_text(g.pick, f(11, fg=MUTED)))
+            cells.append(_text(g.pick, f(14, fg=MUTED)))
         cells += [
-            _numcell(g.away_win, f(12, align="CENTER", pattern="0%", pattern_type="PERCENT",
+            _numcell(g.away_win, f(15, align="CENTER", pattern="0%", pattern_type="PERCENT",
                                bold=fav == g.away)),
-            {**_split_bar(g.away_win, g.home_win), "userEnteredFormat": f(13)},
-            _numcell(g.home_win, f(14, align="CENTER", pattern="0%", pattern_type="PERCENT",
+            {**_split_bar(g.away_win, g.home_win), "userEnteredFormat": f(16)},
+            _numcell(g.home_win, f(17, align="CENTER", pattern="0%", pattern_type="PERCENT",
                                bold=fav == g.home)),
-            _numcell(g.market_home_win, f(15, align="CENTER", pattern="0%", pattern_type="PERCENT", fg=MUTED)),
+            _numcell(g.market_home_win, f(18, align="CENTER", pattern="0%", pattern_type="PERCENT", fg=MUTED)),
         ]
         for k in range(6):
-            c = 16 + k
+            c = 19 + k
             if g.buckets is None:
                 cells.append(_text("—", f(c, fg=MUTED, align="CENTER")))
                 continue
@@ -342,9 +409,11 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
                     + [{} for _ in range(n_cols - 1)])
 
     widths = [w for _, _, (_, w, _) in columns]
-    return GridTab(title, SheetLayout(rows, n_cols, frozen_rows=4, col_widths=widths, frozen_cols=frozen_cols,
-                                      merges=merges, row_heights={0: 36, 1: 22, 2: 22, 3: 34},
-                                      default_row_px=24, filter_row=3 if games else None))
+    layout = SheetLayout(rows, n_cols, frozen_rows=4, col_widths=widths, frozen_cols=frozen_cols,
+                         merges=merges, row_heights={0: 36, 1: 22, 2: 22, 3: 34},
+                         default_row_px=24, filter_row=3 if games else None)
+    fit_columns(layout)
+    return GridTab(title, layout)
 
 
 # --------------------------------------------------------------------------
@@ -460,9 +529,11 @@ def build_rankings_grid(con, today: date, title: str = TAB_TITLES[3],
                     + [{} for _ in range(n_cols - 1)])
 
     widths = [w for _, w, _ in columns]
-    return GridTab(title, SheetLayout(rows, n_cols, frozen_rows=4, col_widths=widths, frozen_cols=n_fixed,
-                                      merges=merges, row_heights={0: 36, 1: 22, 2: 22, 3: 34},
-                                      default_row_px=24, filter_row=3 if current else None))
+    layout = SheetLayout(rows, n_cols, frozen_rows=4, col_widths=widths, frozen_cols=n_fixed,
+                         merges=merges, row_heights={0: 36, 1: 22, 2: 22, 3: 34},
+                         default_row_px=24, filter_row=3 if current else None)
+    fit_columns(layout)
+    return GridTab(title, layout)
 
 
 # --------------------------------------------------------------------------
@@ -614,14 +685,14 @@ def _tranche_block(sh: _Sheet, rows: list[tuple], color: str) -> None:
             return _numcell(x, _fmt(bg=GRADE_TINT.get(grade, bg), bold=grade is not None, align="CENTER",
                                     pattern=pattern, pattern_type=ptype))
 
-        sh.add([_text(vm.TRANCHE_LABELS[t], _fmt(bg=bg, bold=True)),
+        sh.add([_text(vm.TRANCHE_LABELS[t], _fmt(bg=bg, bold=True, wrap="WRAP")),
                 _numcell(tm.n_spread, _fmt(bg=bg, fg=MUTED, align="CENTER", pattern="#,##0")),
                 graded(mk.su_model, su_grade, "0.0%", "PERCENT"),
                 graded(mk.su_vegas, None, "0.0%", "PERCENT"),
                 graded(tm.ats, ats_grade, "0.0%", "PERCENT"),
                 graded(mk.brier_model, None, "0.000"),
                 graded(mk.brier_vegas, None, "0.000"),
-                graded(mk.bss, bss_grade, "+0.000;-0.000;0.000")], 26)
+                graded(mk.bss, bss_grade, "+0.000;-0.000;0.000")], 36)
 
 
 def _calibration_block(sh: _Sheet, rows: list[tuple], color: str) -> None:
@@ -687,8 +758,10 @@ def build_performance_grid(con, today: date, title: str = TAB_TITLES[2],
         if len(rows) >= sc.MIN_SAMPLE:
             sh.blank()
             _calibration_block(sh, rows, color)
-    return GridTab(title, SheetLayout(sh.rows, sh.n_cols, frozen_rows=2, col_widths=list(PERF_WIDTHS),
-                                      merges=sh.merges, row_heights=sh.heights, default_row_px=24))
+    layout = SheetLayout(sh.rows, sh.n_cols, frozen_rows=2, col_widths=list(PERF_WIDTHS),
+                         merges=sh.merges, row_heights=sh.heights, default_row_px=24)
+    fit_columns(layout)
+    return GridTab(title, layout)
 
 
 # --------------------------------------------------------------------------
@@ -704,9 +777,17 @@ LEDGER_GROUPS = [
     ("GAME", "#475569", [
         ("Date", 84, "Game date (Eastern)."),
         ("Away", 150, "Visiting team."),
-        ("Home", 150, "Home team (the odds feed has no neutral-site flag)."),
+        ("Home", 150, "Home team (or the designated home team at a neutral site)."),
+    ]),
+    ("SITE", "#6D4C9F", [
+        ("Site", 66, "Neutral = a neutral-site game (tournaments, showcases): the model gives neither team "
+                     "home-court advantage. Home = played at the listed home team's arena. Source: ESPN."),
+        ("Venue", 150, "Arena where the game is played (ESPN)."),
+        ("City", 110, "City of the venue."),
     ]),
     ("MODEL PICK", "#B7791F", [
+        ("Model", 76, "Model version that locked this pick. Picks are never re-made when the model is "
+                      "updated, so each row keeps the version that was live at pick time."),
         ("Model Margin", 72, "Model's projected HOME margin when the pick was locked: +6.0 = home by 6."),
         ("Pick", 150, "Side the model took against the spread at pick time."),
         ("Pick Line", 66, "HOME team's spread when the pick was locked (-4.5 = home favored by 4.5)."),
@@ -846,14 +927,16 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
             _text(f"{g.game_date:%Y-%m-%d}", f(0, fg=MUTED, align="CENTER")),
             _text(g.away, f(1, bold=g.pred_margin < 0)),
             _text(g.home, f(2, bold=g.pred_margin >= 0)),
-            _numcell(round(g.pred_margin, 1), f(3, align="CENTER", pattern="+0.0;-0.0;0.0")),
-            _text(g.pick, f(4, bold=True)) if g.pick else _text("—", f(4, fg=MUTED, align="CENTER")),
-            _numcell(g.pick_line, f(5, align="CENTER", pattern=SPREAD_FMT)),
-            _numcell(g.closing_line, f(6, fg=MUTED, align="CENTER", pattern=SPREAD_FMT)),
-            _numcell(g.clv, f(7, fg=clv_fg, bold=bool(g.clv), align="CENTER", pattern="+0.0;-0.0;0.0")),
-            _numcell(g.away_pts, f(8, align="CENTER", pattern="0")),
-            _numcell(g.home_pts, f(9, align="CENTER", pattern="0")),
-            _numcell(g.final_margin, f(10, bold=True, align="CENTER", pattern="+0;-0;0")),
+            *_site_cells(g.neutral, g.site_known, g.venue, g.city, f, 3),
+            _text(g.model_version or "—", f(6, fg=MUTED, size=9, align="CENTER")),
+            _numcell(round(g.pred_margin, 1), f(7, align="CENTER", pattern="+0.0;-0.0;0.0")),
+            _text(g.pick, f(8, bold=True)) if g.pick else _text("—", f(8, fg=MUTED, align="CENTER")),
+            _numcell(g.pick_line, f(9, align="CENTER", pattern=SPREAD_FMT)),
+            _numcell(g.closing_line, f(10, fg=MUTED, align="CENTER", pattern=SPREAD_FMT)),
+            _numcell(g.clv, f(11, fg=clv_fg, bold=bool(g.clv), align="CENTER", pattern="+0.0;-0.0;0.0")),
+            _numcell(g.away_pts, f(12, align="CENTER", pattern="0")),
+            _numcell(g.home_pts, f(13, align="CENTER", pattern="0")),
+            _numcell(g.final_margin, f(14, bold=True, align="CENTER", pattern="+0;-0;0")),
             _chip_cell(g.su, bg),
             _chip_cell(g.ats, bg),
         ])
@@ -862,10 +945,12 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
                            _fmt(fg=MUTED, italic=True))] + [{} for _ in range(n_cols - 1)])
     rows = [r + [{} for _ in range(n_cols - len(r))] for r in rows]
     widths = [w for _, _, (_, w, _) in columns]
-    return GridTab(title, SheetLayout(rows, n_cols, frozen_rows=header_at + 1, col_widths=widths,
-                                      frozen_cols=frozen_cols, merges=merges,
-                                      row_heights={0: 36, 1: 22, 2: 20, 3: 34, 4: 10, band_at: 22, header_at: 34},
-                                      default_row_px=24, filter_row=header_at if games else None))
+    layout = SheetLayout(rows, n_cols, frozen_rows=header_at + 1, col_widths=widths,
+                         frozen_cols=frozen_cols, merges=merges,
+                         row_heights={0: 36, 1: 22, 2: 20, 3: 34, 4: 10, band_at: 22, header_at: 34},
+                         default_row_px=24, filter_row=header_at if games else None)
+    fit_columns(layout)
+    return GridTab(title, layout)
 
 
 # --------------------------------------------------------------------------
@@ -912,8 +997,11 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
     for i, g in enumerate(games):
         sh.add([], 10)
         head = _fmt(bg=_hex("#475569"), fg=WHITE, bold=True, size=10)
-        r = sh.add([_text(f"{g.tip_et:%-I:%M %p} · Game {i + 1}", head), {"userEnteredFormat": head},
-                    {"userEnteredFormat": head}], 26)
+        tag = " · Neutral site" if g.neutral else ""
+        r = sh.add([_text(f"{g.tip_et:%-I:%M %p} · Game {i + 1}{tag}",
+                          {**head, "backgroundColor": _hex("#6D4C9F")} if g.neutral else head),
+                    {"userEnteredFormat": {**head, "backgroundColor": _hex("#6D4C9F")} if g.neutral else head},
+                    {"userEnteredFormat": {**head, "backgroundColor": _hex("#6D4C9F")} if g.neutral else head}], 26)
         sh.merges.append((r, r + 1, 0, 3))
         fav = 0 if g.model_fav == g.away else 1
         team = lambda name, k: _text(name, _fmt(bold=k == fav, align="CENTER", wrap="WRAP",   # noqa: E731
@@ -939,6 +1027,8 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
             pair("Wins by 10+", b[0], b[5], "0%", "PERCENT", bg=ZEBRA, tint=0.5)
             pair("Wins by 5–9", b[1], b[4], "0%", "PERCENT", tint=0.5)
             pair("Wins by 1–4", b[2], b[3], "0%", "PERCENT", bg=ZEBRA, tint=0.5)
+        if g.venue:
+            merged("Venue", _text(g.venue, _fmt(fg=MUTED, size=9, align="CENTER", wrap="WRAP")), height=30)
         merged("Proj. total", _numcell(g.total, _fmt(align="CENTER", pattern="0.0")))
         merged("Market total", _numcell(g.market_total, _fmt(bg=ZEBRA, fg=MUTED, align="CENTER", pattern="0.0")),
                bg=ZEBRA)

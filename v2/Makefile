@@ -18,7 +18,7 @@ DAILY_MINUTE ?= 0
 PUBLIC  ?= 0
 
 .PHONY: setup test ingest simulate predict audit import-v1 daily \
-        odds picks power-rankings publish publish-preview \
+        odds venues picks power-rankings publish publish-preview \
         install-daily daily-status uninstall-daily
 
 setup: $(STAMP)
@@ -52,6 +52,10 @@ audit: setup
 odds: setup
 	$(PY) cli.py odds
 
+# Venues + neutral-site flags from ESPN (before picks lock).
+venues: setup
+	$(PY) cli.py venues
+
 picks: setup
 	$(PY) cli.py picks
 
@@ -69,6 +73,7 @@ publish-preview: setup
 daily: setup
 	$(PY) cli.py ingest
 	$(PY) cli.py odds
+	$(PY) cli.py venues
 	$(PY) cli.py picks
 	$(PY) cli.py power-rankings --top 10
 	$(PY) cli.py publish --skip-if-unconfigured $(if $(filter 1,$(PUBLIC)),--make-public,)

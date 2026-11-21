@@ -306,6 +306,7 @@ def test_ledger_games_are_raw_values(db_path):
         g, = lp.ledger_games(con)
     assert (g.away, g.home, g.away_pts, g.home_pts, g.final_margin) == ("Michigan St.", "Duke", 72, 80, 8)
     assert (g.pick, g.pick_line, g.closing_line, g.su, g.ats) == ("Duke", -3.0, -4.5, "W", "Cover")
+    assert g.model_version == "lean-v1.1"
     assert g.clv == pytest.approx(1.5)
 
 
@@ -324,12 +325,12 @@ def test_ledger_grid_record_strip(ledger_grid):
 def test_ledger_grid_rows_one_value_per_cell(ledger_grid):
     lay = ledger_grid.layout
     header = [pg.cell_text(c) for c in lay.rows[6]]
-    assert header == ["Date", "Away", "Home", "Model Margin", "Pick", "Pick Line", "Close Line", "CLV",
-                      "Away Pts", "Home Pts", "Final Margin", "SU", "ATS"]
+    assert header == ["Date", "Away", "Home", "Site", "Venue", "City", "Model", "Model Margin", "Pick", "Pick Line",
+                      "Close Line", "CLV", "Away Pts", "Home Pts", "Final Margin", "SU", "ATS"]
     row = [pg.cell_text(c) for c in lay.rows[7]]
-    assert row == ["2026-11-19", "Michigan St.", "Duke", row[3], "Duke", "-3.0", "-4.5", "+1.5",
-                   "72", "80", "+8", "W", "Cover"]
-    assert lay.rows[7][12]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
+    assert row == ["2026-11-19", "Michigan St.", "Duke", "—", "—", "—", "lean-v1.1", row[7], "Duke", "-3.0", "-4.5",
+                   "+1.5", "72", "80", "+8", "W", "Cover"]
+    assert lay.rows[7][16]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
     assert (lay.frozen_rows, lay.frozen_cols, lay.filter_row) == (7, 3, 6)
     assert all(c.get("note") for c in lay.rows[6])
 
@@ -440,36 +441,38 @@ def test_buckets_from_tail_probs():
 def test_daily_grid_one_value_per_cell(grid):
     lay = grid.layout
     header = [pg.cell_text(c) for c in lay.rows[3]]
-    assert header[:4] == ["#", "Tip (ET)", "Away", "Home"] and header[-1] == "Home 10+"
-    assert len(header) == lay.n_cols == 22
+    assert header[:7] == ["#", "Tip (ET)", "Away", "Home", "Site", "Venue", "City"] and header[-1] == "Home 10+"
+    assert len(header) == lay.n_cols == 25
     assert all(c.get("note") for c in lay.rows[3])                    # every header has a hover note
     row = lay.rows[4]
     texts = [pg.cell_text(c) for c in row]
-    assert texts[:4] == ["1", "8:00 PM", "Houston", "Kansas"]
-    assert texts[9] == "+1.5" and texts[13] == "[chart]"
+    assert texts[:7] == ["1", "8:00 PM", "Houston", "Kansas", "—", "—", "—"]       # no venue data in fixture
+    assert texts[12] == "+1.5" and texts[16] == "[chart]"
     # numbers are numbers, names are single strings: no cell mixes a team name with a value
     for c, cell in enumerate(row):
         v = cell.get("userEnteredValue", {})
-        if c in (2, 3, 11):
+        if c in (2, 3, 14):
             assert v["stringValue"] in ("Houston", "Kansas")
-        elif c == 13:
+        elif c in (4, 5, 6):
+            assert v["stringValue"] == "—"
+        elif c == 16:
             assert v["formulaValue"].startswith("=SPARKLINE(")
         else:
             assert "numberValue" in v, (c, v)
-    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(16, 22)) == pytest.approx(1.0)
+    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(19, 25)) == pytest.approx(1.0)
 
 
 def test_daily_grid_structure(grid):
     lay = grid.layout
     assert (lay.frozen_rows, lay.frozen_cols) == (4, 4)
-    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 8), (2, 3, 8, 12), (2, 3, 12, 16), (2, 3, 16, 22)]
+    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 11), (2, 3, 11, 15), (2, 3, 15, 19), (2, 3, 19, 25)]
     assert all(len(r) == lay.n_cols for r in lay.rows)
     assert pg.cell_text(lay.rows[1][0]) == "1 games · updated 2:05 PM ET"
 
 
 def test_pick_cell_shading_by_edge(grid):
-    pick = grid.layout.rows[4][11]
-    edge = grid.layout.rows[4][10]["userEnteredValue"]["numberValue"]
+    pick = grid.layout.rows[4][14]
+    edge = grid.layout.rows[4][13]["userEnteredValue"]["numberValue"]
     bg = pick["userEnteredFormat"].get("backgroundColor")
     if edge >= pg.EDGE_STRONG:
         assert bg == pg._hex(pg.PICK_STRONG)
@@ -485,7 +488,7 @@ def test_daily_grid_publishes_and_republishes(grid, tabs):
     publisher.publish([grid, *tabs[1:]])
     publisher.publish([grid, *tabs[1:]])                              # re-merge after unmerge works
     tab = sheets.by_title("Daily Picks")
-    assert (tab["frozen"], tab["frozen_cols"]) == (4, 4) and len(tab["merges"]) == 5
+    assert (tab["frozen"], tab["frozen_cols"]) == (4, 4) and len(tab["merges"]) == 6
     assert tab["heights"][0] == 36 and tab["heights"][4] == 24
     assert sheets.display("Daily Picks")[4][2] == "Houston"
     publisher.publish([plain_tab("Daily Picks"), *tabs[1:]])          # merges cleared
@@ -691,7 +694,7 @@ def test_lookup_tabs_get_header_filters(grid, rank_grid, tabs):
     publisher.publish([grid, tabs[1], tabs[2], rank_grid])
     picks = sheets.by_title("Daily Picks")["filter"]
     ranks = sheets.by_title("Daily Power Rankings")["filter"]
-    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 22)
+    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 25)
     assert (ranks["startRowIndex"], ranks["endRowIndex"]) == (3, 4 + len(TEAMS))
     assert sheets.by_title("Model Performance & Stats")["filter"] is None
     assert pg.SEARCH_HINT in pg.cell_text(grid.layout.rows[1][4])
@@ -809,3 +812,95 @@ def test_held_back_games_are_noted_on_daily_tabs(db_path):
         daily, mobile = pg.build_daily_grid(con, TODAY), pg.build_mobile_grid(con, TODAY)
     assert "1 game held back for review: Rice @ Duke" in pg.cell_text(daily.layout.rows[1][4])
     assert "held back for review: Rice @ Duke" in pg.cell_text(mobile.layout.rows[1][0])
+
+
+
+# --- column fitting -------------------------------------------------------------------------------
+
+
+def test_text_px_scales_with_length_size_and_weight():
+    assert pg.text_px("Home 10+") > pg.text_px("Home")
+    assert pg.text_px("Home 10+", 10) > pg.text_px("Home 10+", 9)
+    assert pg.text_px("Home 10+", bold=True) > pg.text_px("Home 10+")
+    assert pg.text_px("WWW") > pg.text_px("iii")
+
+
+def _single_line_cells(lay):
+    merged = {(r, c) for r0, r1, c0, c1 in lay.merges for r in range(r0, r1) for c in range(c0, c1)}
+    for r, row in enumerate(lay.rows):
+        labeled = [cell for cell in row if pg.cell_text(cell)]
+        header = len(labeled) > 1 and all("note" in cell for cell in labeled)
+        for c, cell in enumerate(row):
+            fmt = cell.get("userEnteredFormat", {})
+            wrap = fmt.get("wrapStrategy")
+            if ((r, c) in merged or not pg.cell_text(cell) or wrap == "OVERFLOW_CELL"
+                    or (wrap == "WRAP" and not header) or "formulaValue" in cell.get("userEnteredValue", {})):
+                continue
+            yield c, cell, fmt.get("textFormat", {})
+
+
+def test_desktop_headers_and_values_fit_on_one_line(tabs):
+    for tab in tabs[:4]:
+        lay = tab.layout
+        for c, cell, tf in _single_line_cells(lay):
+            need = pg.text_px(pg.cell_text(cell), tf.get("fontSize", 10), tf.get("bold", False)) + pg.CELL_PADDING_PX
+            assert lay.col_widths[c] >= min(need, pg.MAX_FIT_PX) - 1, (tab.title, pg.cell_text(cell), lay.col_widths[c])
+
+
+def test_fitting_only_widens(tabs, grid):
+    assert all(w >= base for w, (_, _, (_, base, _)) in
+               zip(grid.layout.col_widths, [(g, col, x) for g, col, cols in pg.DAILY_GROUPS for x in cols]))
+    hdr = [pg.cell_text(c) for c in grid.layout.rows[3]]
+    assert grid.layout.col_widths[hdr.index("Home 10+")] > 62               # was clipped at 62 px
+
+
+def test_performance_still_fits_a_phone(perf_grid):
+    assert sum(perf_grid.layout.col_widths[:3]) <= 340
+
+
+
+# --- venues / neutral sites ------------------------------------------------------------------------
+
+
+def _espn(home, away, neutral, venue="Baha Mar Convention Center", city="Nassau", country="Bahamas"):
+    return {"competitions": [{"neutralSite": neutral, "venue": {"fullName": venue, "address": {"city": city, "country": country}},
+                              "competitors": [{"homeAway": "home", "team": {"displayName": home, "location": home}},
+                                              {"homeAway": "away", "team": {"displayName": away, "location": away}}]}]}
+
+
+def test_venues_match_either_orientation_and_zero_hca(db_path):
+    from src import venues
+    with db.get_db_connection(db_path=db_path) as con:
+        con.execute("DELETE FROM model_predictions WHERE game_id = 't1'")          # unlocked: hca can change
+        from src.team_names import TeamNameMapper
+        mapper = TeamNameMapper(["Kansas", "Houston", "Duke", "Michigan St."])
+        parsed = venues.parse_scoreboard({"events": [_espn("Houston Cougars", "Kansas Jayhawks", True)]}, mapper)
+        assert parsed == [venues.Venue("Houston", "Kansas", True, "Baha Mar Convention Center", "Nassau, Bahamas")]
+        run = venues.store(con, TODAY, parsed)                                   # ESPN has Houston "home"
+        assert (run.matched, run.neutral, run.hca_zeroed) == (1, 1, 1)
+        assert con.execute("SELECT hca_eff, venue FROM historical_games WHERE game_id = 't1'").fetchone() == \
+            (0.0, "Baha Mar Convention Center")
+        lp.make_picks(con, TODAY, now=datetime(2026, 11, 20, 15), n_sims=2000)
+        g, = lp.slate_games(con, TODAY)
+        assert g.neutral and g.venue == "Baha Mar Convention Center" and g.city == "Nassau, Bahamas"
+        grid = pg.build_daily_grid(con, TODAY)
+        mobile = pg.build_mobile_grid(con, TODAY)
+    row = [pg.cell_text(c) for c in grid.layout.rows[4][4:7]]
+    assert row == ["Neutral", "Baha Mar Convention Center", "Nassau, Bahamas"]
+    assert any("Neutral site" in pg.cell_text(r[0]) for r in mobile.layout.rows)
+
+
+def test_locked_picks_keep_their_hca(db_path):
+    from src import venues
+    with db.get_db_connection(db_path=db_path) as con:                          # t1 is already locked
+        run = venues.store(con, TODAY, [venues.Venue("Kansas", "Houston", True, "Arena", "City, ST")])
+        assert run.hca_zeroed == 0 and run.neutral == 1
+        assert con.execute("SELECT hca_eff FROM historical_games WHERE game_id = 't1'").fetchone() == (1.9,)
+
+
+def test_ledger_shows_site(db_path):
+    from src import venues
+    with db.get_db_connection(db_path=db_path) as con:
+        venues.store(con, YESTERDAY, [venues.Venue("Duke", "Michigan St.", False, "Cameron Indoor Stadium", "Durham, NC")])
+        grid = pg.build_ledger_grid(con, TODAY)
+    assert [pg.cell_text(c) for c in grid.layout.rows[7][3:6]] == ["Home", "Cameron Indoor Stadium", "Durham, NC"]

@@ -18,6 +18,7 @@ import math
 from datetime import date, timedelta
 from pathlib import Path
 
+import requests
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -30,6 +31,7 @@ from src import power_rankings as pr
 from src import publish_gsheet as pg
 from src import sanity
 from src import state as state_mod
+from src import venues as venues_mod
 from src import validate_model as vm
 from src.db import DEFAULT_DB_PATH, PROJECT_ROOT, get_db_connection
 from src.import_v1 import DEFAULT_V1_DB, import_v1
@@ -328,6 +330,23 @@ def picks(
                       p.market_win)
     if rows:
         console.print(table)
+
+
+@app.command()
+def venues(
+    date_: str = typer.Option(None, "--date", help="Slate date, US/Eastern (default today)"),
+    db_path: Path = DbPath,
+):
+    """Venues + neutral-site flags (ESPN) for the day's games; neutral sites get no home-court edge."""
+    day = _date(date_) or date.today()
+    try:
+        with get_db_connection(db_path=db_path) as con:
+            run = venues_mod.update(con, day)
+    except requests.RequestException as exc:      # never block the daily job on ESPN
+        console.print(f"[yellow]Venue lookup failed ({exc}); games keep home-court as listed[/]")
+        return
+    console.print(f"{run.matched} of {run.matched + run.unmatched_games} games matched to ESPN venues; "
+                  f"{run.neutral} neutral site(s); home-court removed from {run.hca_zeroed} unlocked game(s)")
 
 
 @app.command("power-rankings")

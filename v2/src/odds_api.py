@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -259,11 +259,55 @@ def refresh_closing_odds(con: duckdb.DuckDBPyConnection, game_ids: list[str]) ->
     return n
 
 
+def canonical_game(con: duckdb.DuckDBPyConnection, g: ScheduledGame) -> tuple[str, bool]:
+    """(game_id to use, flipped) for a feed game. The Odds API keeps one event id
+    per game, but its odds and scores feeds (or two pulls of the same feed) can
+    disagree on which team is home -- typically neutral-site tournament games.
+    Building the id from (date, home, away) would then create a second, phantom
+    game and the locked pick would never be graded. Reuse the stored game for
+    the event id instead; ``flipped`` = the feed's home team is our team_b."""
+    row = con.execute(
+        """SELECT s.game_id, s.team_a FROM scheduled_games s
+           WHERE s.source_event_id = ?
+           ORDER BY EXISTS (SELECT 1 FROM model_predictions p WHERE p.game_id = s.game_id) DESC, s.game_id
+           LIMIT 1""", [g.source_event_id]).fetchone()
+    if row is None or row[0] == g.game_id:
+        return g.game_id, False
+    return row[0], row[1] != g.team_a
+
+
+def reconcile(con: duckdb.DuckDBPyConnection, games: list, snaps: list) -> tuple[list, list]:
+    """Map feed games/snapshots onto already-stored games with the same event id
+    (flipping spread and moneylines when the feed swapped home and away)."""
+    keep, remap = [], {}
+    for g in games:
+        cid, flipped = canonical_game(con, g)
+        if cid == g.game_id:
+            keep.append(g)
+        else:
+            remap[g.game_id] = (cid, flipped)
+    out = []
+    for snap in snaps:
+        if snap.game_id not in remap:
+            out.append(snap)
+            continue
+        cid, flipped = remap[snap.game_id]
+        if flipped:
+            snap = replace(snap, spread_a=None if snap.spread_a is None else -snap.spread_a,
+                           ml_a=snap.ml_b, ml_b=snap.ml_a)
+        out.append(replace(snap, game_id=cid))
+    return keep, out
+
+
 def store_finals(con: duckdb.DuckDBPyConnection, finals: list) -> int:
     for g, a, b in finals:
-        store_games(con, [g])
+        cid, flipped = canonical_game(con, g)
+        if cid == g.game_id:
+            store_games(con, [g])
+        elif flipped:
+            a, b = b, a
         con.execute("UPDATE historical_games SET actual_score_a = ?, actual_score_b = ? "
-                    "WHERE game_id = ?", [a, b, g.game_id])
+                    "WHERE game_id = ?", [a, b, cid])
     return len(finals)
 
 
@@ -313,6 +357,7 @@ def update(
 
     games, snaps, unmatched = parse_odds(events, mapper, now)
     finals, unmatched_scores = parse_scores(scores, mapper)
+    games, snaps = reconcile(con, games, snaps)
     store_games(con, games)
     store_snapshots(con, snaps)
     stats.closing_lines = refresh_closing_odds(con, sorted({s.game_id for s in snaps}))

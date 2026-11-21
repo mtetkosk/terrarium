@@ -213,6 +213,9 @@ class SlateGame:
     home_win: float
     market_home_win: float | None
     buckets: tuple[float, ...] | None
+    venue: str | None = None
+    city: str | None = None
+    site_known: bool = False          # venue data found (else neutral falls back to hca == 0)
 
     @property
     def away_win(self) -> float:
@@ -236,18 +239,22 @@ def slate_games(con: duckdb.DuckDBPyConnection, day: date) -> list[SlateGame]:
         """SELECT game_id, pred_score_a, pred_score_b, pred_spread_a, pred_total, win_prob_a,
                   prob_a_by_5, prob_a_by_10, prob_b_by_5, prob_b_by_10
            FROM model_predictions WHERE model_version = ?""", [LIVE_MODEL_VERSION]).fetchall()}
+    from src.venues import venue_map
+    games = slate(con, day)
+    sites = venue_map(con, [g[0] for g in games])
     out = []
-    for game_id, commence, a, b, hca in slate(con, day):
+    for game_id, commence, a, b, hca in games:
         if game_id not in preds:
             continue
         sa, sb, spread, total, wp, a5, a10, b5, b10 = preds[game_id]
+        neutral, venue, city = sites.get(game_id, (not hca, None, None))
         m = market_line(con, game_id)
         edge_pts = None if m["spread_a"] is None else m["spread_a"] - spread
         pick = None if edge_pts is None or abs(edge_pts) < 0.05 else (a if edge_pts > 0 else b)
         out.append(SlateGame(
             game_id=game_id,
             tip_et=commence.replace(tzinfo=timezone.utc).astimezone(EASTERN),
-            away=b, home=a, neutral=not hca,
+            away=b, home=a, neutral=neutral,
             away_pts=sb, home_pts=sa, total=total, market_total=m["total"],
             model_line=round(spread, 1), market_line=m["spread_a"],
             edge=None if edge_pts is None else abs(edge_pts), pick=pick,
@@ -255,6 +262,7 @@ def slate_games(con: duckdb.DuckDBPyConnection, day: date) -> list[SlateGame]:
             market_home_win=(devig_moneylines(m["ml_a"], m["ml_b"])[0]
                              if m["ml_a"] is not None and m["ml_b"] is not None else None),
             buckets=_buckets(wp, a5, a10, b5, b10),
+            venue=venue, city=city, site_known=game_id in sites,
         ))
     return out
 
@@ -290,6 +298,11 @@ class LedgerGame:
     su: str                       # "W" | "L" (model's winner)
     ats: str | None               # "Cover" | "Loss" | "Push" | None (no line / no side)
     clv: float | None
+    model_version: str = ""       # version that locked the pick, without the "live-" prefix
+    venue: str | None = None
+    city: str | None = None
+    site_known: bool = False
+
 
     @property
     def final_margin(self) -> int:
@@ -300,24 +313,29 @@ def ledger_games(con: duckdb.DuckDBPyConnection, limit: int | None = None) -> li
     """Completed live picks, newest first."""
     rows = con.execute(
         """SELECT g.game_id, g.game_date, g.team_a, g.team_b, g.hca_eff,
-                  g.actual_score_a, g.actual_score_b, p.pred_score_a - p.pred_score_b, p.created_at
+                  g.actual_score_a, g.actual_score_b, p.pred_score_a - p.pred_score_b, p.created_at,
+                  p.model_version
            FROM model_predictions p JOIN historical_games g USING (game_id)
-           WHERE p.model_version = ? AND g.actual_score_a IS NOT NULL
-           ORDER BY g.game_date DESC, g.game_id""" + (f" LIMIT {int(limit)}" if limit else ""),
-        [LIVE_MODEL_VERSION]).fetchall()
+           WHERE p.model_version LIKE 'live-%' AND g.actual_score_a IS NOT NULL
+           ORDER BY g.game_date DESC, g.game_id""" + (f" LIMIT {int(limit)}" if limit else "")).fetchall()
+    from src.venues import venue_map
+    sites = venue_map(con, [r[0] for r in rows])
     out = []
-    for gid, gd, a, b, hca, sa, sb, pred_margin, created in rows:
+    for gid, gd, a, b, hca, sa, sb, pred_margin, created, version in rows:
+        neutral, venue, city = sites.get(gid, (not hca, None, None))
         pick = market_line(con, gid, latest_at=created)["spread_a"]
         close = market_line(con, gid)["spread_a"]
         side = model_side(pred_margin, pick)
         actual = sa - sb
         ats = ats_result(side, actual, pick)
         out.append(LedgerGame(
-            game_id=gid, game_date=gd, away=b, home=a, neutral=not hca, pred_margin=pred_margin,
+            game_id=gid, game_date=gd, away=b, home=a, neutral=neutral, pred_margin=pred_margin,
             pick=None if side is None else (a if side == "A" else b),
             pick_line=pick, closing_line=close, away_pts=sb, home_pts=sa,
             su="W" if (pred_margin > 0) == (actual > 0) else "L",
             ats=None if ats == "—" else ats, clv=clv(side, pick, close),
+            model_version=version.removeprefix("live-"),
+            venue=venue, city=city, site_known=gid in sites,
         ))
     return out
 
