@@ -904,3 +904,18 @@ def test_ledger_shows_site(db_path):
         venues.store(con, YESTERDAY, [venues.Venue("Duke", "Michigan St.", False, "Cameron Indoor Stadium", "Durham, NC")])
         grid = pg.build_ledger_grid(con, TODAY)
     assert [pg.cell_text(c) for c in grid.layout.rows[7][3:6]] == ["Home", "Cameron Indoor Stadium", "Durham, NC"]
+
+
+
+def test_filtered_headers_leave_room_for_the_filter_button(tabs):
+    for tab in tabs[:4]:
+        lay = tab.layout
+        if lay.filter_row is None:
+            continue
+        for c, cell in enumerate(lay.rows[lay.filter_row]):
+            text = pg.cell_text(cell)
+            if not text:
+                continue
+            tf = cell["userEnteredFormat"]["textFormat"]
+            need = pg.text_px(text, tf["fontSize"], tf["bold"]) + pg.CELL_PADDING_PX + pg.FILTER_BUTTON_PX
+            assert lay.col_widths[c] >= min(need, pg.MAX_FIT_PX) - 1, (tab.title, text, lay.col_widths[c])

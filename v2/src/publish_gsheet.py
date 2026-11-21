@@ -148,6 +148,7 @@ _GLYPH = {**{c: 556 for c in "0123456789abdeghnopqu$#?_"}, **dict(zip("cksvxyzJ"
           ".": 278, ",": 278, ":": 278, ";": 278, "'": 191, "(": 333, ")": 333, "-": 333, "/": 278,
           "+": 584, "%": 889, "&": 667, "–": 556, "—": 1000, "▲": 1000, "▼": 1000, "●": 600, "@": 1015}
 CELL_PADDING_PX = 12          # left + right padding and gridline, with a little slack
+FILTER_BUTTON_PX = 26         # the ▾ filter button Sheets draws inside each header cell of a filtered table
 MAX_FIT_PX = 260
 
 
@@ -162,7 +163,8 @@ def fit_columns(layout: "SheetLayout", skip_rows: int = 0) -> None:
 
     Skips merged cells (title bars, group bands), text set to overflow into
     neighbors (key lines), charts, and data cells deliberately set to WRAP;
-    header cells are always fitted so labels like "Home 10+" stay on one line.
+    header cells are always fitted so labels like "Home 10+" stay on one line,
+    leaving room for the filter button in a filtered table's header row.
     """
     merged = {(r, c) for r0, r1, c0, c1 in layout.merges for r in range(r0, r1) for c in range(c0, c1)}
     for r, row in enumerate(layout.rows[skip_rows:], start=skip_rows):
@@ -180,6 +182,8 @@ def fit_columns(layout: "SheetLayout", skip_rows: int = 0) -> None:
                 continue
             tf = fmt.get("textFormat", {})
             need = text_px(text, tf.get("fontSize", 10), tf.get("bold", False)) + CELL_PADDING_PX
+            if r == layout.filter_row:
+                need += FILTER_BUTTON_PX
             layout.col_widths[c] = int(min(MAX_FIT_PX, max(layout.col_widths[c], round(need))))
 
 
