@@ -35,6 +35,7 @@ import duckdb
 
 from src import live_picks as lp
 from src import power_rankings as pr
+from src import publish_docs
 from src import sanity
 from src import scorecard as sc
 from src import validate_model as vm
@@ -192,6 +193,20 @@ def fit_columns(layout: "SheetLayout", skip_rows: int = 0) -> None:
 # --------------------------------------------------------------------------
 
 
+def _link_cell(url: str | None, label: str = "📖 How this works", bg=None) -> dict:
+    """=HYPERLINK cell (blank if the doc isn't configured)."""
+    fmt = _fmt(bg=bg, fg=_hex("#1A56DB"), bold=True, size=9, wrap="OVERFLOW_CELL")
+    if not url:
+        return {"userEnteredFormat": fmt}
+    return {"userEnteredValue": {"formulaValue": f'=HYPERLINK("{url}","{label}")'}, "userEnteredFormat": fmt}
+
+
+def ndi_record(ndi: float, n_teams: int) -> str:
+    """'356–8': expected record if the team played every other D-I team once."""
+    wins = round(ndi * (n_teams - 1))
+    return f"{wins}–{n_teams - 1 - wins}"
+
+
 def held_back_note(con, day: date) -> str:
     """'⚠ 2 games held back for review: A @ B, C @ D' (empty if none)."""
     labels = sorted({i.message.split(":")[0] for i in sanity.load(con, day)
@@ -337,6 +352,7 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
     sub = _fmt(bg=_hex("#EEF2F7"), fg=MUTED, size=9, italic=True, wrap="OVERFLOW_CELL")
     sub_row = [{"userEnteredFormat": sub} for _ in range(n_cols)]
     sub_row[0] = _text(f"{len(games)} games · updated {stamp:%-I:%M %p} ET", sub)
+    sub_row[3] = _link_cell(publish_docs.doc_url("picks"), bg=sub["backgroundColor"])
     held = held_back_note(con, today)
     sub_row[frozen_cols] = _text(
         (f"{held} · " if held else "") + f"{SEARCH_HINT} · Spreads are the home team's (−4.5 = home favored by 4.5) · Edge = model vs. "
@@ -460,10 +476,16 @@ def build_rankings_grid(con, today: date, title: str = TAB_TITLES[3],
                     f"this season; becomes a true 30-day change on {month_day + timedelta(days=30):%B %-d}.")
     stamp = (generated_at or datetime.now(EASTERN)).astimezone(EASTERN)
 
+    n_teams = len(current)
+    top = (f"{current[0].team}'s {current[0].ndi:.1%} means an expected record of about "
+           f"{ndi_record(current[0].ndi, n_teams)}") if current else "97.9% means about 356–8"
+    ndi_note = ("Neutral Dominance Index: the share of games this team would be expected to win if it played "
+                f"every other D-I team once on a neutral floor. {top} against the whole field. It is NOT the "
+                "chance to beat any one team: most of the field is much weaker, while games against other "
+                "top teams are close. Rankings sort by this. See 'How this works' for head-to-head examples.")
     fixed = [("Rank", 46, "Today's position, 1 = best."),
              ("Team", 170, "Team name (KenPom spelling)."),
-             ("NDI", 62, "Neutral Dominance Index: the team's average chance to beat every other D-I "
-                         "team on a neutral floor, from the calibrated simulator. Rankings sort by this."),
+             ("NDI", 62, ndi_note),
              ("L7D Change", 74, "Places gained (▲) or lost (▼) since 7 days ago."),
              ("L30D Change", 78, l30_note),
              ("Trend", 120, f"Daily rank over the last {len(history) + 1} days, oldest to newest; "
@@ -478,10 +500,12 @@ def build_rankings_grid(con, today: date, title: str = TAB_TITLES[3],
     sub = _fmt(bg=_hex("#EEF2F7"), fg=MUTED, size=9, italic=True, wrap="OVERFLOW_CELL")
     sub_row = [{"userEnteredFormat": sub} for _ in range(n_cols)]
     sub_row[0] = _text(f"{len(current)} teams · updated {stamp:%-I:%M %p} ET", sub)
+    sub_row[4] = _link_cell(publish_docs.doc_url("rankings"), bg=sub["backgroundColor"])
     if n_cols > n_fixed:
-        sub_row[n_fixed] = _text(f"{SEARCH_HINT} · Ranked by Neutral Dominance Index (NDI): average chance to "
-                                 "beat every other D-I team on a neutral floor · Hover any column header for "
-                                 "details", sub)
+        record = ndi_record(current[0].ndi, n_teams) if current else "356–8"
+        sub_row[n_fixed] = _text(f"{SEARCH_HINT} · NDI = the share of games a team would win if it played every "
+                                 f"D-I team once on a neutral floor (#1 ≈ a {record} record), not its chance to "
+                                 "beat any one team · Hover any column header for details", sub)
 
     band_row, header_row, merges = [], [], [(2, 3, 0, n_fixed)]
     for c, (label, _, note) in enumerate(columns):
@@ -982,6 +1006,7 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
                       "tap ⋮ › Find to search" + (f" · {held}" if held else ""), sub),
                 {"userEnteredFormat": sub}, {"userEnteredFormat": sub}], 48 if held else 32)
     sh.merges.append((r, r + 1, 0, 3))
+    _mobile_link_row(sh, publish_docs.doc_url("picks"))
     label_fmt = lambda bg: _fmt(bg=bg, fg=MUTED, bold=True, size=9)          # noqa: E731
 
     def pair(label, away, home, pattern, ptype="NUMBER", bg=WHITE, tint=None, bold_fav=None):
@@ -1061,6 +1086,15 @@ def _mobile_top(sh: _Sheet, title: str, subtitle: str) -> None:
     sh.merges.append((r, r + 1, 0, sh.n_cols))
 
 
+def _mobile_link_row(sh: "_Sheet", url: str | None) -> None:
+    if not url:
+        return
+    cell = _link_cell(url)
+    cell["userEnteredFormat"]["horizontalAlignment"] = "CENTER"
+    r = sh.add([cell] + [{"userEnteredFormat": cell["userEnteredFormat"]} for _ in range(sh.n_cols - 1)], 26)
+    sh.merges.append((r, r + 1, 0, sh.n_cols))
+
+
 def _mobile_header(sh: _Sheet, labels: list[str], color: str) -> int:
     cells = []
     for label in labels:
@@ -1077,9 +1111,11 @@ def build_mobile_rankings_grid(con, today: date, title: str = MOBILE_TITLES[2],
     week_ago = dict(history).get(today - timedelta(days=7))
     stamp = (generated_at or datetime.now(EASTERN)).astimezone(EASTERN)
     sh = _Sheet(len(MOBILE_RANK_WIDTHS))
+    record = ndi_record(current[0].ndi, len(current)) if current else "356–8"
     _mobile_top(sh, f"Power Rankings · {today:%a %b %-d}",
-                f"{len(current)} teams by NDI (avg. chance to beat every D-I team on a neutral floor) · "
-                f"updated {stamp:%-I:%M %p} ET · tap ⋮ › Find to search")
+                f"NDI = share of games a team would win playing every D-I team once on a neutral floor "
+                f"(#1 ≈ {record}) · updated {stamp:%-I:%M %p} ET · ⋮ › Find to search")
+    _mobile_link_row(sh, publish_docs.doc_url("rankings"))
     header = _mobile_header(sh, ["#", "Team", "NDI", "7D", "Trend"], TEAM_COLOR)
     for i, r in enumerate(current):
         bg = ZEBRA if i % 2 else WHITE

@@ -28,6 +28,7 @@ from src import ingest_kenpom as ik
 from src import live_picks as lp
 from src import odds_api
 from src import power_rankings as pr
+from src import publish_docs
 from src import publish_gsheet as pg
 from src import sanity
 from src import state as state_mod
@@ -432,6 +433,23 @@ def publish(
     with console.status("Publishing to Google Sheets..."):
         url = pg.SheetsPublisher(sheets, drive, sheet_id).publish(tabs, make_public=make_public)
     console.print(f"[green]Published[/] {url}" + (" (link sharing turned on)" if make_public else ""))
+
+
+@app.command()
+def docs():
+    """Publish the 'How this works' papers (docs/*.md) to their Google Docs."""
+    _load_env()
+    try:
+        _, key = pg.config_from_env()
+    except pg.PublishConfigError as exc:
+        _fail(str(exc))
+    _, drive = pg.build_services(key)
+    urls = publish_docs.publish(drive)
+    missing = [p.env for p in publish_docs.PAPERS if p.key not in urls]
+    for k, url in urls.items():
+        console.print(f"[green]Published[/] {k}: {url}")
+    if missing:
+        console.print(f"[yellow]Not configured:[/] set {', '.join(missing)} in .env (see src/publish_docs.py)")
 
 
 state_app = typer.Typer(no_args_is_help=True, help="Save/restore the warehouse as CSVs (cloud daily job).")

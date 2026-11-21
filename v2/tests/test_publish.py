@@ -919,3 +919,33 @@ def test_filtered_headers_leave_room_for_the_filter_button(tabs):
             tf = cell["userEnteredFormat"]["textFormat"]
             need = pg.text_px(text, tf["fontSize"], tf["bold"]) + pg.CELL_PADDING_PX + pg.FILTER_BUTTON_PX
             assert lay.col_widths[c] >= min(need, pg.MAX_FIT_PX) - 1, (tab.title, text, lay.col_widths[c])
+
+
+# --- "How this works" links and NDI wording --------------------------------------------------------
+
+
+def test_sheet_links_to_papers_when_configured(db_path, monkeypatch):
+    monkeypatch.setenv("HOW_PICKS_DOC_ID", "PICKSDOC")
+    monkeypatch.setenv("HOW_RANKINGS_DOC_ID", "RANKDOC")
+    with db.get_db_connection(db_path=db_path) as con:
+        daily, ranks = pg.build_daily_grid(con, TODAY), pg.build_rankings_grid(con, TODAY)
+        mobile, mranks = pg.build_mobile_grid(con, TODAY), pg.build_mobile_rankings_grid(con, TODAY)
+    assert "PICKSDOC" in daily.layout.rows[1][3]["userEnteredValue"]["formulaValue"]
+    assert "RANKDOC" in ranks.layout.rows[1][4]["userEnteredValue"]["formulaValue"]
+    for tab, doc in ((mobile, "PICKSDOC"), (mranks, "RANKDOC")):
+        formulas = [c["userEnteredValue"]["formulaValue"] for r in tab.layout.rows[:4] for c in r
+                    if "formulaValue" in c.get("userEnteredValue", {})]
+        assert any(doc in f and f.startswith("=HYPERLINK(") for f in formulas)
+
+
+def test_no_links_without_docs(db_path, monkeypatch):
+    monkeypatch.delenv("HOW_PICKS_DOC_ID", raising=False)
+    with db.get_db_connection(db_path=db_path) as con:
+        daily = pg.build_daily_grid(con, TODAY)
+    assert "userEnteredValue" not in daily.layout.rows[1][3]
+
+
+def test_ndi_explained_as_expected_record(rank_grid):
+    note = rank_grid.layout.rows[3][2]["note"]
+    assert "expected record of about" in note and "NOT the chance to beat any one team" in note
+    assert pg.ndi_record(0.979, 365) == "356–8"

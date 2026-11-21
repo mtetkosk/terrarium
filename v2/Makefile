@@ -18,7 +18,7 @@ DAILY_MINUTE ?= 0
 PUBLIC  ?= 0
 
 .PHONY: setup test ingest simulate predict audit import-v1 daily \
-        odds venues picks power-rankings publish publish-preview \
+        odds venues picks power-rankings publish publish-preview docs \
         install-daily daily-status uninstall-daily
 
 setup: $(STAMP)
@@ -65,6 +65,10 @@ power-rankings: setup
 # Google Sheet publish; private unless PUBLIC=1.
 publish: setup
 	$(PY) cli.py publish $(if $(filter 1,$(PUBLIC)),--make-public,)
+
+# "How this works" papers (docs/*.md) -> Google Docs; links appear on the sheet.
+docs: setup
+	$(PY) cli.py docs
 
 publish-preview: setup
 	$(PY) cli.py publish --dry-run
