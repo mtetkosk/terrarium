@@ -278,6 +278,17 @@ class UpdateStats:
     quota: Quota = field(default_factory=Quota)
 
 
+def current_teams(con: duckdb.DuckDBPyConnection, as_of: date) -> list[str]:
+    """KenPom teams in the latest snapshot on or before ``as_of``. Matching feed
+    names against *every* team ever stored would hit names KenPom has since
+    retired (e.g. "New Orleans" -> "LSU New Orleans" in 2026-27) and price the
+    game off last season's ratings."""
+    rows = con.execute(
+        "SELECT team FROM kenpom_snapshots WHERE snapshot_date = "
+        "(SELECT max(snapshot_date) FROM kenpom_snapshots WHERE snapshot_date <= ?)", [as_of]).fetchall()
+    return [r[0] for r in rows]
+
+
 def update(
     con: duckdb.DuckDBPyConnection,
     session: requests.Session | None = None,
@@ -291,8 +302,7 @@ def update(
     key = key or get_api_key()
     now = now or utc_now()
     stats = UpdateStats()
-    mapper = TeamNameMapper(r[0] for r in con.execute(
-        "SELECT DISTINCT team FROM kenpom_snapshots").fetchall())
+    mapper = TeamNameMapper(current_teams(con, eastern_date(now)))
 
     events = fetch_odds(session, key, stats.quota)
     scores = fetch_scores(session, key, stats.quota, scores_days)

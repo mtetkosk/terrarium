@@ -40,6 +40,7 @@ class PickRun:
     already_locked: int = 0
     started: int = 0
     no_ratings: list[str] | None = None
+    held_back: list | None = None      # sanity.Issue errors: games not locked
 
 
 def slate(con: duckdb.DuckDBPyConnection, day: date) -> list[tuple]:
@@ -60,12 +61,18 @@ def make_picks(
 ) -> PickRun:
     """Simulate and lock picks for every not-yet-started game on ``day``."""
     now = now or utc_now()
-    run = PickRun(no_ratings=[])
+    from src import power_rankings as pr   # local: power_rankings is heavier and not needed elsewhere
+    from src import sanity
+
+    run = PickRun(no_ratings=[], held_back=[])
+    games = slate(con, day)
+    duplicates = sanity.duplicate_teams(games)
+    ranks = {r.team: r.rank for r in pr.ensure_rankings(con, day)}
     locked = {r[0] for r in con.execute(
         "SELECT game_id FROM model_predictions WHERE model_version = ?", [LIVE_MODEL_VERSION]).fetchall()}
     insert = (f"INSERT INTO model_predictions ({', '.join(PREDICTION_COLUMNS)}, created_at) "
               f"VALUES ({', '.join('?' for _ in PREDICTION_COLUMNS)}, ?) ON CONFLICT DO NOTHING")
-    for game_id, commence, team_a, team_b, hca in slate(con, day):
+    for game_id, commence, team_a, team_b, hca in games:
         if game_id in locked:
             run.already_locked += 1
             continue
@@ -80,10 +87,16 @@ def make_picks(
             run.no_ratings.append(game_id)
             continue
         line = market_line(con, game_id, latest_at=now)
+        errors = [i for i in sanity.game_issues(game_id, team_a, team_b, r, line["spread_a"], ranks, duplicates, day)
+                  if i.severity == "error"]
+        if errors:                       # hold back: not locked, re-checked on the next run
+            run.held_back.extend(errors)
+            continue
         cover = r.cover_prob_a(line["spread_a"]) if line["spread_a"] is not None else None
         con.execute(insert, [*prediction_row(game_id, LIVE_MODEL_VERSION, day, r, cover,
                                              hca or 0.0, n_sims), now])
         run.created += 1
+    sanity.store(con, day, "picks", run.held_back, now)
     return run
 
 

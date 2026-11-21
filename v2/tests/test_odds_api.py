@@ -137,3 +137,15 @@ def test_update_end_to_end(con, tmp_path):
 def test_update_bad_key(con, tmp_path):
     with pytest.raises(oa.OddsApiError, match="401"):
         oa.update(con, FakeSession(status=401), key="bad", cache_dir=tmp_path, now=FETCHED)
+
+
+def test_current_teams_ignore_retired_kenpom_names(tmp_path):
+    from datetime import date
+    from src import db
+    from src.team_names import TeamNameMapper
+    with db.get_db_connection(db_path=tmp_path / "x.duckdb") as con:
+        con.execute("INSERT INTO kenpom_snapshots VALUES ('2026-03-01', 'New Orleans', 0, 100, 100, 68, 0.4)")
+        con.execute("INSERT INTO kenpom_snapshots VALUES ('2026-11-21', 'LSU New Orleans', 0, 100, 100, 68, 0.4)")
+        teams = oa.current_teams(con, date(2026, 11, 21))
+    assert teams == ["LSU New Orleans"]
+    assert TeamNameMapper(teams).to_kenpom("New Orleans Privateers") == "LSU New Orleans"

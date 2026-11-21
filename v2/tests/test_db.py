@@ -77,6 +77,15 @@ EXPECTED_COLUMNS = {
         ("adj_em", "DOUBLE"),
         ("snapshot_date", "DATE"),
     ],
+    "sanity_issues": [
+        ("check_date", "DATE"),
+        ("stage", "VARCHAR"),
+        ("severity", "VARCHAR"),
+        ("check_name", "VARCHAR"),
+        ("game_id", "VARCHAR"),
+        ("message", "VARCHAR"),
+        ("created_at", "TIMESTAMP"),
+    ],
 }
 
 EXPECTED_PRIMARY_KEYS = {

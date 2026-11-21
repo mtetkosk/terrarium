@@ -356,10 +356,13 @@ def test_units_and_running_total():
 
 
 @pytest.fixture
-def clean_env(monkeypatch):
+def clean_env(monkeypatch, tmp_path_factory):
     for var in ("GOOGLE_SHEET_ID", "GOOGLE_SERVICE_ACCOUNT_FILE", "GOOGLE_SHEETS_CREDENTIALS_PATH"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(cli.ik, "load_env_files", lambda paths: None)
+    # The synthetic warehouse ranks 4 teams and has no odds cache; relax only those two checks.
+    monkeypatch.setattr(cli.sanity, "MIN_RANKED_TEAMS", 1)
+    monkeypatch.setattr(cli.sanity, "CACHE_DIR", tmp_path_factory.mktemp("cache"))
     return monkeypatch
 
 
@@ -783,3 +786,26 @@ def test_mobile_ledger_caps_rows(db_path):
 def test_performance_status_fits_on_a_phone(perf_grid):
     assert sum(pg.PERF_WIDTHS[:3]) <= 340
     assert pg.cell_text(next(r for r in perf_grid.layout.rows if pg.cell_text(r[0]) == "Metric")[2]) == "Status"
+
+
+def test_cli_publish_blocked_by_sanity_errors(db_path, clean_env, tmp_path):
+    key = tmp_path / "key.json"
+    key.write_text("{}")
+    clean_env.setenv("GOOGLE_SHEET_ID", "SHEET")
+    clean_env.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", str(key))
+    clean_env.setattr(cli.sanity, "MIN_RANKED_TEAMS", 300)          # 4-team warehouse fails the rankings check
+    sheets = FakeSheets()
+    clean_env.setattr(pg, "build_services", lambda path: (sheets, FakeDrive()))
+    res = CliRunner().invoke(cli.app, ["publish", "--date", str(TODAY), "--db-path", str(db_path)])
+    assert res.exit_code == 1 and "blocked" in res.output and sheets.batches == []
+    res = CliRunner().invoke(cli.app, ["publish", "--force", "--date", str(TODAY), "--db-path", str(db_path)])
+    assert res.exit_code == 0 and sheets.batches
+
+
+def test_held_back_games_are_noted_on_daily_tabs(db_path):
+    from src import sanity
+    with db.get_db_connection(db_path=db_path) as con:
+        sanity.store(con, TODAY, "picks", [sanity.Issue("error", "favorite_flip", "Rice @ Duke: x", "g9")])
+        daily, mobile = pg.build_daily_grid(con, TODAY), pg.build_mobile_grid(con, TODAY)
+    assert "1 game held back for review: Rice @ Duke" in pg.cell_text(daily.layout.rows[1][4])
+    assert "held back for review: Rice @ Duke" in pg.cell_text(mobile.layout.rows[1][0])

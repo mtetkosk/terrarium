@@ -252,6 +252,7 @@ ALIASES = {
     "ul monroe war": "Louisiana Monroe",
     "florida intl": "FIU",
     "n colorado": "Northern Colorado",
+    "new orleans": "LSU New Orleans",          # renamed by KenPom for 2026-27
 }
 
 

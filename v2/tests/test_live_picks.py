@@ -32,10 +32,12 @@ def test_clv_sign():
 def con(tmp_path):
     with db.get_db_connection(db_path=tmp_path / "x.duckdb") as c:
         c.executemany("INSERT INTO kenpom_snapshots VALUES (?, ?, ?, ?, ?, ?, ?)", [
-            (DAY, "Duke", 26.0, 120.0, 94.0, 70.0, 0.38), (DAY, "Kansas", 20.0, 116.0, 96.0, 68.0, 0.35)])
-        for gid, tip in (("early", datetime(2026, 1, 20, 17)), ("late", datetime(2026, 1, 21, 1))):
-            c.execute("INSERT INTO scheduled_games VALUES (?, 'x', ?, ?, 'Duke', 'Kansas')", [gid, gid, tip])
-            c.execute("INSERT INTO historical_games VALUES (?, ?, 'Duke', 'Kansas', NULL, NULL, NULL, 1.9)", [gid, DAY])
+            (DAY, "Duke", 26.0, 120.0, 94.0, 70.0, 0.38), (DAY, "Kansas", 20.0, 116.0, 96.0, 68.0, 0.35),
+            (DAY, "Baylor", 18.0, 114.0, 96.0, 67.0, 0.36), (DAY, "Houston", 16.0, 113.0, 97.0, 64.0, 0.30)])
+        for gid, tip, home, away in (("early", datetime(2026, 1, 20, 17), "Baylor", "Houston"),
+                                     ("late", datetime(2026, 1, 21, 1), "Duke", "Kansas")):
+            c.execute("INSERT INTO scheduled_games VALUES (?, 'x', ?, ?, ?, ?)", [gid, gid, tip, home, away])
+            c.execute("INSERT INTO historical_games VALUES (?, ?, ?, ?, NULL, NULL, NULL, 1.9)", [gid, DAY, home, away])
             c.execute("INSERT INTO odds_snapshots VALUES (?, ?, 'draftkings', -3.0, -150, 130, 145.5)",
                       [gid, datetime(2026, 1, 20, 14)])
         yield c
@@ -70,5 +72,23 @@ def test_daily_picks_rows(con):
     lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 15), n_sims=2000)
     rows = lp.daily_picks(con, DAY)
     assert [r.tip_et for r in rows] == ["12:00 PM", "8:00 PM"]
-    assert rows[0].matchup == "Kansas @ Duke" and rows[0].market_line == "Duke -3.0"
-    assert rows[0].market_win.startswith("Duke ")
+    assert rows[1].matchup == "Kansas @ Duke" and rows[1].market_line == "Duke -3.0"
+    assert rows[1].market_win.startswith("Duke ")
+
+
+def test_make_picks_holds_back_suspicious_games(con):
+    # The feed's line says Kansas is a 9-point favorite at Duke: model and market flip.
+    con.execute("UPDATE odds_snapshots SET spread_a = 9.0 WHERE game_id = 'late'")
+    run = lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 15), n_sims=2000)
+    assert run.created == 1 and {i.game_id for i in run.held_back} == {"late"}
+    check = run.held_back[0].check
+    assert check in ("favorite_flip", "market_gap")
+    locked = [r[0] for r in con.execute("SELECT game_id FROM model_predictions").fetchall()]
+    assert locked == ["early"]
+    stored = con.execute("SELECT stage, check_name, game_id FROM sanity_issues").fetchall()
+    assert stored == [("picks", check, "late")]
+    # Once the line is fixed, the next run locks it.
+    con.execute("UPDATE odds_snapshots SET spread_a = -3.0 WHERE game_id = 'late'")
+    again = lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 16), n_sims=2000)
+    assert again.created == 1 and again.held_back == []
+    assert con.execute("SELECT count(*) FROM sanity_issues").fetchone()[0] == 0

@@ -112,6 +112,18 @@ SCHEMA: dict[str, str] = {
             PRIMARY KEY (ranking_date, team)
         )
     """,
+    # Pre-lock / pre-publish sanity checks (src/sanity.py); rewritten per date + stage.
+    "sanity_issues": """
+        CREATE TABLE IF NOT EXISTS sanity_issues (
+            check_date DATE,
+            stage VARCHAR,
+            severity VARCHAR,
+            check_name VARCHAR,
+            game_id VARCHAR,
+            message VARCHAR,
+            created_at TIMESTAMP
+        )
+    """,
 }
 
 

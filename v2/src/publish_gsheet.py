@@ -35,6 +35,7 @@ import duckdb
 
 from src import live_picks as lp
 from src import power_rankings as pr
+from src import sanity
 from src import scorecard as sc
 from src import validate_model as vm
 from src.odds_api import EASTERN
@@ -138,6 +139,15 @@ class GridTab:
 # --------------------------------------------------------------------------
 # Daily Picks: designed grid (one value per cell)
 # --------------------------------------------------------------------------
+
+
+def held_back_note(con, day: date) -> str:
+    """'⚠ 2 games held back for review: A @ B, C @ D' (empty if none)."""
+    labels = sorted({i.message.split(":")[0] for i in sanity.load(con, day)
+                     if i.severity == "error" and i.game_id})
+    if not labels:
+        return ""
+    return f"⚠ {len(labels)} game{'s' if len(labels) != 1 else ''} held back for review: {', '.join(labels)}"
 
 
 def _hex(color: str) -> dict:
@@ -257,8 +267,9 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
     sub = _fmt(bg=_hex("#EEF2F7"), fg=MUTED, size=9, italic=True, wrap="OVERFLOW_CELL")
     sub_row = [{"userEnteredFormat": sub} for _ in range(n_cols)]
     sub_row[0] = _text(f"{len(games)} games · updated {stamp:%-I:%M %p} ET", sub)
+    held = held_back_note(con, today)
     sub_row[frozen_cols] = _text(
-        f"{SEARCH_HINT} · Spreads are the home team's (−4.5 = home favored by 4.5) · Edge = model vs. "
+        (f"{held} · " if held else "") + f"{SEARCH_HINT} · Spreads are the home team's (−4.5 = home favored by 4.5) · Edge = model vs. "
         "market, toward the Pick · Hover any column header for details", sub)
 
     band_row, header_row, merges = [], [], []
@@ -877,8 +888,10 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
                 {"userEnteredFormat": bar}], 34)
     sh.merges.append((r, r + 1, 0, 3))
     sub = _fmt(bg=_hex("#EEF2F7"), fg=MUTED, size=8, italic=True, wrap="WRAP")
+    held = held_back_note(con, today)
     r = sh.add([_text(f"{len(games)} games · updated {stamp:%-I:%M %p} ET · lines are each team's spread · "
-                      "tap ⋮ › Find to search", sub), {"userEnteredFormat": sub}, {"userEnteredFormat": sub}], 32)
+                      "tap ⋮ › Find to search" + (f" · {held}" if held else ""), sub),
+                {"userEnteredFormat": sub}, {"userEnteredFormat": sub}], 48 if held else 32)
     sh.merges.append((r, r + 1, 0, 3))
     label_fmt = lambda bg: _fmt(bg=bg, fg=MUTED, bold=True, size=9)          # noqa: E731
 

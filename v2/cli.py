@@ -28,6 +28,7 @@ from src import live_picks as lp
 from src import odds_api
 from src import power_rankings as pr
 from src import publish_gsheet as pg
+from src import sanity
 from src import validate_model as vm
 from src.db import PROJECT_ROOT, get_db_connection
 from src.import_v1 import DEFAULT_V1_DB, import_v1
@@ -314,7 +315,10 @@ def picks(
         run = lp.make_picks(con, day, n_sims=sims)
         rows = lp.daily_picks(con, day)
     console.print(f"[green]{run.created} new picks[/] for {day}; {run.already_locked} already locked; "
-                  f"{run.started} already started; {len(run.no_ratings)} without ratings")
+                  f"{run.started} already started; {len(run.no_ratings)} without ratings; "
+                  f"{len({i.game_id for i in run.held_back})} held back by sanity checks")
+    for issue in run.held_back:
+        console.print(f"  [red]HELD BACK[/] {issue.check}: {issue.message}", markup=True, highlight=False)
     table = Table(show_header=True, header_style="bold")
     for col in ("Tip ET", "Matchup", "Model line", "Market line", "Edge", "Model win", "Mkt win"):
         table.add_column(col)
@@ -359,13 +363,22 @@ def publish(
                                      help="Anyone with the link can view (owner keeps write access)"),
     skip_if_unconfigured: bool = typer.Option(False, "--skip-if-unconfigured",
                                               help="Exit 0 when Google settings are missing (for cron)"),
+    force: bool = typer.Option(False, "--force", help="Publish even if sanity checks report errors"),
     db_path: Path = DbPath,
 ):
-    """Publish the four-tab Google Sheet (or a local preview with --dry-run)."""
+    """Run the sanity checks, then publish the Google Sheet (or a local preview with --dry-run)."""
     _load_env()
     day = _date(date_) or date.today()
     with get_db_connection(db_path=db_path) as con:
         tabs = pg.build_tabs(con, day)
+        issues = sanity.publish_issues(con, day, pr.ensure_rankings(con, day), tabs)
+        sanity.store(con, day, "publish", issues)
+    errors = [i for i in issues if i.severity == "error"]
+    for i in issues:
+        color = "red" if i.severity == "error" else "yellow"
+        console.print(f"  [{color}]{i.severity.upper()}[/] {i.check}: {i.message}", highlight=False)
+    if not issues:
+        console.print("[green]Sanity checks passed[/]")
     if dry_run:
         preview_path.parent.mkdir(parents=True, exist_ok=True)
         preview_path.write_text(pg.render_markdown(tabs), encoding="utf-8")
@@ -374,6 +387,9 @@ def publish(
             console.print(f"  {t.title}: {n} rows")
         console.print(f"[green]Preview written to {preview_path}[/]")
         return
+    if errors and not force:
+        _fail(f"Publish blocked by {len(errors)} sanity-check error(s); the sheet keeps its previous "
+              "version. Fix the cause or re-run with --force.")
     try:
         sheet_id, key = pg.config_from_env()
     except pg.PublishConfigError as exc:
@@ -384,7 +400,7 @@ def publish(
     sheets, drive = pg.build_services(key)
     with console.status("Publishing to Google Sheets..."):
         url = pg.SheetsPublisher(sheets, drive, sheet_id).publish(tabs, make_public=make_public)
-    console.print(f"[green]Published[/] {url}" + (" (public view-only)" if make_public else " (private)"))
+    console.print(f"[green]Published[/] {url}" + (" (link sharing turned on)" if make_public else ""))
 
 
 if __name__ == "__main__":
