@@ -19,12 +19,22 @@ The cap (lean-v1.2) is the largest stretch that season's market lines could
 test: they start on Dec 5, where the uncapped formula gives 1.247. November's
 uncapped values (up to 1.48) were never validated.
 
-Variance (lean-v1.2): sigma_T = 3.5 possessions and sigma_Eff = 14.2 for every
-team, with the two teams' efficiency draws correlated (rho = 0.32: pace,
+Totals recalibration (lean-v1.3): the multiplicative formulas make projected
+totals too extreme (2025-26: actual total ~ 0.78 x model total). After the
+means above, the game's tempo and the efficiency midpoint are shrunk toward
+the league averages,
+    T' = T_bar + 0.85 (T - T_bar),   mid' = E_bar + 0.67 (mid - E_bar),
+and the efficiency gap is rescaled by T / T' so the expected MARGIN is exactly
+unchanged (spreads were already calibrated, slope ~0.99). Fitted on 2025-26
+totals (3,383 games); out of sample (split halves) it cuts total RMSE by
+0.1-0.2 pts, still ~0.15-0.2 behind the market's totals.
+
+Variance (lean-v1.3): sigma_T = 3.5 possessions and sigma_Eff = 14.1 for every
+team, with the two teams' efficiency draws correlated (rho = 0.30: pace,
 officiating and shooting conditions are shared by both teams). Fitted by
-maximum likelihood on 2025-26 margin and total residuals (3,290 games): it
-reproduces both the margin spread (11.4 pts) and the much wider total spread
-(17.5 pts), which independent draws cannot. The spec's 3PA-scaled sigma
+maximum likelihood on 2025-26 margin and total residuals: it reproduces both
+the margin spread (11.4 pts) and the much wider total spread (17.3 pts),
+which independent draws cannot. The spec's 3PA-scaled sigma
 (7.2 + 8.5 * 3PA) is disabled (slope 0): the backtest season has no 3PA data,
 so the term was never tested. Scores are round(T * Eff / 100), and regulation
 ties go to 5-minute overtimes.
@@ -60,10 +70,13 @@ MIN_TEAMS_FOR_LEAGUE_AVG = 300
 SIGMA_TEMPO = 3.5
 # sigma_Eff = BASE + SLOPE * 3PA. lean-v1.1 used the spec's 7.2 + 8.5 * 3PA;
 # lean-v1.2 refit BASE and turned the untested 3PA term off (see docstring).
-SIGMA_EFF_BASE = 14.2
+SIGMA_EFF_BASE = 14.1
 SIGMA_EFF_3PA_SLOPE = 0.0
-# Correlation of the two teams' efficiency draws within a game (lean-v1.2 fit).
-EFF_CORRELATION = 0.32
+# Correlation of the two teams' efficiency draws within a game (lean-v1.3 fit).
+EFF_CORRELATION = 0.30
+# Totals recalibration (lean-v1.3): shrink toward league averages, margin kept.
+TOTAL_TEMPO_SHRINK = 0.85
+TOTAL_EFF_SHRINK = 0.67
 # Fallback when a team has no known point-in-time 3PA rate (e.g. archive
 # backfill rows). Roughly the D-I mean (0.41 observed on 2026-11-20).
 LEAGUE_AVG_THREE_PA_RATE = 0.40
@@ -274,6 +287,19 @@ def expected_means(
     return tempo, eff_a + hca_eff, eff_b - hca_eff
 
 
+def recalibrate_total(tempo: float, eff_a: float, eff_b: float,
+                      league: LeagueAverages) -> tuple[float, float, float]:
+    """Shrink a game's projected tempo and scoring level toward the league
+    averages (totals recalibration, see module docstring) while keeping the
+    expected margin tempo * (eff_a - eff_b) / 100 exactly unchanged."""
+    new_tempo = league.tempo + TOTAL_TEMPO_SHRINK * (tempo - league.tempo)
+    if new_tempo <= 0:
+        return tempo, eff_a, eff_b
+    mid = league.efficiency + TOTAL_EFF_SHRINK * (0.5 * (eff_a + eff_b) - league.efficiency)
+    half_gap = 0.5 * (eff_a - eff_b) * tempo / new_tempo
+    return new_tempo, mid + half_gap, mid - half_gap
+
+
 def simulate_matchup(
     a: TeamRatings,
     b: TeamRatings,
@@ -286,7 +312,7 @@ def simulate_matchup(
     if n_sims <= 0:
         raise SimulationError("n_sims must be positive")
     rng = np.random.default_rng(seed)
-    mu_t, mu_a, mu_b = expected_means(a, b, hca_eff, league, margin_stretch)
+    mu_t, mu_a, mu_b = recalibrate_total(*expected_means(a, b, hca_eff, league, margin_stretch), league)
     sd_a, sd_b = a.sigma_eff, b.sigma_eff
 
     tempo = np.maximum(rng.normal(mu_t, SIGMA_TEMPO, n_sims), 1.0)

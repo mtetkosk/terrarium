@@ -257,8 +257,9 @@ TOTAL_LEAN_STRONG, TOTAL_LEAN_MIN = 3.0, 1.5
 OVER_COLOR, UNDER_COLOR = "#C2410C", "#1D4ED8"
 TOTAL_LEAN_NOTE = ("Model's projected total vs. the market total: Strong Over/Under = 3+ points apart, "
                    "Lean Over/Under = 1.5-3, No Lean = under 1.5. In the 2025-26 backtest this showed NO edge "
-                   "(Strong leans hit 48.9% on 759 games; the market's totals were more accurate than the "
-                   "model's), so treat it as information, not a betting signal. Filterable with ▾.")
+                   "(Strong leans hit 51.6% out of sample, below the 52.4% break-even; the market's totals "
+                   "were slightly more accurate than the model's), so treat it as information, not a betting "
+                   "signal. Filterable with ▾.")
 
 
 def total_lean(model_total: float | None, market_total: float | None) -> str | None:

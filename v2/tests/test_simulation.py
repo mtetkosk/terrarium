@@ -44,8 +44,8 @@ def test_hca_shifts_efficiencies_symmetrically():
 def test_efficiency_sigma_is_constant_until_3pa_is_validated(rate):
     # lean-v1.2: the spec's 3PA slope is off (never tested); sigma is the refit constant.
     assert sg.SIGMA_EFF_3PA_SLOPE == 0.0
-    assert sg.efficiency_sigma(rate) == pytest.approx(14.2)
-    assert team(rate=rate).sigma_eff == pytest.approx(14.2)
+    assert sg.efficiency_sigma(rate) == pytest.approx(14.1)
+    assert team(rate=rate).sigma_eff == pytest.approx(14.1)
 
 
 # --- simulation outputs -------------------------------------------------------
@@ -287,7 +287,8 @@ def test_simulate_game_uses_snapshot_league_averages(db_path, monkeypatch):
     r = sg.simulate_game("Duke", "Michigan St.", as_of=mid, n_sims=2_000, seed=1, db_path=db_path)
     assert r.league_snapshot_date == D_EARLY                       # never the future D_LATE
     assert r.league_tempo == pytest.approx((68.0 + 66.0 + 64.0) / 3)
-    assert r.expected_possessions == pytest.approx(68.0 * 66.0 / r.league_tempo)
+    raw = 68.0 * 66.0 / r.league_tempo                             # then shrunk toward the league tempo
+    assert r.expected_possessions == pytest.approx(r.league_tempo + sg.TOTAL_TEMPO_SHRINK * (raw - r.league_tempo))
 
 
 def test_simulate_game_mixed_snapshot_dates_use_later_one(tmp_path, monkeypatch):
@@ -362,3 +363,34 @@ def test_resolve_venue_hca(db_path):
         assert r("Neutral")[0] == 0.0
         assert r("cameron indoor stadium") == (-2.0, "Duke home (Cameron Indoor Stadium)")
         assert r("Madison Square Garden")[0] == 0.0          # not Duke's modal venue
+
+
+# --- totals recalibration (lean-v1.3) -----------------------------------------------
+
+def test_total_recalibration_keeps_the_margin_and_shrinks_the_total():
+    lg = sg.LeagueAverages(68.0, 106.0)
+    fast_good = team("A", adj_o=125.0, adj_d=104.0, adj_t=74.0)
+    fast_bad = team("B", adj_o=112.0, adj_d=112.0, adj_t=73.0)
+    raw = sg.expected_means(fast_good, fast_bad, 1.9, lg, 1.2)
+    t, ea, eb = sg.recalibrate_total(*raw, lg)
+    raw_t, raw_a, raw_b = raw
+    assert t * (ea - eb) == pytest.approx(raw_t * (raw_a - raw_b))          # same expected margin
+    raw_total, total = raw_t * (raw_a + raw_b) / 100, t * (ea + eb) / 100
+    league_total = 2 * lg.tempo * lg.efficiency / 100
+    assert league_total < total < raw_total                                 # pulled toward average
+    assert t - lg.tempo == pytest.approx(sg.TOTAL_TEMPO_SHRINK * (raw_t - lg.tempo))
+
+
+def test_average_matchup_is_unchanged_by_recalibration():
+    lg = sg.LeagueAverages(68.0, 106.0)
+    avg = team("Avg", adj_o=106.0, adj_d=106.0, adj_t=68.0)
+    raw = sg.expected_means(avg, team("Avg2", adj_o=106.0, adj_d=106.0, adj_t=68.0), 0.0, lg)
+    assert sg.recalibrate_total(*raw, lg) == pytest.approx(raw)
+
+
+def test_simulated_margin_matches_unrecalibrated_mean():
+    lg = sg.LeagueAverages(68.0, 106.0)
+    a, b = team("A", adj_o=122.0, adj_d=98.0, adj_t=72.0), team("B", adj_o=104.0, adj_d=108.0, adj_t=70.0)
+    t, ea, eb = sg.expected_means(a, b, 1.9, lg)
+    r = sg.simulate_matchup(a, b, 1.9, n_sims=100_000, seed=3, league=lg)
+    assert r.expected_margin_a == pytest.approx(t * (ea - eb) / 100, abs=0.15)

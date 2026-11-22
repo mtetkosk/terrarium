@@ -17,7 +17,8 @@ On top of that:
 
 - **Home court** is worth about 2.6 points of margin. It is set to zero at neutral sites, which are identified from each day's venue data.
 - An **early-season adjustment** widens rating gaps in November and December while ratings are still partly preseason.
-- **Correlated scoring noise.** Both teams' efficiencies are drawn with a shared component (ρ = 0.32), fitted so that margins and totals have the spreads seen in real games (about 11.4 and 17.5 points).
+- **Totals recalibration.** Projected pace and scoring level are pulled toward the league average (the raw formulas make totals too extreme), without changing the projected margin.
+- **Correlated scoring noise.** Both teams' efficiencies are drawn with a shared component (ρ = 0.30), fitted so that margins and totals have the spreads seen in real games (about 11.4 and 17.3 points).
 
 Each game is then simulated **10,000 times**, overtime included. The simulations give the projected score, spread, total, win probabilities and a margin-of-victory distribution. The model's spread is compared with the consensus line across up to 10 US sportsbooks. The side the model prefers is the pick. It is taken at the best line any book offers (line shopping), and the gap is the edge.
 
@@ -83,7 +84,7 @@ The Google Sheet has desktop tabs and phone-friendly 📱 tabs:
 
 ## Track record
 
-The 2025-26 backtest (model lean-v1.2) covered 3,383 regular-season games, each projected using only that morning's ratings:
+The 2025-26 backtest (model lean-v1.3) covered 3,383 regular-season games, each projected using only that morning's ratings:
 
 | Measure | Model | Market |
 |---|---|---|
@@ -92,6 +93,7 @@ The 2025-26 backtest (model lean-v1.2) covered 3,383 regular-season games, each 
 | Against the spread, edge 3+ points | 59.4% (286 games) | 52.4% needed to break even |
 | Margin error (RMSE) | 11.31 pts | 11.27 pts |
 | Brier score | 0.195 | 0.193 |
+| Total error (RMSE) | 17.17 pts | 17.07 pts |
 
 Overall the model is about as accurate as the betting market, not more accurate. Picks with an edge of 3+ points are the one promising signal, but they come from a single season with parameters fitted on that season, so 2026-27 is the real test. The over/under lean showed no edge. The live record is on the Model Performance tab.
 

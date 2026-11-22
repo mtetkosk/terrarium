@@ -31,6 +31,7 @@ import numpy as np
 from src import ingest_kenpom as ik
 from src.simulate_game import (
     EFF_CORRELATION,
+    TOTAL_TEMPO_SHRINK,
     LEAGUE_AVG_THREE_PA_RATE,
     SIGMA_TEMPO,
     early_season_stretch,
@@ -78,6 +79,11 @@ def win_prob_matrix(adj_o, adj_d, adj_t, three_pa, league_tempo, league_eff, str
     eff_ij = np.outer(adj_o, adj_d) / league_eff          # i's offense vs j's defense
     gap = stretch * (eff_ij - eff_ij.T)
     mu = tempo * gap / 100.0
+    # Totals recalibration (simulate_game.recalibrate_total): tempo shrinks toward
+    # the league average and the gap is rescaled so mu is unchanged.
+    shrunk = league_tempo + TOTAL_TEMPO_SHRINK * (tempo - league_tempo)
+    gap = gap * tempo / shrunk
+    tempo = shrunk
     sigma = np.array([efficiency_sigma(r) for r in three_pa])
     var = (tempo / 100.0) ** 2 * (sigma[:, None] ** 2 + sigma[None, :] ** 2
                                   - 2.0 * EFF_CORRELATION * np.outer(sigma, sigma)) \

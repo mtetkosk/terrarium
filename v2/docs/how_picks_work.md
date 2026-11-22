@@ -1,6 +1,6 @@
 # How the Daily Picks Work
 
-*Model lean-v1.2 · last updated November 22, 2026*
+*Model lean-v1.3 · last updated November 22, 2026*
 
 ## Summary
 
@@ -48,14 +48,20 @@ The 1.25 cap is new in lean-v1.2. The 2025-26 market lines start on December 5, 
 
 That is worth about 2 × 1.9 × T / 100 ≈ **2.6 points** of margin in a typical game. The value was fitted on the 2025-26 season; the textbook 3.3 over-credited home teams by about 1.6 points per game. **Neutral-site games get no home-court advantage.**
 
+**Totals recalibration.** Multiplying the ratings together (tempo × tempo, offense × defense) makes the projected *total* too extreme. In 2025-26, games the formulas projected as high- or low-scoring finished only about 78% as far from average as projected, while the margins were well calibrated. The model therefore pulls each game's pace and scoring level toward the league average:
+
+<p style="text-align:center"><i>T′ = T̄ + 0.85 × (T − T̄)      level′ = Ē + 0.67 × (level − Ē)</i></p>
+
+Here "level" is the average of the two teams' expected efficiencies. The gap between the teams is rescaled so the **projected margin is exactly unchanged**. This affects totals only, not spreads, picks or rankings. Fitted on 2025-26 (new in lean-v1.3), it cuts the error of the projected total from 17.37 to 17.17 points. The market's error is 17.07.
+
 ## 4. Uncertainty
 
 Basketball outcomes are noisy. The model uses two sources of randomness:
 
 - **Pace:** possessions vary from game to game with a standard deviation of σ<sub>T</sub> = 3.5.
-- **Scoring efficiency:** each team's efficiency varies with a standard deviation of σ<sub>Eff</sub> = 14.2 points per 100 possessions. The two teams' draws are **correlated** (ρ = 0.32). Some things move both teams' scoring together: a tightly called game, a hot shooting night in a fast arena, a sloppy game on both ends.
+- **Scoring efficiency:** each team's efficiency varies with a standard deviation of σ<sub>Eff</sub> = 14.1 points per 100 possessions. The two teams' draws are **correlated** (ρ = 0.30). Some things move both teams' scoring together: a tightly called game, a hot shooting night in a fast arena, a sloppy game on both ends.
 
-The correlation is why margins and totals behave differently. Shared noise cancels out of the margin, so the margin's uncertainty stays about 11.4 points. But it adds up in the total, so the total's uncertainty is about 17.5 points. Both values were fitted by maximum likelihood on 3,290 games from 2025-26, and they match that season's actual errors (11.4 and 17.5 points). The earlier model drew the two efficiencies independently, with σ ≈ 10.6. That made both distributions too narrow: about 10.3 points for the margin and 12.8 for the total. It was the main source of the overconfidence noted below.
+The correlation is why margins and totals behave differently. Shared noise cancels out of the margin, so the margin's uncertainty stays about 11.4 points. But it adds up in the total, so the total's uncertainty is about 17.3 points. Both values were fitted by maximum likelihood on 3,383 games from 2025-26, and they match that season's actual errors (11.4 and 17.3 points). The earlier model drew the two efficiencies independently, with σ ≈ 10.6. That made both distributions too narrow: about 10.3 points for the margin and 12.8 for the total. It was the main source of the overconfidence noted below.
 
 The original design also widened the uncertainty for teams that take many three-pointers (σ<sub>Eff</sub> = 7.2 + 8.5 × 3PA). That term is switched off until it can be tested, because the 2025-26 backtest season has no three-point-rate data.
 
@@ -64,7 +70,7 @@ The original design also widened the uncertainty for teams that take many three-
 For each game the model runs 10,000 trials. In each trial:
 
 1. Draw the number of possessions T ~ Normal(E[T], 3.5²).
-2. Draw both teams' efficiencies Eff ~ Normal(E[Eff], 14.2²), with correlation 0.32 between them.
+2. Draw both teams' efficiencies Eff ~ Normal(E[Eff], 14.1²), with correlation 0.30 between them.
 3. Score: <i>Points = round(T × Eff / 100)</i>.
 4. If the score is tied, play a 5-minute overtime (12.5% of the game's possessions), repeating up to four times.
 
@@ -90,8 +96,9 @@ The 10,000 simulated final scores give:
 - **Neutral efficiencies:** Cleveland St. 105.2 × 109.5 / 107.21 = 107.5. Kent St. 104.3 × 115.4 / 107.21 = 112.3. On a neutral floor that is Kent St. by about 3.2 points.
 - **Early-season stretch** (×1.25, the cap) widens the gap to about 4.0 points.
 - **Home court** (+1.9 / −1.9) brings it back to **Kent St. by about 1.5**.
-- **Simulation:** Kent St. 74.5, Cleveland St. 73.0; model spread Cleveland St. +1.5; total 147.5; Cleveland St. wins 44.4% of trials; 3.4% go to overtime.
-- **Market:** Cleveland St. +3.5. The model thinks Cleveland St. is getting 2.0 more points than it needs, so the **Pick is Cleveland St. with an Edge of 2.0** (light green on the sheet). This is how lean-v1.2 prices the game. The pick actually locked that morning came from lean-v1.1, with an edge of 1.6.
+- **Totals recalibration:** both teams are a little above average in pace and scoring, so the projection is pulled slightly toward average. Possessions go from 66.7 to 67.1 (league average 69.5), and the projected total from 147.5 to 147.3. The margin is unchanged.
+- **Simulation:** Kent St. 74.4, Cleveland St. 72.9; model spread Cleveland St. +1.5; total 147.3; Cleveland St. wins 44.6% of trials; 3.6% go to overtime.
+- **Market:** Cleveland St. +3.5. The model thinks Cleveland St. is getting 2.0 more points than it needs, so the **Pick is Cleveland St. with an Edge of 2.0** (light green on the sheet). This is how lean-v1.3 prices the game. The pick actually locked that morning came from lean-v1.1, with an edge of 1.6.
 
 ## 7. Comparing with the market
 
@@ -105,7 +112,7 @@ The pick is then **shopped**. The Pick Line is the best spread any of the books 
 
 in favor of the Pick. On the sheet, a solid green Pick means an edge of 3+ points, light green 1.5–3, and gray under 1.5.
 
-**Over/under lean.** The model's projected total is compared with the consensus market total in the same way. A gap of 3+ points is shown as Strong Over or Strong Under, 1.5–3 points as Lean Over or Lean Under, and under 1.5 as No Lean. **In the 2025-26 backtest the over/under lean showed no edge.** Against 2,496 closing totals, Strong leans hit 48.9%, Lean 49.6% and No Lean 46.7%. The market's totals were also more accurate than the model's (error 17.06 vs 17.36 points), and averaging the two did not help. Treat the column as information about the model, not a betting signal.
+**Over/under lean.** The model's projected total is compared with the consensus market total in the same way. A gap of 3+ points is shown as Strong Over or Strong Under, 1.5–3 points as Lean Over or Lean Under, and under 1.5 as No Lean. **In the 2025-26 backtest the over/under lean showed no edge.** Before the totals recalibration, Strong leans hit 48.9% (759 games). After it, they hit 51.6% when tested out of sample (fitted on one half of the season, tested on the other), still below the 52.4% break-even. The market's totals also remain slightly more accurate (error 17.07 vs the model's 17.17 points). Treat the column as information about the model, not a betting signal.
 
 **Market win probability.** Sportsbook moneylines include a margin (the "vig"), so the implied probabilities add up to more than 100%. The model removes it with the power method: it finds the exponent k such that
 
@@ -128,7 +135,7 @@ where p<sub>A</sub> and p<sub>B</sub> are the raw implied probabilities. It then
 
 ## 9. Track record and limitations
 
-**2025-26 backtest** (lean-v1.2, 3,383 regular-season games, each projected using only the ratings available that morning):
+**2025-26 backtest** (lean-v1.3, 3,383 regular-season games, each projected using only the ratings available that morning):
 
 | Measure | Model | Benchmark |
 |---|---|---|
@@ -137,6 +144,7 @@ where p<sub>A</sub> and p<sub>B</sub> are the raw implied probabilities. It then
 | Against the spread, edge 3+ points | 59.4% (286 games) | 52.4% |
 | Margin error (root-mean-square) | 11.31 points | Market line: 11.27 points |
 | Win-probability error (Brier score) | 0.195 | De-vigged moneyline: 0.193 |
+| Total error (root-mean-square) | 17.17 points | Market total: 17.07 points |
 | Home-court bias | −0.02 points | 0 |
 
 The backtest's market lines were captured mostly between 6 AM and noon. They are morning lines rather than true closing lines, the same kind of line the live picks are locked against.
@@ -145,8 +153,8 @@ In plain terms, the model is about as accurate as the betting market overall. It
 
 **Known limitations:**
 
-- **Overconfidence.** lean-v1.2 fixed most of it: favorites the model puts at 60–70% won 62.8% of the time, against a prediction of 65.0% (lean-v1.1: 60.5% against 64.8%). Cover probabilities are still too confident. A predicted 55–60% chance to cover has won about 51%, because the market knows things the ratings do not.
-- **Calibration data.** The early-season stretch, home-court value and uncertainty were fitted on a single season. They will be re-checked against this season's results.
+- **Overconfidence.** lean-v1.2's variance refit fixed most of it: favorites the model puts at 60–70% won 62.8% of the time, against a prediction of 65.0% (lean-v1.1: 60.5% against 64.8%). Cover probabilities are still too confident. A predicted 55–60% chance to cover has won about 51%, because the market knows things the ratings do not.
+- **Calibration data.** The early-season stretch, home-court value, totals recalibration and uncertainty were fitted on a single season. They will be re-checked against this season's results.
 - **Three-point volatility** is not modeled yet. The term will return if this season's data supports it.
 - **No injury or lineup information.** The market sees injury news before tip-off; the model does not.
 - **Early-season ratings** are still partly preseason opinion.
