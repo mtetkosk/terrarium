@@ -251,10 +251,12 @@ def _buckets(wp: float, a5, a10, b5, b10) -> tuple[float, ...] | None:
 
 
 def slate_games(con: duckdb.DuckDBPyConnection, day: date) -> list[SlateGame]:
-    """Locked picks for ET date ``day`` in tip-off order, as numbers."""
+    """Locked picks for ET date ``day`` in tip-off order, as numbers. Market line,
+    total and moneylines are the ones available when each pick was locked, so the
+    Pick and Edge shown are exactly what the ledger later grades."""
     preds = {r[0]: r[1:] for r in con.execute(
         """SELECT game_id, pred_score_a, pred_score_b, pred_spread_a, pred_total, win_prob_a,
-                  prob_a_by_5, prob_a_by_10, prob_b_by_5, prob_b_by_10
+                  prob_a_by_5, prob_a_by_10, prob_b_by_5, prob_b_by_10, created_at
            FROM model_predictions WHERE model_version = ?""", [LIVE_MODEL_VERSION]).fetchall()}
     from src.venues import venue_map
     games = slate(con, day)
@@ -263,9 +265,10 @@ def slate_games(con: duckdb.DuckDBPyConnection, day: date) -> list[SlateGame]:
     for game_id, commence, a, b, hca in games:
         if game_id not in preds:
             continue
-        sa, sb, spread, total, wp, a5, a10, b5, b10 = preds[game_id]
+        sa, sb, spread, total, wp, a5, a10, b5, b10, locked_at = preds[game_id]
         neutral, venue, city = sites.get(game_id, (not hca, None, None))
-        m = market_line(con, game_id)
+        # The line the pick was locked against (and is graded against), not the current one.
+        m = market_line(con, game_id, latest_at=locked_at)
         edge_pts = None if m["spread_a"] is None else m["spread_a"] - spread
         pick = None if edge_pts is None or abs(edge_pts) < 0.05 else (a if edge_pts > 0 else b)
         out.append(SlateGame(

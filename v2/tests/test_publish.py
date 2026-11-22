@@ -442,13 +442,15 @@ def test_daily_grid_one_value_per_cell(grid):
     lay = grid.layout
     header = [pg.cell_text(c) for c in lay.rows[3]]
     assert header[:8] == ["#", "Tip (ET)", "Away", "Home", "Site", "Venue", "City", "Game Type"]
-    assert header[12] == "O/U Lean" and header[-1] == "Home 10+" and len(header) == lay.n_cols == 27
+    assert header[12] == "O/U Lean" and header[17] == "Spread Lean"
+    assert header[-1] == "Home 10+" and len(header) == lay.n_cols == 28
     assert all(c.get("note") for c in lay.rows[3])                    # every header has a hover note
     row = lay.rows[4]
     texts = [pg.cell_text(c) for c in row]
     assert texts[:7] == ["1", "8:00 PM", "Houston", "Kansas", "—", "—", "—"]       # no venue data in fixture
     assert texts[7] in ("Toss-up", "Competitive", "Comfortable", "Blowout")
-    assert texts[14] == "+1.5" and texts[18] == "[chart]"
+    assert texts[14] == "+1.5" and texts[19] == "[chart]"
+    assert texts[17] == pg.spread_lean(float(texts[15]), texts[16])
     assert texts[12] == pg.total_lean(float(texts[10]), 139.5)
     # numbers are numbers, names are single strings: no cell mixes a team name with a value
     for c, cell in enumerate(row):
@@ -461,17 +463,19 @@ def test_daily_grid_one_value_per_cell(grid):
             assert v["stringValue"] == pg.game_type(-float(texts[13]))
         elif c == 12:
             assert v["stringValue"] in ("Strong Over", "Lean Over", "No Lean", "Lean Under", "Strong Under")
-        elif c == 18:
+        elif c == 17:
+            assert v["stringValue"] in ("Strong", "Lean", "No Lean")
+        elif c == 19:
             assert v["formulaValue"].startswith("=SPARKLINE(")
         else:
             assert "numberValue" in v, (c, v)
-    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(21, 27)) == pytest.approx(1.0)
+    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(22, 28)) == pytest.approx(1.0)
 
 
 def test_daily_grid_structure(grid):
     lay = grid.layout
     assert (lay.frozen_rows, lay.frozen_cols) == (4, 4)
-    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 13), (2, 3, 13, 17), (2, 3, 17, 21), (2, 3, 21, 27)]
+    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 13), (2, 3, 13, 18), (2, 3, 18, 22), (2, 3, 22, 28)]
     assert all(len(r) == lay.n_cols for r in lay.rows)
     assert pg.cell_text(lay.rows[1][0]) == "1 games · updated 2:05 PM ET"
 
@@ -700,7 +704,7 @@ def test_lookup_tabs_get_header_filters(grid, rank_grid, tabs):
     publisher.publish([grid, tabs[1], tabs[2], rank_grid])
     picks = sheets.by_title("Daily Picks")["filter"]
     ranks = sheets.by_title("Daily Power Rankings")["filter"]
-    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 27)
+    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 28)
     assert (ranks["startRowIndex"], ranks["endRowIndex"]) == (3, 4 + len(TEAMS))
     assert sheets.by_title("Model Performance & Stats")["filter"] is None
     assert pg.SEARCH_HINT in pg.cell_text(grid.layout.rows[1][4])
@@ -734,9 +738,9 @@ def test_mobile_grid_fits_a_phone(mobile_grid):
 def test_mobile_card_rows(mobile_grid):
     text = {pg.cell_text(r[0]): [pg.cell_text(c) for c in r[1:]] for r in mobile_grid.layout.rows}
     assert text["Away · Home"] == ["Houston", "Kansas"]
-    header = next(k for k in text if k.startswith("8:00 PM · Game 1 · "))
-    assert header.split(" · ")[-1] in ("Toss-up", "Competitive", "Comfortable", "Blowout")
-    assert text[header] == ["", ""]
+    assert text["8:00 PM · Game 1"] == ["", ""]
+    assert text["Game type"][0] in ("Toss-up", "Competitive", "Comfortable", "Blowout")
+    assert text["Spread lean"][0] in ("Strong", "Lean", "No Lean")
     assert text["Market line"] == ["-1.5", "+1.5"]                  # each team's own spread
     away, home = (float(x.rstrip("%")) for x in text["Win chance"])
     assert away + home == pytest.approx(100, abs=1)
@@ -895,7 +899,7 @@ def test_venues_match_either_orientation_and_zero_hca(db_path):
         mobile = pg.build_mobile_grid(con, TODAY)
     row = [pg.cell_text(c) for c in grid.layout.rows[4][4:7]]
     assert row == ["Neutral", "Baha Mar Convention Center", "Nassau, Bahamas"]
-    assert any(" · Neutral · " in pg.cell_text(r[0]) for r in mobile.layout.rows)
+    assert any("Neutral site" in pg.cell_text(r[0]) for r in mobile.layout.rows)
 
 
 def test_locked_picks_keep_their_hca(db_path):
@@ -989,3 +993,21 @@ def test_total_lean_buckets(model, market, label):
 def test_total_lean_on_mobile_card(mobile_grid):
     text = {pg.cell_text(r[0]): pg.cell_text(r[1]) for r in mobile_grid.layout.rows}
     assert text["O/U lean"] in ("Strong Over", "Lean Over", "No Lean", "Lean Under", "Strong Under")
+
+
+
+@pytest.mark.parametrize("edge, pick, label", [(3.0, "Duke", "Strong"), (2.9, "Duke", "Lean"), (1.5, "Duke", "Lean"),
+                                               (1.4, "Duke", "No Lean"), (5.0, None, None), (None, "Duke", None)])
+def test_spread_lean_tiers(edge, pick, label):
+    assert pg.spread_lean(edge, pick) == label
+
+
+def test_daily_picks_show_the_line_the_pick_was_locked_at(db_path):
+    with db.get_db_connection(db_path=db_path) as con:
+        before, = lp.slate_games(con, TODAY)
+        # After the 15:00 lock, the market moves from Houston -1.5 to Kansas -4.0.
+        con.execute("INSERT INTO odds_snapshots VALUES ('t1', ?, 'draftkings', -4.0, -180, 150, 145.5)",
+                    [datetime(2026, 11, 20, 20)])
+        after, = lp.slate_games(con, TODAY)
+    assert after.market_line == before.market_line == 1.5
+    assert (after.pick, after.edge, after.market_total) == (before.pick, before.edge, 139.5)
