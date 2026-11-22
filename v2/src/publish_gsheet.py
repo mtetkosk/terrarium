@@ -930,6 +930,9 @@ LEDGER_GROUPS = [
                           "line available for the Pick across up to 10 sportsbooks. Picks before Nov 23, 2026 "
                           "used DraftKings, else FanDuel."),
         ("Book", 84, "Sportsbook offering the Pick Line."),
+        ("Spread Lean", 96, "Edge at lock time between the model's spread and the Pick Line: Strong = 3+ "
+                            "points, Lean = 1.5-3, No Lean = under 1.5. Strong picks are the season's "
+                            "pre-registered test (see How the Daily Picks Work): filter to Strong to see them."),
     ]),
     ("MARKET", "#0F766E", [
         ("Close Line", 66, "Consensus HOME spread at the last odds pull before tip-off (median across "
@@ -952,6 +955,9 @@ def _record(games: list) -> dict:
     covers, losses, pushes = ats.count("Cover"), ats.count("Loss"), ats.count("Push")
     su_w = sum(g.su == "W" for g in games)
     clvs = [g.clv for g in games if g.clv is not None]
+    # Pre-registered test: Strong picks made by the frozen season model only.
+    strong = [g.ats for g in games if g.ats in ("Cover", "Loss") and spread_lean(g.edge, g.pick) == "Strong"
+              and g.model_version == vm.DEFAULT_MODEL_VERSION]
     units, running = 0.0, []
     for g in reversed(games):                       # oldest first
         if g.ats == "Cover":
@@ -966,6 +972,8 @@ def _record(games: list) -> dict:
             "ats_pct": covers / (covers + losses) if covers + losses else None,
             "units": units if running else None, "running": running,
             "clv": sum(clvs) / len(clvs) if clvs else None,
+            "strong_n": len(strong),
+            "strong_pct": strong.count("Cover") / len(strong) if strong else None,
             "beat_close": sum(c > 0 for c in clvs) / len(clvs) if clvs else None}
 
 
@@ -1012,14 +1020,21 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
         ("LOSSES", 4, rec["losses"], "0", "NUMBER", None),
         ("PUSHES", 5, rec["pushes"], "0", "NUMBER", None),
         ("UNITS @ −110", 6, rec["units"], "+0.0;-0.0;0.0", "NUMBER", grade(rec["units"], 0.0, 3.0)),
-        ("AVG CLV", 12, rec["clv"], "+0.00;-0.00;0.00", "NUMBER", grade(rec["clv"], 0.0, 0.25)),
-        ("BEAT CLOSE", 13, rec["beat_close"], "0%", "PERCENT", grade(rec["beat_close"], 0.5, 0.05)),
+        ("STRONG PICKS", 11, rec["strong_n"], "0", "NUMBER", None),
+        ("STRONG ATS", 12, rec["strong_pct"], "0.0%", "PERCENT",
+         grade(rec["strong_pct"], sc.ATS_BREAK_EVEN, 0.024) if rec["strong_n"] >= 30 else None),
+        ("AVG CLV", 13, rec["clv"], "+0.00;-0.00;0.00", "NUMBER", grade(rec["clv"], 0.0, 0.25)),
+        ("BEAT CLOSE", 14, rec["beat_close"], "0%", "PERCENT", grade(rec["beat_close"], 0.5, 0.05)),
     ]
     kpi_bg = _hex("#F8FAFC")
     labels = [{"userEnteredFormat": _fmt(bg=kpi_bg)} for _ in range(n_cols)]
     values = [{"userEnteredFormat": _fmt(bg=kpi_bg)} for _ in range(n_cols)]
     notes = {"ATS": "Covers / (covers + losses). 52.4% breaks even at -110.",
              "UNITS @ −110": "Profit betting 1 unit on every pick at -110 (+1 per cover, -1.1 per loss).",
+             "STRONG PICKS": f"Graded Strong picks (edge 3+ points at lock) made by the frozen season model "
+                             f"({vm.DEFAULT_MODEL_VERSION}), excluding pushes.",
+             "STRONG ATS": "Cover rate of those Strong picks: the season's pre-registered test. 52.4% breaks "
+                           "even at -110; the 2025-26 backtest had 59.4%. Shaded once 30+ are graded.",
              "AVG CLV": "Average points our Pick Line beat the closing line by.",
              "BEAT CLOSE": "Share of picks whose Pick Line beat the closing line."}
     for label, c, value, pattern, ptype, g in kpis:
@@ -1074,11 +1089,12 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
             _text(g.pick, f(9, bold=True)) if g.pick else _text("—", f(9, fg=MUTED, align="CENTER")),
             _numcell(g.pick_line, f(10, align="CENTER", pattern=SPREAD_FMT)),
             _text(book_name(g.pick_book), f(11, fg=MUTED, size=9, align="CENTER")),
-            _numcell(g.closing_line, f(12, fg=MUTED, align="CENTER", pattern=CONSENSUS_FMT)),
-            _numcell(g.clv, f(13, fg=clv_fg, bold=bool(g.clv), align="CENTER", pattern="+0.0;-0.0;0.0")),
-            _numcell(g.away_pts, f(14, align="CENTER", pattern="0")),
-            _numcell(g.home_pts, f(15, align="CENTER", pattern="0")),
-            _numcell(g.final_margin, f(16, bold=True, align="CENTER", pattern="+0;-0;0")),
+            _spread_lean_cell(g.edge, g.pick, bg),
+            _numcell(g.closing_line, f(13, fg=MUTED, align="CENTER", pattern=CONSENSUS_FMT)),
+            _numcell(g.clv, f(14, fg=clv_fg, bold=bool(g.clv), align="CENTER", pattern="+0.0;-0.0;0.0")),
+            _numcell(g.away_pts, f(15, align="CENTER", pattern="0")),
+            _numcell(g.home_pts, f(16, align="CENTER", pattern="0")),
+            _numcell(g.final_margin, f(17, bold=True, align="CENTER", pattern="+0;-0;0")),
             _chip_cell(g.su, bg),
             _chip_cell(g.ats, bg),
         ])
@@ -1283,6 +1299,9 @@ def build_mobile_ledger_grid(con, today: date, title: str = MOBILE_TITLES[1],
              ("Losses", rec["losses"], "0", "NUMBER", None),
              ("Pushes", rec["pushes"], "0", "NUMBER", None),
              ("Units @ −110", rec["units"], "+0.0;-0.0;0.0", "NUMBER", grade(rec["units"], 0.0, 3.0)),
+             ("Strong picks ATS (edge 3+)", rec["strong_pct"], "0.0%", "PERCENT",
+              grade(rec["strong_pct"], sc.ATS_BREAK_EVEN, 0.024) if rec["strong_n"] >= 30 else None),
+             ("Strong picks graded", rec["strong_n"], "0", "NUMBER", None),
              ("Straight up", rec["su_pct"], "0.0%", "PERCENT", None),
              ("Avg closing-line value", rec["clv"], "+0.00;-0.00;0.00", "NUMBER", grade(rec["clv"], 0.0, 0.25)),
              ("Beat the closing line", rec["beat_close"], "0%", "PERCENT", grade(rec["beat_close"], 0.5, 0.05))]

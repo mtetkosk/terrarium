@@ -70,6 +70,7 @@ On macOS, `make install-daily` installs a launchd job that runs the pipeline eac
 
   A game that fails is held back. Publishing is blocked if the ratings are stale, the rankings are inconsistent, or any cell would show a non-number.
 - **Honest benchmarking.** Every metric is reported next to the same metric for the betting market.
+- **Frozen for the season.** lean-v1.3 makes every 2026-27 pick, and its fitted parameters are pinned by a test (`tests/test_frozen_params.py`). The season is a pre-registered test of one hypothesis: do picks with a 3+ point edge beat the 52.4% break-even? See the season protocol in [How the Daily Picks Work](v2/docs/how_picks_work.md).
 
 ## Outputs
 

@@ -402,6 +402,13 @@ class LedgerGame:
         return self.pick_line if self.pick == self.home else -self.pick_line
 
     @property
+    def edge(self) -> float | None:
+        """Points between the pick line and the model's spread, toward the pick."""
+        if self.pick is None or self.pick_line is None:
+            return None
+        return abs(self.pick_line + self.pred_margin)
+
+    @property
     def final_margin(self) -> int:
         return self.home_pts - self.away_pts
 

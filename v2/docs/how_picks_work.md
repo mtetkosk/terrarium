@@ -161,4 +161,23 @@ In plain terms, the model is about as accurate as the betting market overall. It
 
 The Model Performance tab tracks all of these live, game by game.
 
+**Why the probabilities are not blended with the market.** Averaging the model's spread with the market's gives the best margin forecast at about 20% model, 80% market. But the resulting win probabilities are no better than the market's own (Brier 0.1928 vs 0.1927). A blended cover probability is also wrong in both directions: picks with an edge under 3 points covered about 49%, and those with 3+ covered 59–64%, which no smooth average can capture. The sheet therefore shows the model's own probabilities next to the market's, and uses the Spread Lean tiers for the cover signal.
+
+## 10. Season protocol (2026-27)
+
+The live season is a test of the model, so the model is fixed before the test starts.
+
+- **Frozen model.** Every pick from November 23, 2026 to the end of the season is made by **lean-v1.3**, with the parameters above: home court 1.9, stretch cap 1.25, σ<sub>Eff</sub> 14.1, ρ 0.30, and totals shrink 0.85 / 0.67. Data fixes are allowed (team names, venues, odds feeds) because they correct inputs rather than the model. Any change to a fitted parameter is a new version, logged in the ledger. Picks are never re-made. The 140 picks of November 20–22 were made by lean-v1.1 and are not part of the test.
+- **Primary test.** Do **Strong** picks (edge of 3+ points against the Pick Line at lock time) cover more than 52.4% of the time, the break-even rate at −110? The 2025-26 backtest says 59.4%. The running record is the STRONG ATS figure on the Historical Picks tab.
+- **How it will be judged** at season's end, using the 95% interval of the Strong cover rate (about ±5.7 points with 300 graded picks, ±4.0 with 600):
+  - **Confirmed** if the whole interval is above 52.4%.
+  - **Unproven** if the rate is above 52.4% but the interval includes it.
+  - **Not supported** if the rate is 52.4% or below.
+- **Secondary checks.**
+  - Average closing-line value on Strong picks should be positive. That is evidence that the market moves toward the model after the morning line, which would explain the backtest result.
+  - All picks together should cover about 50%, as in the backtest.
+  - The over/under lean is expected to show no edge.
+
+No result will be called before the season ends. With several Strong picks a day, a few weeks of results can look very good or very bad by chance alone.
+
 *This page describes a statistical model for entertainment and research. It is not betting advice.*

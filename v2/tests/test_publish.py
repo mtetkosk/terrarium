@@ -312,13 +312,19 @@ def test_ledger_games_are_raw_values(db_path):
     assert g.clv == pytest.approx(1.5)
 
 
-def test_ledger_grid_record_strip(ledger_grid):
+def test_ledger_grid_record_strip(ledger_grid, db_path):
     lay = ledger_grid.layout
     labels = [pg.cell_text(c) for c in lay.rows[2]]
     values = [pg.cell_text(c) for c in lay.rows[3]]
     strip = dict(zip(labels, values))
     assert strip["GRADED"] == "1" and strip["ATS"] == "100.0%" and strip["COVERS"] == "1"
     assert strip["UNITS @ −110"] == "+1.0" and strip["AVG CLV"] == "+1.50" and strip["BEAT CLOSE"] == "100%"
+    with db.get_db_connection(db_path=db_path) as con:
+        g, = lp.ledger_games(con)
+    strong = pg.spread_lean(g.edge, g.pick) == "Strong"
+    counted = strong and g.model_version == pg.vm.DEFAULT_MODEL_VERSION
+    assert strip["STRONG PICKS"] == ("1" if counted else "0")
+    assert strip["STRONG ATS"] == ("100.0%" if counted else "")
     # ATS above break-even is tinted green
     ats_cell = lay.rows[3][labels.index("ATS")]
     assert ats_cell["userEnteredFormat"]["backgroundColor"] == pg.GRADE_TINT["good"]
@@ -328,12 +334,13 @@ def test_ledger_grid_rows_one_value_per_cell(ledger_grid):
     lay = ledger_grid.layout
     header = [pg.cell_text(c) for c in lay.rows[6]]
     assert header == ["Date", "Away", "Home", "Site", "Venue", "City", "Model", "Game Type", "Model Margin", "Pick",
-                      "Pick Line", "Book", "Close Line", "CLV", "Away Pts", "Home Pts", "Final Margin", "SU", "ATS"]
+                      "Pick Line", "Book", "Spread Lean", "Close Line", "CLV", "Away Pts", "Home Pts", "Final Margin",
+                      "SU", "ATS"]
     row = [pg.cell_text(c) for c in lay.rows[7]]
     assert row == ["2026-11-19", "Michigan St.", "Duke", "—", "—", "—", lp.LIVE_MODEL_VERSION.removeprefix("live-"),
-                   pg.game_type(float(row[8])), row[8], "Duke", "-3.0", "DraftKings", "-4.5", "+1.5", "72", "80",
-                   "+8", "W", "Cover"]
-    assert lay.rows[7][18]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
+                   pg.game_type(float(row[8])), row[8], "Duke", "-3.0", "DraftKings",
+                   pg.spread_lean(abs(-3.0 + float(row[8])), "Duke"), "-4.5", "+1.5", "72", "80", "+8", "W", "Cover"]
+    assert lay.rows[7][19]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
     assert (lay.frozen_rows, lay.frozen_cols, lay.filter_row) == (7, 3, 6)
     assert all(c.get("note") for c in lay.rows[6])
 
@@ -1019,3 +1026,16 @@ def test_daily_picks_show_the_line_the_pick_was_locked_at(db_path):
         after, = lp.slate_games(con, TODAY)
     assert after.market_line == before.market_line == 1.5
     assert (after.pick, after.edge, after.market_total) == (before.pick, before.edge, 139.5)
+
+
+def test_record_counts_strong_picks_excluding_pushes():
+    def g(edge, ats):
+        # home pick at -3.0; pred_margin chosen so |pick_line + pred_margin| = edge
+        return lp.LedgerGame("x", TODAY, "Away", "Home", False, 3.0 + edge, "Home", -3.0, -3.0,
+                             60, 70, "W", ats, 0.0, model_version=version)
+    version = pg.vm.DEFAULT_MODEL_VERSION
+    rec = pg._record([g(4.0, "Cover"), g(3.5, "Loss"), g(3.0, "Cover"), g(5.0, "Push"), g(1.0, "Cover")])
+    assert rec["strong_n"] == 3 and rec["strong_pct"] == pytest.approx(2 / 3)
+    version = "lean-v1.1"                                   # older models are not part of the test
+    assert pg._record([g(4.0, "Cover")])["strong_n"] == 0
+    assert pg._record([g(1.0, "Cover")])["strong_pct"] is None
