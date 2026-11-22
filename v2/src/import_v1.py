@@ -150,6 +150,74 @@ def closing_odds(
     return spread_a, ml_a, ml_b
 
 
+OVER = "__over__"   # Line.team marker for a v1 TOTAL "over" row (totals carry no team label)
+MAX_ABS_TOTAL_RANGE = (90.0, 220.0)
+
+
+def load_v1_totals(con: sqlite3.Connection) -> dict[int, list[Line]]:
+    """v1 TOTAL "over" rows per v1 game id (the under mirrors the over)."""
+    out: dict[int, list[Line]] = defaultdict(list)
+    for game_id, book, line, odds, ts in con.execute(
+        "SELECT game_id, book, line, odds, timestamp FROM betting_lines "
+        "WHERE bet_type = 'TOTAL' AND lower(team) = 'over'"
+    ):
+        if ts is None or line is None:
+            continue
+        out[game_id].append(Line(book, "TOTAL", float(line), float(odds), _parse_ts(ts), OVER))
+    return out
+
+
+def closing_total(totals: list[Line], lines: list[Line], team_a: str, team_b: str,
+                  tipoff: datetime) -> float | None:
+    """Latest pre-tipoff total, by BOOK_PRIORITY. v1 totals have no team label and
+    v1 reused game ids, so a total is only trusted when the same book posted a
+    team-labeled spread for this game within MAX_SIDE_SKEW_SECONDS of it (proof
+    the game id pointed at this game when the total was scraped)."""
+    for book in BOOK_PRIORITY:
+        anchors = [ln.ts for ln in lines if ln.book == book and ln.bet_type == "SPREAD"
+                   and ln.team in (team_a, team_b) and ln.ts < tipoff]
+        if not anchors:
+            continue
+        cands = [t for t in totals if t.book == book and t.ts < tipoff
+                 and MAX_ABS_TOTAL_RANGE[0] <= t.line <= MAX_ABS_TOTAL_RANGE[1]
+                 and any(abs((t.ts - a).total_seconds()) <= MAX_SIDE_SKEW_SECONDS for a in anchors)]
+        if cands:
+            return max(cands, key=lambda t: t.ts).line
+    return None
+
+
+def import_v1_totals(v1_path: Path = DEFAULT_V1_DB, db_path: str | Path | None = None) -> tuple[int, int]:
+    """Closing totals for already-imported v1 games into ``vegas_closing_totals``.
+    Touches no other table. Returns (games considered, totals stored)."""
+    if not Path(v1_path).is_file():
+        raise FileNotFoundError(f"v1 database not found: {v1_path}")
+    with get_db_connection(db_path=db_path) as con:
+        mapper = TeamNameMapper([r[0] for r in con.execute(
+            "SELECT DISTINCT team FROM kenpom_snapshots").fetchall()])
+        src = sqlite3.connect(f"file:{v1_path}?mode=ro", uri=True)
+        try:
+            games, lines, totals = load_v1_games(src), load_v1_lines(src, mapper), load_v1_totals(src)
+        finally:
+            src.close()
+        known = {r[0] for r in con.execute("SELECT game_id FROM historical_games").fetchall()}
+        rows, seen, considered = [], set(), 0
+        for g in games:
+            home, away = mapper.to_kenpom(g.home_name), mapper.to_kenpom(g.away_name)
+            if home is None or away is None or g.tipoff is None:
+                continue
+            gid = game_id_for(g.game_date, home, away)
+            if gid not in known or gid in seen:
+                continue
+            seen.add(gid)
+            considered += 1
+            total = closing_total(totals.get(g.v1_id, []), lines.get(g.v1_id, []), home, away, g.tipoff)
+            if total is not None:
+                rows.append((gid, total))
+        if rows:
+            con.executemany("INSERT OR REPLACE INTO vegas_closing_totals VALUES (?, ?)", rows)
+    return considered, len(rows)
+
+
 def home_venues(games: list[tuple[V1Game, str]]) -> dict[str, str]:
     """Modal venue per home team (KenPom name), if seen >= MIN_HOME_VENUE_GAMES times."""
     counts: dict[str, Counter] = defaultdict(Counter)

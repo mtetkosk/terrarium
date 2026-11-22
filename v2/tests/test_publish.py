@@ -177,7 +177,7 @@ def db_path(tmp_path):
         for gid, d, a, b, tip in games:
             con.execute("INSERT INTO scheduled_games VALUES (?, 'the-odds-api', ?, ?, ?, ?)", [gid, gid, tip, a, b])
             con.execute("INSERT INTO historical_games VALUES (?, ?, ?, ?, NULL, NULL, NULL, 1.9)", [gid, d, a, b])
-        con.executemany("INSERT INTO odds_snapshots VALUES (?, ?, ?, ?, ?, ?, ?)", [
+        con.executemany("INSERT INTO odds_snapshots (game_id, fetched_at, book, spread_a, ml_a, ml_b, total) VALUES (?, ?, ?, ?, ?, ?, ?)", [
             ("y1", datetime(2026, 11, 19, 14), "draftkings", -3.0, -150, 130, 148.5),   # pick-time line
             ("y1", datetime(2026, 11, 19, 23), "draftkings", -4.5, -190, 160, 149.5),   # closing line
             ("t1", datetime(2026, 11, 20, 14), "draftkings", 1.5, 105, -125, 139.5),
@@ -306,7 +306,9 @@ def test_ledger_games_are_raw_values(db_path):
         g, = lp.ledger_games(con)
     assert (g.away, g.home, g.away_pts, g.home_pts, g.final_margin) == ("Michigan St.", "Duke", 72, 80, 8)
     assert (g.pick, g.pick_line, g.closing_line, g.su, g.ats) == ("Duke", -3.0, -4.5, "W", "Cover")
-    assert g.model_version == "lean-v1.1"
+    assert g.model_version == lp.LIVE_MODEL_VERSION.removeprefix("live-")
+    assert g.pick_book == "draftkings"            # locked before pick_lines: legacy DraftKings line
+    assert g.pick_points == -3.0
     assert g.clv == pytest.approx(1.5)
 
 
@@ -326,11 +328,12 @@ def test_ledger_grid_rows_one_value_per_cell(ledger_grid):
     lay = ledger_grid.layout
     header = [pg.cell_text(c) for c in lay.rows[6]]
     assert header == ["Date", "Away", "Home", "Site", "Venue", "City", "Model", "Game Type", "Model Margin", "Pick",
-                      "Pick Line", "Close Line", "CLV", "Away Pts", "Home Pts", "Final Margin", "SU", "ATS"]
+                      "Pick Line", "Book", "Close Line", "CLV", "Away Pts", "Home Pts", "Final Margin", "SU", "ATS"]
     row = [pg.cell_text(c) for c in lay.rows[7]]
-    assert row == ["2026-11-19", "Michigan St.", "Duke", "—", "—", "—", "lean-v1.1", pg.game_type(float(row[8])),
-                   row[8], "Duke", "-3.0", "-4.5", "+1.5", "72", "80", "+8", "W", "Cover"]
-    assert lay.rows[7][17]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
+    assert row == ["2026-11-19", "Michigan St.", "Duke", "—", "—", "—", lp.LIVE_MODEL_VERSION.removeprefix("live-"),
+                   pg.game_type(float(row[8])), row[8], "Duke", "-3.0", "DraftKings", "-4.5", "+1.5", "72", "80",
+                   "+8", "W", "Cover"]
+    assert lay.rows[7][18]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
     assert (lay.frozen_rows, lay.frozen_cols, lay.filter_row) == (7, 3, 6)
     assert all(c.get("note") for c in lay.rows[6])
 
@@ -442,15 +445,18 @@ def test_daily_grid_one_value_per_cell(grid):
     lay = grid.layout
     header = [pg.cell_text(c) for c in lay.rows[3]]
     assert header[:8] == ["#", "Tip (ET)", "Away", "Home", "Site", "Venue", "City", "Game Type"]
-    assert header[12] == "O/U Lean" and header[17] == "Spread Lean"
-    assert header[-1] == "Home 10+" and len(header) == lay.n_cols == 28
+    assert header[12] == "O/U Lean" and header[16:20] == ["Pick", "Pick Line", "Book", "Spread Lean"]
+    assert header[-1] == "Home 10+" and len(header) == lay.n_cols == 30
     assert all(c.get("note") for c in lay.rows[3])                    # every header has a hover note
     row = lay.rows[4]
     texts = [pg.cell_text(c) for c in row]
     assert texts[:7] == ["1", "8:00 PM", "Houston", "Kansas", "—", "—", "—"]       # no venue data in fixture
     assert texts[7] in ("Toss-up", "Competitive", "Comfortable", "Blowout")
-    assert texts[14] == "+1.5" and texts[19] == "[chart]"
-    assert texts[17] == pg.spread_lean(float(texts[15]), texts[16])
+    assert texts[14] == "+1.5" and texts[21] == "[chart]"
+    assert texts[19] == pg.spread_lean(float(texts[15]), texts[16])
+    assert texts[18] == "DraftKings"                                 # legacy pick: DraftKings line
+    pick_home = texts[16] == "Kansas"
+    assert float(texts[17]) == pytest.approx(1.5 if pick_home else -1.5)   # the pick's own spread
     assert texts[12] == pg.total_lean(float(texts[10]), 139.5)
     # numbers are numbers, names are single strings: no cell mixes a team name with a value
     for c, cell in enumerate(row):
@@ -463,19 +469,21 @@ def test_daily_grid_one_value_per_cell(grid):
             assert v["stringValue"] == pg.game_type(-float(texts[13]))
         elif c == 12:
             assert v["stringValue"] in ("Strong Over", "Lean Over", "No Lean", "Lean Under", "Strong Under")
-        elif c == 17:
-            assert v["stringValue"] in ("Strong", "Lean", "No Lean")
+        elif c == 18:
+            assert v["stringValue"] in pg.BOOK_NAMES.values()
         elif c == 19:
+            assert v["stringValue"] in ("Strong", "Lean", "No Lean")
+        elif c == 21:
             assert v["formulaValue"].startswith("=SPARKLINE(")
         else:
             assert "numberValue" in v, (c, v)
-    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(22, 28)) == pytest.approx(1.0)
+    assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(24, 30)) == pytest.approx(1.0)
 
 
 def test_daily_grid_structure(grid):
     lay = grid.layout
     assert (lay.frozen_rows, lay.frozen_cols) == (4, 4)
-    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 13), (2, 3, 13, 18), (2, 3, 18, 22), (2, 3, 22, 28)]
+    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 13), (2, 3, 13, 20), (2, 3, 20, 24), (2, 3, 24, 30)]
     assert all(len(r) == lay.n_cols for r in lay.rows)
     assert pg.cell_text(lay.rows[1][0]) == "1 games · updated 2:05 PM ET"
 
@@ -704,7 +712,7 @@ def test_lookup_tabs_get_header_filters(grid, rank_grid, tabs):
     publisher.publish([grid, tabs[1], tabs[2], rank_grid])
     picks = sheets.by_title("Daily Picks")["filter"]
     ranks = sheets.by_title("Daily Power Rankings")["filter"]
-    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 28)
+    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 30)
     assert (ranks["startRowIndex"], ranks["endRowIndex"]) == (3, 4 + len(TEAMS))
     assert sheets.by_title("Model Performance & Stats")["filter"] is None
     assert pg.SEARCH_HINT in pg.cell_text(grid.layout.rows[1][4])
@@ -1006,7 +1014,7 @@ def test_daily_picks_show_the_line_the_pick_was_locked_at(db_path):
     with db.get_db_connection(db_path=db_path) as con:
         before, = lp.slate_games(con, TODAY)
         # After the 15:00 lock, the market moves from Houston -1.5 to Kansas -4.0.
-        con.execute("INSERT INTO odds_snapshots VALUES ('t1', ?, 'draftkings', -4.0, -180, 150, 145.5)",
+        con.execute("INSERT INTO odds_snapshots (game_id, fetched_at, book, spread_a, ml_a, ml_b, total) VALUES ('t1', ?, 'draftkings', -4.0, -180, 150, 145.5)",
                     [datetime(2026, 11, 20, 20)])
         after, = lp.slate_games(con, TODAY)
     assert after.market_line == before.market_line == 1.5

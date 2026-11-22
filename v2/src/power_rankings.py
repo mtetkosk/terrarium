@@ -3,11 +3,13 @@
 NDI_i = mean over all other D-I teams j of P(i beats j on a neutral floor).
 
 Win probabilities use the simulator's own inputs (snapshot league averages,
-early-season margin stretch, 3PA-scaled efficiency sigma) in closed form
+early-season margin stretch, efficiency sigma and the within-game efficiency
+correlation rho) in closed form
 instead of 10k Monte Carlo trials per pair (~66k pairs/day):
 
     margin_ij ~ N(mu, sd^2),  mu = T_ij * stretch * (E_ij - E_ji) / 100
-    sd^2 = (T_ij/100)^2 (sigma_i^2 + sigma_j^2) + (SIGMA_TEMPO * stretch * (E_ij - E_ji) / 100)^2
+    sd^2 = (T_ij/100)^2 (sigma_i^2 + sigma_j^2 - 2 rho sigma_i sigma_j)
+           + (SIGMA_TEMPO * stretch * (E_ij - E_ji) / 100)^2
 
 which matches the simulator's win probability to within ~1 pt (see tests).
 The spec's 21-day recency decay is deferred: it needs per-game efficiencies,
@@ -28,6 +30,7 @@ import numpy as np
 
 from src import ingest_kenpom as ik
 from src.simulate_game import (
+    EFF_CORRELATION,
     LEAGUE_AVG_THREE_PA_RATE,
     SIGMA_TEMPO,
     early_season_stretch,
@@ -76,7 +79,8 @@ def win_prob_matrix(adj_o, adj_d, adj_t, three_pa, league_tempo, league_eff, str
     gap = stretch * (eff_ij - eff_ij.T)
     mu = tempo * gap / 100.0
     sigma = np.array([efficiency_sigma(r) for r in three_pa])
-    var = (tempo / 100.0) ** 2 * (sigma[:, None] ** 2 + sigma[None, :] ** 2) \
+    var = (tempo / 100.0) ** 2 * (sigma[:, None] ** 2 + sigma[None, :] ** 2
+                                  - 2.0 * EFF_CORRELATION * np.outer(sigma, sigma)) \
         + (SIGMA_TEMPO * gap / 100.0) ** 2
     p = 0.5 * (1.0 + _erf(mu / np.sqrt(2.0 * var)))
     np.fill_diagonal(p, 0.5)

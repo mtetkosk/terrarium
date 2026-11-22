@@ -41,12 +41,29 @@ def test_closed_form_matches_simulator(a, b, stretch):
     assert p[0, 1] == pytest.approx(sim.win_prob_a, abs=0.015)
 
 
-def test_higher_variance_hurts_a_favorite():
-    # Same ratings, different 3PA: against a weaker field the boom-or-bust team wins less often.
+def test_three_pa_rate_does_not_change_win_probabilities():
+    # lean-v1.2: the untested 3PA variance term is off, so identical ratings with
+    # different 3PA rates get identical probabilities.
     o = np.array([115.0, 115.0, 100.0, 98.0]); d = np.array([95.0, 95.0, 106.0, 108.0])
     t = np.full(4, 68.0); r = np.array([0.25, 0.55, 0.40, 0.40])
     p = pr.win_prob_matrix(o, d, t, r, 68.0, 106.0)
-    assert p[0, 2] > p[1, 2] and p[0, 3] > p[1, 3]
+    assert p[0, 2] == pytest.approx(p[1, 2]) and p[0, 3] == pytest.approx(p[1, 3])
+
+
+def test_correlation_lowers_margin_variance():
+    # rho > 0 shrinks Var(Eff_i - Eff_j), so a favorite is MORE likely to win than
+    # with independent draws at the same sigma.
+    import src.simulate_game as sg
+    o = np.array([115.0, 100.0]); d = np.array([95.0, 106.0]); t = np.full(2, 68.0); r = np.full(2, 0.4)
+    with_rho = pr.win_prob_matrix(o, d, t, r, 68.0, 106.0)[0, 1]
+    orig = pr.EFF_CORRELATION
+    try:
+        pr.EFF_CORRELATION = 0.0
+        no_rho = pr.win_prob_matrix(o, d, t, r, 68.0, 106.0)[0, 1]
+    finally:
+        pr.EFF_CORRELATION = orig
+    assert sg.EFF_CORRELATION == orig > 0
+    assert with_rho > no_rho
 
 
 # --- rankings from the database ----------------------------------------------------------

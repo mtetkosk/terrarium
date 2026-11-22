@@ -97,6 +97,8 @@ SCHEMA: dict[str, str] = {
             ml_a DOUBLE,
             ml_b DOUBLE,
             total DOUBLE,
+            spread_price_a DOUBLE,
+            spread_price_b DOUBLE,
             PRIMARY KEY (game_id, fetched_at, book)
         )
     """,
@@ -123,6 +125,34 @@ SCHEMA: dict[str, str] = {
             fetched_at TIMESTAMP
         )
     """,
+    # Backtest closing over/under per game (v1 import; src/import_v1.import_v1_totals).
+    # Kept out of vegas_closing_odds, whose schema is fixed by the spec.
+    "vegas_closing_totals": """
+        CREATE TABLE IF NOT EXISTS vegas_closing_totals (
+            game_id VARCHAR PRIMARY KEY,
+            closing_total DOUBLE
+        )
+    """,
+    # The line each live pick was locked against (written once, at lock time).
+    # side = "A"/"B" (team A = home) chosen against the consensus line
+    # market_line_a; line_a / book / price = the best available line for that
+    # side, which the ledger grades against. Picks locked before line shopping
+    # were backfilled from their DraftKings/FanDuel line (price NULL).
+    "pick_lines": """
+        CREATE TABLE IF NOT EXISTS pick_lines (
+            game_id VARCHAR PRIMARY KEY,
+            model_version VARCHAR,
+            locked_at TIMESTAMP,
+            side VARCHAR,
+            line_a DOUBLE,
+            book VARCHAR,
+            price DOUBLE,
+            market_line_a DOUBLE,
+            market_total DOUBLE,
+            ml_a DOUBLE,
+            ml_b DOUBLE
+        )
+    """,
     # Pre-lock / pre-publish sanity checks (src/sanity.py); rewritten per date + stage.
     "sanity_issues": """
         CREATE TABLE IF NOT EXISTS sanity_issues (
@@ -144,6 +174,8 @@ MIGRATIONS = [
     "ALTER TABLE model_predictions ADD COLUMN IF NOT EXISTS prob_a_by_10 DOUBLE",
     "ALTER TABLE model_predictions ADD COLUMN IF NOT EXISTS prob_b_by_5 DOUBLE",
     "ALTER TABLE model_predictions ADD COLUMN IF NOT EXISTS prob_b_by_10 DOUBLE",
+    "ALTER TABLE odds_snapshots ADD COLUMN IF NOT EXISTS spread_price_a DOUBLE",
+    "ALTER TABLE odds_snapshots ADD COLUMN IF NOT EXISTS spread_price_b DOUBLE",
 ]
 
 

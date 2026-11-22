@@ -291,13 +291,15 @@ def _load_env() -> None:
 @app.command()
 def odds(
     scores_days: int = typer.Option(3, help="Days of completed scores to fetch (1-3)"),
+    no_scores: bool = typer.Option(False, "--no-scores",
+                                   help="Odds only (3 credits): a pre-tip pull for closing lines"),
     db_path: Path = DbPath,
 ):
     """Pull today's slate, market lines and recent scores from The Odds API (5 credits)."""
     _load_env()
     try:
         with get_db_connection(db_path=db_path) as con:
-            st = odds_api.update(con, scores_days=scores_days)
+            st = odds_api.update(con, scores_days=scores_days, scores=not no_scores)
     except (odds_api.OddsApiError, OSError) as exc:
         _fail(str(exc))
     console.print(f"[green]{st.games} D-I games[/] from {st.events} events; {st.snapshots} line "

@@ -39,7 +39,7 @@ from src import publish_docs
 from src import sanity
 from src import scorecard as sc
 from src import validate_model as vm
-from src.odds_api import EASTERN
+from src.odds_api import BOOK_NAMES, EASTERN
 
 TAB_TITLES = ("Daily Picks", "Historical Picks", "Model Performance & Stats",
               "Daily Power Rankings")
@@ -84,12 +84,17 @@ def cell_text(cell: dict) -> str:
         minutes = round(x * 24 * 60)
         h, m = divmod(minutes, 60)
         return f"{(h - 1) % 12 + 1}:{m:02d} {'AM' if h < 12 else 'PM'}"
-    decimals = len(pattern.split(";")[0].split(".")[1].rstrip("%")) if "." in pattern else 0
+    frac = pattern.split(";")[0].split(".")[1].rstrip("%") if "." in pattern else ""
+    decimals, optional = len(frac), frac.count("#")          # "0.0#": 1-2 decimals, like Sheets
     if "%" in pattern:
         return f"{x * 100:.{decimals}f}%"
     if x == 0 and "PK" in pattern:
         return "PK"
-    return f"{x:+.{decimals}f}" if pattern.startswith("+") else f"{x:.{decimals}f}"
+    text = f"{x:+.{decimals}f}" if pattern.startswith("+") else f"{x:.{decimals}f}"
+    for _ in range(optional):
+        if text.endswith("0") and "." in text:
+            text = text[:-1]
+    return text
 
 
 def _render_grid(layout: SheetLayout) -> list[str]:
@@ -235,13 +240,15 @@ AWAY_COLOR, HOME_COLOR = "#D9822B", "#2F6DB5"
 PICK_STRONG, PICK_LEAN = "#1E8E3E", "#D4EDDA"
 EDGE_STRONG, EDGE_LEAN = 3.0, 1.5
 SPREAD_FMT = '+0.0;-0.0;"PK"'
+# Consensus lines are medians across books and can land on a quarter point.
+CONSENSUS_FMT = '+0.0#;-0.0#;"PK"'
 SEARCH_HINT = "🔍 Find a team: ⌘F / Ctrl+F, or ▾ on a header to filter"
 
 # Projected game type by the model's margin (same cut points as the Model Performance spread ranges).
 GAME_TYPES = ((3.0, "Toss-up", "#F9AB00", "#3C2A00"), (10.0, "Competitive", "#D2E3FC", "#174EA6"),
               (20.0, "Comfortable", "#E6F4EA", "#137333"), (float("inf"), "Blowout", "#5F6368", "#FFFFFF"))
-GAME_TYPE_NOTE = ("Projected game type from the model's margin: Toss-up under 3 pts (favorite ~50-62% to win), "
-                  "Competitive 3-9.9 (~62-84%), Comfortable 10-19.9 (~84-98%), Blowout 20+ (98%+). "
+GAME_TYPE_NOTE = ("Projected game type from the model's margin: Toss-up under 3 pts (favorite ~50-60% to win), "
+                  "Competitive 3-9.9 (~60-82%), Comfortable 10-19.9 (~82-96%), Blowout 20+ (96%+). "
                   "Use the ▾ filter to hide or show a type.")
 
 
@@ -249,8 +256,9 @@ GAME_TYPE_NOTE = ("Projected game type from the model's margin: Toss-up under 3 
 TOTAL_LEAN_STRONG, TOTAL_LEAN_MIN = 3.0, 1.5
 OVER_COLOR, UNDER_COLOR = "#C2410C", "#1D4ED8"
 TOTAL_LEAN_NOTE = ("Model's projected total vs. the market total: Strong Over/Under = 3+ points apart, "
-                   "Lean Over/Under = 1.5-3, No Lean = under 1.5. Totals have not yet been tested against "
-                   "Vegas (the backtest had no market totals), so treat these as unproven. Filterable with ▾.")
+                   "Lean Over/Under = 1.5-3, No Lean = under 1.5. In the 2025-26 backtest this showed NO edge "
+                   "(Strong leans hit 48.9% on 759 games; the market's totals were more accurate than the "
+                   "model's), so treat it as information, not a betting signal. Filterable with ▾.")
 
 
 def total_lean(model_total: float | None, market_total: float | None) -> str | None:
@@ -279,6 +287,10 @@ def _total_lean_cell(model_total, market_total, bg) -> dict:
 SPREAD_LEAN_NOTE = ("How strongly the model prefers the Pick against the spread it was locked at: Strong = edge "
                     "3+ points, Lean = 1.5-3, No Lean = under 1.5. Filter to Strong to see only the biggest "
                     "disagreements with the market.")
+
+
+def book_name(key: str | None) -> str:
+    return "—" if not key else BOOK_NAMES.get(key, key)
 
 
 def spread_lean(edge: float | None, pick: str | None) -> str | None:
@@ -318,17 +330,23 @@ DAILY_GROUPS = [
         ("Away", 54, "Model's projected points for the away team (mean of 10,000 simulations)."),
         ("Home", 54, "Model's projected points for the home team."),
         ("Total", 58, "Model's projected combined score."),
-        ("Mkt Total", 66, "Sportsbook over/under (DraftKings, else FanDuel)."),
+        ("Mkt Total", 66, "Sportsbook over/under when the pick was locked: the median across up to 10 "
+                          "US sportsbooks."),
         ("O/U Lean", 104, TOTAL_LEAN_NOTE),
     ]),
     ("SPREAD (HOME TEAM)", "#B7791F", [
         ("Model", 60, "Model's spread for the HOME team: -4.5 = home favored by 4.5, "
                       "+4.5 = home is a 4.5-point underdog."),
-        ("Market", 60, "Sportsbook spread for the HOME team when the pick was locked (DraftKings, else "
-                       "FanDuel). The Pick is graded against this line, even if the line moves later."),
-        ("Edge", 54, "Points between the model and market spreads, in favor of the Pick."),
+        ("Market", 60, "Consensus spread for the HOME team when the pick was locked: the median across "
+                       "up to 10 US sportsbooks. The Pick is the side the model likes against this line."),
+        ("Edge", 54, "Points between the model's spread and the Pick Line, in favor of the Pick."),
         ("Pick", 150, "Side the model likes against the market spread. Solid green = edge 3+ pts, "
                       "light green = 1.5-3, gray = under 1.5."),
+        ("Pick Line", 66, "Best spread available for the PICKED team when the pick was locked "
+                          "(+6.5 = the pick gets 6.5 points; -3.5 = the pick lays 3.5). The pick is graded "
+                          "at this line, even if the line moves later."),
+        ("Book", 84, "Sportsbook offering the Pick Line (ties go to the better price; lines priced "
+                     "worse than -125 are skipped)."),
         ("Spread Lean", 96, SPREAD_LEAN_NOTE),
     ]),
     ("WIN PROBABILITY", "#0F766E", [
@@ -435,7 +453,8 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
     held = held_back_note(con, today)
     sub_row[frozen_cols] = _text(
         (f"{held} · " if held else "") + f"{SEARCH_HINT} · Spreads are the home team's (−4.5 = home favored by 4.5) · Edge = model vs. "
-        "market, toward the Pick · Hover any column header for details", sub)
+        "Pick Line, toward the Pick · Pick Line = best line across up to 10 sportsbooks · "
+        "Hover any column header for details", sub)
 
     band_row, header_row, merges = [], [], []
     for c, (group, color, (label, _, note)) in enumerate(columns):
@@ -471,10 +490,10 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
             _numcell(round(g.away_pts), f(8, align="CENTER", pattern="0")),
             _numcell(round(g.home_pts), f(9, align="CENTER", pattern="0")),
             _numcell(g.total, f(10, align="CENTER", pattern="0.0")),
-            _numcell(g.market_total, f(11, align="CENTER", pattern="0.0", fg=MUTED)),
+            _numcell(g.market_total, f(11, align="CENTER", pattern="0.0#", fg=MUTED)),
             _total_lean_cell(g.total, g.market_total, bg),
             _numcell(g.model_line, f(13, align="CENTER", pattern=SPREAD_FMT, bold=True)),
-            _numcell(g.market_line, f(14, align="CENTER", pattern=SPREAD_FMT, fg=MUTED)),
+            _numcell(g.market_line, f(14, align="CENTER", pattern=CONSENSUS_FMT, fg=MUTED)),
             _numcell(g.edge, f(15, align="CENTER", pattern="0.0")),
         ]
         if g.pick is None:
@@ -485,17 +504,22 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
             cells.append(_text(g.pick, _fmt(bg=_hex(PICK_LEAN), fg=_hex("#14532D"), bold=True)))
         else:
             cells.append(_text(g.pick, f(16, fg=MUTED)))
+        cells += [
+            _numcell(g.pick_points, f(17, align="CENTER", pattern=SPREAD_FMT, bold=g.pick is not None)),
+            _text(book_name(g.pick_book), f(18, fg=MUTED, size=9,
+                                            align="CENTER")),
+        ]
         cells.append(_spread_lean_cell(g.edge, g.pick, bg))
         cells += [
-            _numcell(g.away_win, f(18, align="CENTER", pattern="0%", pattern_type="PERCENT",
+            _numcell(g.away_win, f(20, align="CENTER", pattern="0%", pattern_type="PERCENT",
                                bold=fav == g.away)),
-            {**_split_bar(g.away_win, g.home_win), "userEnteredFormat": f(19)},
-            _numcell(g.home_win, f(20, align="CENTER", pattern="0%", pattern_type="PERCENT",
+            {**_split_bar(g.away_win, g.home_win), "userEnteredFormat": f(21)},
+            _numcell(g.home_win, f(22, align="CENTER", pattern="0%", pattern_type="PERCENT",
                                bold=fav == g.home)),
-            _numcell(g.market_home_win, f(21, align="CENTER", pattern="0%", pattern_type="PERCENT", fg=MUTED)),
+            _numcell(g.market_home_win, f(23, align="CENTER", pattern="0%", pattern_type="PERCENT", fg=MUTED)),
         ]
         for k in range(6):
-            c = 22 + k
+            c = 24 + k
             if g.buckets is None:
                 cells.append(_text("—", f(c, fg=MUTED, align="CENTER")))
                 continue
@@ -839,7 +863,7 @@ def build_performance_grid(con, today: date, title: str = TAB_TITLES[2],
     stamp = (generated_at or datetime.now(EASTERN)).astimezone(EASTERN)
     live_season = season_of(today)
     seasons = [("live", f"THIS SEASON · LIVE PICKS · {live_season - 1}-{str(live_season)[2:]}",
-                sc.graded_rows(con, live_season, lp.LIVE_MODEL_VERSION),
+                sc.graded_rows(con, live_season, lp.LIVE_VERSIONS),
                 "Picks locked before tip-off and graded after the final."),
                ("backtest", f"LAST SEASON · BACKTEST · {live_season - 2}-{str(live_season - 1)[2:]}",
                 sc.graded_rows(con, live_season - 1, vm.DEFAULT_MODEL_VERSION),
@@ -901,12 +925,16 @@ LEDGER_GROUPS = [
         ("Game Type", 96, GAME_TYPE_NOTE.replace("model's margin", "model's margin when the pick was locked")),
         ("Model Margin", 72, "Model's projected HOME margin when the pick was locked: +6.0 = home by 6."),
         ("Pick", 150, "Side the model took against the spread at pick time."),
-        ("Pick Line", 66, "HOME team's spread when the pick was locked (-4.5 = home favored by 4.5)."),
+        ("Pick Line", 66, "HOME team's spread the pick was locked at (-4.5 = home favored by 4.5): the best "
+                          "line available for the Pick across up to 10 sportsbooks. Picks before Nov 23, 2026 "
+                          "used DraftKings, else FanDuel."),
+        ("Book", 84, "Sportsbook offering the Pick Line."),
     ]),
     ("MARKET", "#0F766E", [
-        ("Close Line", 66, "HOME team's spread at tip-off."),
-        ("CLV", 56, "Closing line value: points the line moved toward the Pick between pick time and "
-                    "tip-off. Positive = the market moved our way, a sign of a sharp pick."),
+        ("Close Line", 66, "Consensus HOME spread at the last odds pull before tip-off (median across "
+                           "sportsbooks)."),
+        ("CLV", 56, "Closing line value: points the Pick Line beat the closing line by. Positive = the "
+                    "market moved our way after we locked the pick, a sign of a sharp pick."),
     ]),
     ("RESULT", "#2F5D8A", [
         ("Away Pts", 56, "Away team's final score."),
@@ -983,16 +1011,16 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
         ("LOSSES", 4, rec["losses"], "0", "NUMBER", None),
         ("PUSHES", 5, rec["pushes"], "0", "NUMBER", None),
         ("UNITS @ −110", 6, rec["units"], "+0.0;-0.0;0.0", "NUMBER", grade(rec["units"], 0.0, 3.0)),
-        ("AVG CLV", 11, rec["clv"], "+0.00;-0.00;0.00", "NUMBER", grade(rec["clv"], 0.0, 0.25)),
-        ("BEAT CLOSE", 12, rec["beat_close"], "0%", "PERCENT", grade(rec["beat_close"], 0.5, 0.05)),
+        ("AVG CLV", 12, rec["clv"], "+0.00;-0.00;0.00", "NUMBER", grade(rec["clv"], 0.0, 0.25)),
+        ("BEAT CLOSE", 13, rec["beat_close"], "0%", "PERCENT", grade(rec["beat_close"], 0.5, 0.05)),
     ]
     kpi_bg = _hex("#F8FAFC")
     labels = [{"userEnteredFormat": _fmt(bg=kpi_bg)} for _ in range(n_cols)]
     values = [{"userEnteredFormat": _fmt(bg=kpi_bg)} for _ in range(n_cols)]
     notes = {"ATS": "Covers / (covers + losses). 52.4% breaks even at -110.",
              "UNITS @ −110": "Profit betting 1 unit on every pick at -110 (+1 per cover, -1.1 per loss).",
-             "AVG CLV": "Average points the line moved toward our pick by tip-off.",
-             "BEAT CLOSE": "Share of picks where the line moved toward our side by tip-off."}
+             "AVG CLV": "Average points our Pick Line beat the closing line by.",
+             "BEAT CLOSE": "Share of picks whose Pick Line beat the closing line."}
     for label, c, value, pattern, ptype, g in kpis:
         labels[c] = {**_text(label, _fmt(bg=kpi_bg, fg=MUTED, bold=True, size=8, align="CENTER")),
                      **({"note": notes[label]} if label in notes else {})}
@@ -1044,11 +1072,12 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
             _numcell(round(g.pred_margin, 1), f(8, align="CENTER", pattern="+0.0;-0.0;0.0")),
             _text(g.pick, f(9, bold=True)) if g.pick else _text("—", f(9, fg=MUTED, align="CENTER")),
             _numcell(g.pick_line, f(10, align="CENTER", pattern=SPREAD_FMT)),
-            _numcell(g.closing_line, f(11, fg=MUTED, align="CENTER", pattern=SPREAD_FMT)),
-            _numcell(g.clv, f(12, fg=clv_fg, bold=bool(g.clv), align="CENTER", pattern="+0.0;-0.0;0.0")),
-            _numcell(g.away_pts, f(13, align="CENTER", pattern="0")),
-            _numcell(g.home_pts, f(14, align="CENTER", pattern="0")),
-            _numcell(g.final_margin, f(15, bold=True, align="CENTER", pattern="+0;-0;0")),
+            _text(book_name(g.pick_book), f(11, fg=MUTED, size=9, align="CENTER")),
+            _numcell(g.closing_line, f(12, fg=MUTED, align="CENTER", pattern=CONSENSUS_FMT)),
+            _numcell(g.clv, f(13, fg=clv_fg, bold=bool(g.clv), align="CENTER", pattern="+0.0;-0.0;0.0")),
+            _numcell(g.away_pts, f(14, align="CENTER", pattern="0")),
+            _numcell(g.home_pts, f(15, align="CENTER", pattern="0")),
+            _numcell(g.final_margin, f(16, bold=True, align="CENTER", pattern="+0;-0;0")),
             _chip_cell(g.su, bg),
             _chip_cell(g.ats, bg),
         ])
@@ -1125,7 +1154,7 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
         pair("Win chance", g.away_win, g.home_win, "0%", "PERCENT", tint=1.0)
         neg = lambda x: None if x is None else -x                                           # noqa: E731
         pair("Model line", neg(g.model_line), g.model_line, SPREAD_FMT, bg=ZEBRA)
-        pair("Market line", neg(g.market_line), g.market_line, SPREAD_FMT)
+        pair("Market line", neg(g.market_line), g.market_line, CONSENSUS_FMT)
         if g.pick is None:
             pick = _text("—", _fmt(bg=ZEBRA, fg=MUTED, align="CENTER"))
         elif g.edge >= EDGE_STRONG:
@@ -1135,6 +1164,8 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
         else:
             pick = _text(g.pick, _fmt(bg=ZEBRA, fg=MUTED, align="CENTER"))
         merged("Pick", pick, bg=ZEBRA)
+        merged("Pick line", _numcell(g.pick_points, _fmt(align="CENTER", bold=True, pattern=SPREAD_FMT)))
+        merged("Book", _text(book_name(g.pick_book), _fmt(bg=ZEBRA, fg=MUTED, size=9, align="CENTER")), bg=ZEBRA)
         merged("Spread lean", _spread_lean_cell(g.edge, g.pick, WHITE))
         merged("Edge (pts)", _numcell(g.edge, _fmt(align="CENTER", pattern="0.0")))
         if g.buckets:
@@ -1145,7 +1176,7 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
         if g.venue:
             merged("Venue", _text(g.venue, _fmt(fg=MUTED, size=9, align="CENTER", wrap="WRAP")), height=30)
         merged("Proj. total", _numcell(g.total, _fmt(align="CENTER", pattern="0.0")))
-        merged("Market total", _numcell(g.market_total, _fmt(bg=ZEBRA, fg=MUTED, align="CENTER", pattern="0.0")),
+        merged("Market total", _numcell(g.market_total, _fmt(bg=ZEBRA, fg=MUTED, align="CENTER", pattern="0.0#")),
                bg=ZEBRA)
         merged("O/U lean", _total_lean_cell(g.total, g.market_total, WHITE))
     if not games:
@@ -1278,7 +1309,7 @@ def build_mobile_ledger_grid(con, today: date, title: str = MOBILE_TITLES[1],
         else:
             home_pick = g.pick == g.home
             pick, opp = g.pick, (g.away if home_pick else g.home)
-            line = None if g.pick_line is None else (g.pick_line if home_pick else -g.pick_line)
+            line = g.pick_points
         sh.add([_text(f"{g.game_date.month}/{g.game_date.day}", _fmt(bg=bg, fg=MUTED, size=9, align="CENTER")),
                 _text(pick, _fmt(bg=bg, bold=g.pick is not None, size=9, wrap="WRAP")),
                 _text(opp, _fmt(bg=bg, fg=MUTED, size=9, wrap="WRAP")),

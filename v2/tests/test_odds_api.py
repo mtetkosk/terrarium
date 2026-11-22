@@ -81,8 +81,13 @@ def test_store_and_closing_line_prefers_latest_draftkings(con):
     gid = games[0].game_id
     assert oa.refresh_closing_odds(con, [gid]) == 1
     assert con.execute("SELECT * FROM vegas_closing_odds").fetchall() == [(gid, -6.0, -260.0, 215.0)]
-    assert oa.market_line(con, gid, earliest=True)["spread_a"] == -4.5
-    assert oa.market_line(con, gid, latest_at=FETCHED)["spread_a"] == -4.5
+    # Consensus = median across books in a pull (DK -4.5, FD -5.0), not rounded.
+    first = oa.market_line(con, gid, earliest=True)
+    assert first["spread_a"] == -4.75 and first["total"] == 148.75
+    assert (first["ml_a"], first["ml_b"]) == (-200.0, 170.0)          # first book in BOOKS order
+    assert set(first["lines"]) == {"draftkings", "fanduel"}
+    assert oa.market_line(con, gid, latest_at=FETCHED)["spread_a"] == -4.75
+    assert oa.market_line(con, gid)["spread_a"] == -6.0               # latest pull: DK only
     # historical_games row created with NULL scores and default HCA
     assert con.execute("SELECT actual_score_a, hca_eff FROM historical_games WHERE game_id = ?",
                        [gid]).fetchone() == (None, oa.DEFAULT_HCA_EFF)
@@ -185,3 +190,51 @@ def test_new_events_are_untouched(stored):
     other = _game("2026-11-20_duke_kansas", "EV2", "Duke", "Kansas")
     snap = oa.OddsSnapshot(other.game_id, datetime(2026, 11, 20, 14), "draftkings", -2.0, -130, 110, 140.0)
     assert oa.reconcile(stored, [other], [snap]) == ([other], [snap])
+
+
+# --- line shopping ----------------------------------------------------------------
+
+LINES = {"draftkings": (-4.5, -110.0, -110.0), "fanduel": (-5.0, -105.0, -115.0),
+         "betmgm": (-3.5, -135.0, 105.0), "betrivers": (-4.5, -105.0, -115.0)}
+
+
+def test_best_line_for_each_side():
+    # Home (A) wants the highest spread_a: -3.5 is priced -135 (too juiced), so -4.5;
+    # tie between DK and BetRivers at -4.5 goes to the better price (-105).
+    assert oa.best_line(LINES, "A") == (-4.5, "betrivers", -105.0)
+    # Away (B) wants the lowest spread_a (+5.0 beats +4.5).
+    assert oa.best_line(LINES, "B") == (-5.0, "fanduel", -115.0)
+
+
+def test_best_line_ties_fall_back_to_book_order_and_missing_prices():
+    lines = {"fanduel": (2.5, None, None), "draftkings": (2.5, None, None)}
+    assert oa.best_line(lines, "A") == (2.5, "draftkings", None)
+
+
+def test_best_line_without_side_or_books_uses_fallback():
+    assert oa.best_line(LINES, None, fallback=-4.75) == (-4.75, None, None)
+    assert oa.best_line({}, "A", fallback=-4.75) == (-4.75, None, None)
+    assert oa.best_line({"betmgm": (-3.5, -140.0, 120.0)}, "A", fallback=-4.0) == (-4.0, None, None)
+
+
+def test_spread_prices_are_parsed_and_stored(con):
+    games, snaps, _ = oa.parse_odds(EVENTS, MAPPER, FETCHED)
+    oa.store_games(con, games)
+    oa.store_snapshots(con, snaps)
+    rows = con.execute("SELECT book, spread_price_a, spread_price_b FROM odds_snapshots "
+                       "WHERE game_id = ? ORDER BY book", [games[0].game_id]).fetchall()
+    assert all(r[1] is not None and r[2] is not None for r in rows)
+
+
+def test_odds_only_pull_skips_scores(con, tmp_path):
+    session = FakeSession()
+    st = oa.update(con, session, key="k", cache_dir=tmp_path / "cache", now=FETCHED, scores=False)
+    assert {u.rsplit("/", 1)[1] for u, _ in session.calls} == {"odds"}
+    assert st.finals == 0 and st.snapshots == 2
+
+
+def test_odds_request_names_at_most_ten_books():
+    session = FakeSession()
+    oa.fetch_odds(session, "k", oa.Quota())
+    books = session.calls[0][1]["bookmakers"].split(",")
+    assert len(books) <= 10 and books[:2] == ["draftkings", "fanduel"]

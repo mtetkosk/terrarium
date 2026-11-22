@@ -17,7 +17,7 @@ def test_papers_exist_and_convert():
 
 def test_rankings_paper_explains_ndi_as_expected_record():
     text = pd.PAPERS[1].source.read_text()
-    assert "does **not** mean" in text and "356" in text and "#2 Illinois | 60%" in text
+    assert "does **not** mean" in text and "352" in text and "#2 Illinois | 59%" in text
 
 
 class FakeFiles:

@@ -19,7 +19,8 @@ PUBLIC  ?= 0
 
 .PHONY: setup test ingest simulate predict audit import-v1 daily \
         odds venues picks power-rankings publish publish-preview docs \
-        install-daily daily-status uninstall-daily
+        install-daily daily-status uninstall-daily closing install-closing closing-status \
+        uninstall-closing
 
 setup: $(STAMP)
 
@@ -73,6 +74,10 @@ docs: setup
 publish-preview: setup
 	$(PY) cli.py publish --dry-run
 
+# Odds-only pull before tip-off (3 credits): real closing lines for CLV.
+closing: setup
+	$(PY) cli.py odds --no-scores
+
 # Daily pipeline (launchd). Publishing is skipped until Google settings exist.
 daily: setup
 	$(PY) cli.py ingest
@@ -91,3 +96,13 @@ daily-status:
 
 uninstall-daily:
 	$(PY) ops/launchd.py uninstall
+
+# launchd agent running `make closing` at 13:00 and 18:30 local.
+install-closing: setup
+	$(PY) ops/launchd.py install --job closing
+
+closing-status:
+	$(PY) ops/launchd.py status --job closing
+
+uninstall-closing:
+	$(PY) ops/launchd.py uninstall --job closing

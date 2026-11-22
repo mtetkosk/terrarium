@@ -34,8 +34,9 @@ from src.simulate_game import DEFAULT_N_SIMS, SimulationError, simulate_game
 log = logging.getLogger(__name__)
 
 # lean-v1 = spec HCA 3.3, no stretch (initial backtest). lean-v1.1 = HCA 1.9 +
-# early-season margin stretch (Milestone 4 calibration).
-DEFAULT_MODEL_VERSION = "lean-v1.1"
+# early-season margin stretch (Milestone 4 calibration). lean-v1.2 = refit
+# variance (sigma_Eff 14.2, rho 0.32, no 3PA term) + stretch capped at 1.25.
+DEFAULT_MODEL_VERSION = "lean-v1.2"
 # Skip games whose ratings snapshot is older than this (stale, e.g. a March
 # game priced off a February snapshot when the archive has a gap).
 DEFAULT_MAX_STALENESS_DAYS = 3

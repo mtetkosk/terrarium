@@ -40,10 +40,12 @@ def test_hca_shifts_efficiencies_symmetrically():
     assert b0 - b1 == pytest.approx(3.3)
 
 
-@pytest.mark.parametrize("rate, sigma", [(0.0, 7.2), (0.40, 10.6), (0.48, 11.28)])
-def test_efficiency_sigma_formula(rate, sigma):
-    assert sg.efficiency_sigma(rate) == pytest.approx(sigma)
-    assert team(rate=rate).sigma_eff == pytest.approx(sigma)
+@pytest.mark.parametrize("rate", [0.0, 0.40, 0.48])
+def test_efficiency_sigma_is_constant_until_3pa_is_validated(rate):
+    # lean-v1.2: the spec's 3PA slope is off (never tested); sigma is the refit constant.
+    assert sg.SIGMA_EFF_3PA_SLOPE == 0.0
+    assert sg.efficiency_sigma(rate) == pytest.approx(14.2)
+    assert team(rate=rate).sigma_eff == pytest.approx(14.2)
 
 
 # --- simulation outputs -------------------------------------------------------
@@ -108,12 +110,19 @@ def test_home_court_helps_team_a():
     assert away.win_prob_a < neutral.win_prob_a < home.win_prob_a
 
 
-def test_higher_three_pa_rate_widens_margin_distribution():
+def test_three_pa_rate_no_longer_changes_the_distribution():
     low = sg.simulate_matchup(team("A", rate=0.25), team("B", rate=0.25), n_sims=50_000, seed=9)
     high = sg.simulate_matchup(team("A", rate=0.55), team("B", rate=0.55), n_sims=50_000, seed=9)
-    assert high.margins.std() > low.margins.std() * 1.15
-    # Mean is unaffected by variance.
-    assert high.expected_margin_a == pytest.approx(low.expected_margin_a, abs=0.3)
+    assert high.margins.std() == pytest.approx(low.margins.std(), rel=0.01)
+
+
+def test_correlated_efficiencies_widen_totals_more_than_margins():
+    # Backtest residuals: margin sd ~11.4, total sd ~17.5. Independent draws give
+    # equal efficiency spread for both; rho = 0.32 reproduces the gap.
+    r = sg.simulate_matchup(team("A"), team("B"), n_sims=100_000, seed=11)
+    assert r.margins.std() == pytest.approx(11.3, abs=0.6)
+    assert r.totals.std() == pytest.approx(17.4, abs=0.9)
+    assert r.totals.std() > 1.4 * r.margins.std()
 
 
 def test_heavy_favorite_wins_by_10_often():
@@ -299,10 +308,12 @@ def test_simulate_game_mixed_snapshot_dates_use_later_one(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("as_of, expected", [
-    (date(2025, 11, 1), 1.48), (date(2025, 10, 20), 1.48),          # season start / preseason clamp
-    (date(2025, 11, 24), 1 + 0.48 * (1 - 23 / 70)),
+    (date(2025, 11, 1), 1.25), (date(2025, 10, 20), 1.25),          # capped (uncapped would be 1.48)
+    (date(2025, 11, 24), 1.25),                                     # uncapped 1.32: still capped
+    (date(2025, 12, 5), 1 + 0.48 * (1 - 34 / 70)),                  # first backtest line: 1.247 < cap
+    (date(2025, 12, 15), 1 + 0.48 * (1 - 44 / 70)),
     (date(2026, 1, 9), 1.0), (date(2026, 2, 15), 1.0),               # day 69 -> ~1.007; after day 70 -> 1
-    (date(2026, 11, 20), 1 + 0.48 * (1 - 19 / 70)),                  # new season resets
+    (date(2026, 11, 20), 1.25),                                     # new season resets (to the cap)
 ])
 def test_early_season_stretch_schedule(as_of, expected):
     assert sg.early_season_stretch(as_of) == pytest.approx(expected, abs=0.01)

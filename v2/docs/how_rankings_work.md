@@ -1,6 +1,6 @@
 # How the Power Rankings Work
 
-*Model lean-v1.1 · last updated November 21, 2026*
+*Model lean-v1.2 · last updated November 22, 2026*
 
 ## The short version
 
@@ -10,58 +10,58 @@ That expected record, divided by the number of games, is the team's **Neutral Do
 
 ## What NDI means, and what it doesn't
 
-On November 21, 2026, Houston's NDI is **97.9%**. That does **not** mean Houston is 97.9% to beat any given opponent. It means:
+On November 22, 2026, Houston's NDI is **96.8%**. That does **not** mean Houston is 96.8% to beat any given opponent. It means:
 
-> If Houston played all 364 other D-I teams once on a neutral floor, it would be expected to win about **356** of them and lose about **8**.
+> If Houston played all 364 other D-I teams once on a neutral floor, it would be expected to win about **352** of them and lose about **12**.
 
 Most of the field is far weaker than Houston, so most of those 364 games are near-certain wins. The handful of close games against other top teams costs it the rest. Here is Houston against opponents at different points in the rankings:
 
 | Houston vs | Houston's win chance |
 |---|---|
-| #2 Illinois | 60% |
-| #5 Duke | 70% |
-| #10 Nebraska | 75% |
-| #25 Michigan | 87% |
-| #50 Villanova | 96% |
-| #100 UC Irvine | 99.7% |
-| #183 (middle of D-I) and below | over 99.9% |
+| #2 Illinois | 59% |
+| #5 Vanderbilt | 69% |
+| #10 Virginia | 74% |
+| #25 Missouri | 84% |
+| #50 Creighton | 92% |
+| #100 George Mason | 98% |
+| #183 (middle of D-I) and below | 99.8% or more |
 
-So against #2 it is close to a toss-up, with a lean, exactly as you would expect. Across the whole field the average comes out to 97.9%.
+So against #2 it is close to a toss-up, with a lean, exactly as you would expect. Across the whole field the average comes out to 96.8%.
 
 The same reading works for every team:
 
 | Rank | Team | NDI | Expected record vs. all of D-I |
 |---|---|---|---|
-| 1 | Houston | 97.9% | 356–8 |
-| 10 | Nebraska | 93.6% | 341–23 |
-| 25 | Michigan | 89.9% | 327–37 |
-| 50 | Villanova | 83.1% | 302–62 |
-| 100 | UC Irvine | 67.0% | 244–120 |
-| 183 | East Carolina | 46.3% | 169–195 |
-| 250 | UT Rio Grande Valley | 35.3% | 129–235 |
-| 365 | Arkansas Pine Bluff | 6.8% | 25–339 |
+| 1 | Houston | 96.8% | 352–12 |
+| 10 | Virginia | 92.3% | 336–28 |
+| 25 | Missouri | 88.6% | 323–41 |
+| 50 | Creighton | 81.8% | 298–66 |
+| 100 | George Mason | 66.0% | 240–124 |
+| 183 | Fresno St. | 46.4% | 169–195 |
+| 250 | Green Bay | 35.8% | 130–234 |
+| 365 | Arkansas Pine Bluff | 9.0% | 33–331 |
 
 **Head-to-head among the top five** (row team's chance to beat column team on a neutral floor):
 
-| | Houston | Illinois | Florida | Kansas | Duke |
+| | Houston | Illinois | Florida | Kansas | Vanderbilt |
 |---|---|---|---|---|---|
-| **Houston** | — | 60% | 65% | 67% | 70% |
-| **Illinois** | 40% | — | 55% | 56% | 60% |
-| **Florida** | 35% | 45% | — | 52% | 55% |
-| **Kansas** | 33% | 44% | 48% | — | 54% |
-| **Duke** | 30% | 40% | 45% | 46% | — |
+| **Houston** | — | 59% | 63% | 63% | 69% |
+| **Illinois** | 41% | — | 54% | 55% | 61% |
+| **Florida** | 37% | 46% | — | 51% | 57% |
+| **Kansas** | 37% | 45% | 49% | — | 56% |
+| **Vanderbilt** | 31% | 39% | 43% | 44% | — |
 
 Gaps between neighbors near the top are small: #3 Florida and #4 Kansas are essentially even. Treat adjacent ranks as close calls, not certainties.
 
 ## How it is calculated
 
-**Step 1: Every head-to-head matchup.** For each pair of teams *i* and *j*, the model projects a neutral-floor game with the same formulas used for the Daily Picks (see *How the Daily Picks Work*). That means expected possessions T<sub>ij</sub>, each team's expected efficiency against the other, the early-season stretch b(t), and team-specific volatility from three-point attempt rate. With no home court, the expected margin is
+**Step 1: Every head-to-head matchup.** For each pair of teams *i* and *j*, the model projects a neutral-floor game with the same formulas used for the Daily Picks (see *How the Daily Picks Work*). That means expected possessions T<sub>ij</sub>, each team's expected efficiency against the other, the early-season stretch b(t), and the scoring uncertainty σ = 14.2 with within-game correlation ρ = 0.32. With no home court, the expected margin is
 
 <p style="text-align:center"><i>μ<sub>ij</sub> = T<sub>ij</sub> × b(t) × (Eff<sub>i vs j</sub> − Eff<sub>j vs i</sub>) / 100</i></p>
 
-and its uncertainty combines both teams' shooting volatility and the variation in pace:
+and its uncertainty combines both teams' scoring noise (less the part they share) and the variation in pace:
 
-<p style="text-align:center"><i>σ<sub>ij</sub><sup>2</sup> = (T<sub>ij</sub> / 100)<sup>2</sup> (σ<sub>i</sub><sup>2</sup> + σ<sub>j</sub><sup>2</sup>) + (3.5 × b(t) × (Eff<sub>i vs j</sub> − Eff<sub>j vs i</sub>) / 100)<sup>2</sup></i></p>
+<p style="text-align:center"><i>σ<sub>ij</sub><sup>2</sup> = (T<sub>ij</sub> / 100)<sup>2</sup> (σ<sub>i</sub><sup>2</sup> + σ<sub>j</sub><sup>2</sup> − 2ρσ<sub>i</sub>σ<sub>j</sub>) + (3.5 × b(t) × (Eff<sub>i vs j</sub> − Eff<sub>j vs i</sub>) / 100)<sup>2</sup></i></p>
 
 The chance that *i* wins is the probability that the margin is positive:
 
@@ -79,7 +79,9 @@ with N = 365 teams. Multiply by N − 1 = 364 to get the expected record.
 
 ## Why not just sort by rating?
 
-For most teams, NDI ranks them in nearly the same order as their net rating (offense minus defense). The difference is volatility. A team that lives on three-pointers has wider swings, so it is more likely to lose to weaker opponents and more likely to upset stronger ones. Against the whole field, that tends to cost a strong team a few expected wins and help a weak team gain a few. NDI accounts for this; a plain rating sort does not.
+For most teams, NDI ranks them in nearly the same order as their net rating (offense minus defense). The differences come from pace and matchups. A fast, efficient team turns the same per-possession edge into a bigger margin, and win probability is not a straight line in rating: beating a weak team 99.9% instead of 99% matters less than beating a peer 60% instead of 55%. NDI measures what a ranking should mean: how a team would actually fare against the field. A plain rating sort does not.
+
+An earlier version also gave teams that take many three-pointers wider swings. That term is switched off until the data can test it (see *How the Daily Picks Work*).
 
 ## Reading the Power Rankings tab
 

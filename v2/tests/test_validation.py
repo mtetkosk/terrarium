@@ -275,8 +275,8 @@ def test_generate_predictions_hca_override_and_determinism(pred_db):
         again = vm.generate_predictions(con, date(2026, 1, 2), date(2026, 1, 2),
                                         model_version="again", n_sims=2_000, seed=7,
                                         hca_override=2.0)
-    assert run.model_version == "lean-v1.1-hca2"
-    preds = stored_predictions(pred_db, "lean-v1.1-hca2")
+    assert run.model_version == "lean-v1.2-hca2"
+    preds = stored_predictions(pred_db, "lean-v1.2-hca2")
     assert preds["ok-home"][4] == 2.0 and preds["ok-neutral"][4] == 0.0
     # Per-game seeding: same game, same seed -> identical result regardless of slate.
     assert stored_predictions(pred_db, "again")["ok-home"][1:3] == preds["ok-home"][1:3]
@@ -292,9 +292,9 @@ def test_cli_predict_and_audit(pred_db, capsys):
 
 
 def test_model_version_names():
-    assert vm.default_model_version(None) == "lean-v1.1"
-    assert vm.default_model_version(2.4) == "lean-v1.1-hca2.4"
-    assert vm.default_model_version(None, early_stretch=False) == "lean-v1.1-nostretch"
+    assert vm.default_model_version(None) == "lean-v1.2"
+    assert vm.default_model_version(2.4) == "lean-v1.2-hca2.4"
+    assert vm.default_model_version(None, early_stretch=False) == "lean-v1.2-nostretch"
 
 
 def test_generate_predictions_early_stretch_widens_margins(pred_db):
@@ -302,6 +302,6 @@ def test_generate_predictions_early_stretch_widens_margins(pred_db):
         vm.generate_predictions(con, date(2026, 1, 3), date(2026, 1, 3), n_sims=4_000, seed=3)
         vm.generate_predictions(con, date(2026, 1, 3), date(2026, 1, 3), n_sims=4_000, seed=3,
                                 early_stretch=False)
-    on = stored_predictions(pred_db, "lean-v1.1")["ok-neutral"][1]
-    off = stored_predictions(pred_db, "lean-v1.1-nostretch")["ok-neutral"][1]
+    on = stored_predictions(pred_db, "lean-v1.2")["ok-neutral"][1]
+    off = stored_predictions(pred_db, "lean-v1.2-nostretch")["ok-neutral"][1]
     assert abs(on) > abs(off)                   # Jan 3 is inside the stretch window

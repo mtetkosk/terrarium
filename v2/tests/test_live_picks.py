@@ -38,7 +38,7 @@ def con(tmp_path):
                                      ("late", datetime(2026, 1, 21, 1), "Duke", "Kansas")):
             c.execute("INSERT INTO scheduled_games VALUES (?, 'x', ?, ?, ?, ?)", [gid, gid, tip, home, away])
             c.execute("INSERT INTO historical_games VALUES (?, ?, ?, ?, NULL, NULL, NULL, 1.9)", [gid, DAY, home, away])
-            c.execute("INSERT INTO odds_snapshots VALUES (?, ?, 'draftkings', -3.0, -150, 130, 145.5)",
+            c.execute("INSERT INTO odds_snapshots (game_id, fetched_at, book, spread_a, ml_a, ml_b, total) VALUES (?, ?, 'draftkings', -3.0, -150, 130, 145.5)",
                       [gid, datetime(2026, 1, 20, 14)])
         yield c
 
@@ -56,7 +56,7 @@ def test_make_picks_locks_only_unstarted_games(con):
 
 def test_ledger_grades_at_pick_line(con):
     lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 15), n_sims=2000)
-    con.execute("INSERT INTO odds_snapshots VALUES ('late', ?, 'draftkings', -5.0, -220, 180, 146.5)",
+    con.execute("INSERT INTO odds_snapshots (game_id, fetched_at, book, spread_a, ml_a, ml_b, total) VALUES ('late', ?, 'draftkings', -5.0, -220, 180, 146.5)",
                 [datetime(2026, 1, 20, 23)])
     con.execute("UPDATE historical_games SET actual_score_a = 75, actual_score_b = 71 WHERE game_id = 'late'")
     rows = lp.ledger(con)
@@ -102,3 +102,56 @@ def test_unlock_releases_only_unstarted_games(con):
     assert [r[0] for r in con.execute("SELECT game_id FROM model_predictions").fetchall()] == ["early"]
     again = lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 18), n_sims=2000)
     assert (again.created, again.already_locked, again.started) == (1, 1, 0)
+
+
+# --- line shopping + pick_lines ----------------------------------------------------
+
+def _add_books(con, gid, at, lines):
+    for book, spread, pa, pb in lines:
+        con.execute("INSERT INTO odds_snapshots VALUES (?, ?, ?, ?, -150, 130, 145.5, ?, ?)",
+                    [gid, at, book, spread, pa, pb])
+
+
+def test_pick_is_chosen_vs_consensus_and_graded_at_the_best_line(con):
+    at = datetime(2026, 1, 20, 14, 30)
+    _add_books(con, "late", at, [("draftkings", -3.0, -110, -110), ("fanduel", -4.0, -110, -110),
+                                 ("betmgm", -3.5, -105, -115), ("betrivers", -2.5, -140, 120)])
+    lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 15), n_sims=4000)
+    side, line_a, book, price, mkt_a = con.execute(
+        "SELECT side, line_a, book, price, market_line_a FROM pick_lines WHERE game_id = 'late'").fetchone()
+    assert mkt_a == -3.25                                      # median of -3.0, -4.0, -3.5, -2.5
+    margin = con.execute("SELECT pred_score_a - pred_score_b FROM model_predictions "
+                         "WHERE game_id = 'late'").fetchone()[0]
+    assert side == ("A" if margin > 3.25 else "B")
+    if side == "A":        # Duke wants the fewest points to lay: -2.5 is -140 (skipped), so -3.0 at DK
+        assert (line_a, book, price) == (-3.0, "draftkings", -110)
+    else:                  # Kansas wants the most points: +4.0 at FanDuel
+        assert (line_a, book, price) == (-4.0, "fanduel", -110)
+    g, = [g for g in lp.slate_games(con, DAY) if g.game_id == "late"]
+    assert (g.market_line, g.pick_line, g.pick_book) == (-3.25, line_a, book)
+    assert g.edge == pytest.approx(abs(line_a - g.model_line), abs=0.06)
+
+
+def test_version_bump_keeps_older_picks_locked_and_visible(con, monkeypatch):
+    lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 15), n_sims=2000)
+    con.execute("UPDATE model_predictions SET model_version = 'live-lean-v1.1'")
+    con.execute("UPDATE pick_lines SET model_version = 'live-lean-v1.1'")
+    run = lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 16), n_sims=2000)
+    assert (run.created, run.already_locked) == (0, 2)
+    assert con.execute("SELECT count(*) FROM model_predictions").fetchone()[0] == 2
+    assert len(lp.slate_games(con, DAY)) == 2
+    released = lp.unlock_unstarted(con, DAY, now=datetime(2026, 1, 20, 16))
+    assert set(released) == {"early", "late"}
+    assert con.execute("SELECT count(*) FROM pick_lines").fetchone()[0] == 0
+
+
+def test_backfill_reproduces_the_legacy_draftkings_line(con):
+    lp.make_picks(con, DAY, now=datetime(2026, 1, 20, 15), n_sims=2000)
+    before = {g.game_id: (g.pick, g.pick_line, g.edge) for g in lp.slate_games(con, DAY)}
+    con.execute("DELETE FROM pick_lines")
+    # Later multi-book pulls must not change what an old pick was locked at.
+    _add_books(con, "late", datetime(2026, 1, 20, 16), [("fanduel", -6.0, -110, -110)])
+    assert lp.backfill_pick_lines(con) == 2
+    assert con.execute("SELECT DISTINCT book FROM pick_lines WHERE side IS NOT NULL").fetchall() == [("draftkings",)]
+    after = {g.game_id: (g.pick, g.pick_line, g.edge) for g in lp.slate_games(con, DAY)}
+    assert after == before

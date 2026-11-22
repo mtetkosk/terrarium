@@ -12,13 +12,22 @@ seasons). The spec's fixed 67.8 / 105.4 are only a fallback.
 Early-season stretch (calibrated in Milestone 4): KenPom ratings are pulled
 toward the mean early in the season, so neutral-court margins are too
 compressed. The neutral efficiency gap is multiplied by
-    b(t) = 1 + 0.48 * max(0, 1 - days_since_Nov1 / 70)
-(~1.32 in late Nov, ~1.18 mid-Dec, 1.0 from mid-Jan) before HCA is applied;
-the expected total is unchanged. Fitted on the 2025-26 season only.
+    b(t) = min(1.25, 1 + 0.48 * max(0, 1 - days_since_Nov1 / 70))
+(1.25 through early Dec, ~1.18 mid-Dec, 1.0 from mid-Jan) before HCA is
+applied; the expected total is unchanged. Fitted on the 2025-26 season only.
+The cap (lean-v1.2) is the largest stretch that season's market lines could
+test: they start on Dec 5, where the uncapped formula gives 1.247. November's
+uncapped values (up to 1.48) were never validated.
 
-Variance (§9.1): sigma_T = 3.5 possessions, sigma_Eff_i = 7.2 + 8.5 * 3PA_i.
-Each trial samples one shared tempo and independent efficiencies, scores are
-round(T * Eff / 100), and regulation ties go to 5-minute overtimes.
+Variance (lean-v1.2): sigma_T = 3.5 possessions and sigma_Eff = 14.2 for every
+team, with the two teams' efficiency draws correlated (rho = 0.32: pace,
+officiating and shooting conditions are shared by both teams). Fitted by
+maximum likelihood on 2025-26 margin and total residuals (3,290 games): it
+reproduces both the margin spread (11.4 pts) and the much wider total spread
+(17.5 pts), which independent draws cannot. The spec's 3PA-scaled sigma
+(7.2 + 8.5 * 3PA) is disabled (slope 0): the backtest season has no 3PA data,
+so the term was never tested. Scores are round(T * Eff / 100), and regulation
+ties go to 5-minute overtimes.
 
 Leakage: ratings are always the latest snapshot with snapshot_date <= as_of.
 Pass the game date as ``as_of`` for any historical simulation.
@@ -49,8 +58,12 @@ LEAGUE_AVG_EFFICIENCY = 105.4  # E_bar, points per 100 possessions
 # A snapshot needs at least this many teams for its means to be trusted.
 MIN_TEAMS_FOR_LEAGUE_AVG = 300
 SIGMA_TEMPO = 3.5
-SIGMA_EFF_BASE = 7.2
-SIGMA_EFF_3PA_SLOPE = 8.5
+# sigma_Eff = BASE + SLOPE * 3PA. lean-v1.1 used the spec's 7.2 + 8.5 * 3PA;
+# lean-v1.2 refit BASE and turned the untested 3PA term off (see docstring).
+SIGMA_EFF_BASE = 14.2
+SIGMA_EFF_3PA_SLOPE = 0.0
+# Correlation of the two teams' efficiency draws within a game (lean-v1.2 fit).
+EFF_CORRELATION = 0.32
 # Fallback when a team has no known point-in-time 3PA rate (e.g. archive
 # backfill rows). Roughly the D-I mean (0.41 observed on 2026-11-20).
 LEAGUE_AVG_THREE_PA_RATE = 0.40
@@ -62,6 +75,7 @@ SPEC_HCA_EFF = 3.3
 DEFAULT_HCA_EFF = 1.9
 EARLY_STRETCH_K = 0.48
 EARLY_STRETCH_DAYS = 70
+EARLY_STRETCH_MAX = 1.25       # largest stretch the 2025-26 lines tested (Dec 5)
 OT_TEMPO_FRACTION = 5 / 40     # 5-minute overtime = 12.5% of game tempo
 MAX_OVERTIMES = 4
 DEFAULT_N_SIMS = 10_000
@@ -239,7 +253,7 @@ def season_start(d: date) -> date:
 def early_season_stretch(as_of: date) -> float:
     """Margin stretch b(t) for games on ``as_of`` (see module docstring)."""
     days = max(0, (as_of - season_start(as_of)).days)
-    return 1.0 + EARLY_STRETCH_K * max(0.0, 1.0 - days / EARLY_STRETCH_DAYS)
+    return min(EARLY_STRETCH_MAX, 1.0 + EARLY_STRETCH_K * max(0.0, 1.0 - days / EARLY_STRETCH_DAYS))
 
 
 def expected_means(
@@ -277,9 +291,14 @@ def simulate_matchup(
 
     tempo = np.maximum(rng.normal(mu_t, SIGMA_TEMPO, n_sims), 1.0)
 
+    rho = EFF_CORRELATION
+    rho_c = (1.0 - rho * rho) ** 0.5
+
     def points(poss: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        eff_a = np.maximum(rng.normal(mu_a, sd_a, poss.size), 0.0)
-        eff_b = np.maximum(rng.normal(mu_b, sd_b, poss.size), 0.0)
+        z_a = rng.standard_normal(poss.size)
+        z_b = rho * z_a + rho_c * rng.standard_normal(poss.size)
+        eff_a = np.maximum(mu_a + sd_a * z_a, 0.0)
+        eff_b = np.maximum(mu_b + sd_b * z_b, 0.0)
         return np.rint(poss * eff_a / 100).astype(np.int64), \
             np.rint(poss * eff_b / 100).astype(np.int64)
 

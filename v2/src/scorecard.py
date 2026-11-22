@@ -38,7 +38,7 @@ _ROWS_SQL = """
            p.pred_score_a, p.pred_score_b, p.win_prob_a,
            o.closing_spread_a, o.vegas_ml_a, o.vegas_ml_b
     FROM historical_games g
-    JOIN model_predictions p ON p.game_id = g.game_id AND p.model_version = ?
+    JOIN model_predictions p ON p.game_id = g.game_id AND p.model_version LIKE ?
     LEFT JOIN vegas_closing_odds o ON o.game_id = g.game_id
     WHERE g.game_date BETWEEN ? AND ?
       AND g.actual_score_a IS NOT NULL AND g.actual_score_b IS NOT NULL
@@ -47,7 +47,8 @@ _ROWS_SQL = """
 
 
 def graded_rows(con: duckdb.DuckDBPyConnection, season: int, model_version: str) -> list[tuple]:
-    """(game_date, act_a, act_b, hca, pred_a, pred_b, p_win_a, spread_a, ml_a, ml_b) per graded game."""
+    """(game_date, act_a, act_b, hca, pred_a, pred_b, p_win_a, spread_a, ml_a, ml_b) per graded game.
+    ``model_version`` is a LIKE pattern (an exact name matches only itself)."""
     lo, hi = vm.season_window(season)
     return con.execute(_ROWS_SQL, [model_version, lo, hi]).fetchall()
 

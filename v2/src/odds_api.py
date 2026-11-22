@@ -1,20 +1,29 @@
 """The Odds API client: live NCAAB slate, market lines, and final scores.
 
 Endpoints (v4, sport ``basketball_ncaab``):
-  * ``/odds``   markets h2h,spreads,totals for DraftKings + FanDuel
-                (cost 3 credits: markets x 1 region-equivalent)
+  * ``/odds``   markets h2h,spreads,totals for up to 10 US books (BOOKS)
+                (cost 3 credits: markets x 1 region-equivalent; the API
+                bills every 10 named bookmakers as one region)
   * ``/scores`` completed games for the last ``days_from`` days (cost 2)
 
-Free tier is 500 credits/month; one ``update`` (odds + scores) costs 5.
+Free tier is 500 credits/month; one ``update`` (odds + scores) costs 5, an
+odds-only pre-tip pull (``update(scores=False)``) costs 3.
 
 Storage (team A = the feed's home team; KenPom names via TeamNameMapper):
   * ``scheduled_games``: one row per event (commence_time in UTC).
   * ``historical_games``: inserted with NULL scores when first seen; scores
     filled from ``/scores``. ``hca_eff`` = DEFAULT_HCA_EFF because the feed has
     no neutral-site flag (holiday tournaments get home-court; known bias).
-  * ``odds_snapshots``: every pull taken before tipoff, per book.
-  * ``vegas_closing_odds``: refreshed from the latest pre-tipoff snapshot
-    (DraftKings, then FanDuel), so after tipoff it holds the closing line.
+  * ``odds_snapshots``: every pull taken before tipoff, per book, with the
+    spread prices.
+  * ``vegas_closing_odds``: refreshed from the latest pre-tipoff pull, so
+    after tipoff it holds the closing line.
+
+Market vs best line: ``market_line`` gives the consensus -- the median spread
+and total across books in one pull, moneylines from the first book in BOOKS
+order. ``best_line`` gives the most favorable spread for one side across
+those books (line shopping); picks are chosen against the consensus and
+graded at the best line.
 Raw JSON responses are cached under ``data/raw_cache/``.
 """
 
@@ -24,6 +33,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field, replace
+from statistics import median
 from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -40,7 +50,16 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.the-odds-api.com/v4"
 SPORT = "basketball_ncaab"
-BOOKS = ("draftkings", "fanduel")
+# Legal US sportsbooks, in preference order for moneylines (max 10 = one
+# region's cost). Offshore books are deliberately excluded.
+BOOKS = ("draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet",
+         "fanatics", "betrivers", "hardrockbet", "ballybet", "betparx")
+BOOK_NAMES = {"draftkings": "DraftKings", "fanduel": "FanDuel", "betmgm": "BetMGM",
+              "williamhill_us": "Caesars", "espnbet": "ESPN BET", "fanatics": "Fanatics",
+              "betrivers": "BetRivers", "hardrockbet": "Hard Rock", "ballybet": "Bally Bet",
+              "betparx": "betPARX"}
+# Best-line shopping ignores spreads priced worse than this (e.g. -3.5 at -140).
+WORST_SPREAD_PRICE = -125.0
 EASTERN = ZoneInfo("America/New_York")
 DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / "raw_cache"
 REQUEST_TIMEOUT = 30
@@ -127,6 +146,8 @@ class OddsSnapshot:
     ml_a: float | None
     ml_b: float | None
     total: float | None
+    spread_price_a: float | None = None
+    spread_price_b: float | None = None
 
 
 def _map_event(event: dict, mapper: TeamNameMapper, unmatched: set) -> ScheduledGame | None:
@@ -143,13 +164,15 @@ def _map_event(event: dict, mapper: TeamNameMapper, unmatched: set) -> Scheduled
 
 def _book_snapshot(game: ScheduledGame, book: dict, home_raw: str, away_raw: str,
                    fetched_at: datetime) -> OddsSnapshot:
-    spread_a = ml_a = ml_b = total = None
+    spread_a = ml_a = ml_b = total = price_a = price_b = None
     for market in book.get("markets", []):
         outcomes = {o.get("name"): o for o in market.get("outcomes", [])}
         if market.get("key") == "spreads":
             h, a = outcomes.get(home_raw), outcomes.get(away_raw)
             if h and a and h.get("point") is not None and abs(h["point"] + a["point"]) < 1e-9:
                 spread_a = float(h["point"])
+                price_a = float(h["price"]) if h.get("price") is not None else None
+                price_b = float(a["price"]) if a.get("price") is not None else None
         elif market.get("key") == "h2h":
             h, a = outcomes.get(home_raw), outcomes.get(away_raw)
             if h and a and abs(h["price"]) >= 100 and abs(a["price"]) >= 100:
@@ -158,7 +181,8 @@ def _book_snapshot(game: ScheduledGame, book: dict, home_raw: str, away_raw: str
             over = outcomes.get("Over")
             if over and over.get("point") is not None:
                 total = float(over["point"])
-    return OddsSnapshot(game.game_id, fetched_at, book["key"], spread_a, ml_a, ml_b, total)
+    return OddsSnapshot(game.game_id, fetched_at, book["key"], spread_a, ml_a, ml_b, total,
+                        price_a, price_b)
 
 
 def parse_odds(events: list, mapper: TeamNameMapper, fetched_at: datetime):
@@ -215,36 +239,74 @@ def store_games(con: duckdb.DuckDBPyConnection, games: list[ScheduledGame]) -> N
 
 def store_snapshots(con: duckdb.DuckDBPyConnection, snaps: list[OddsSnapshot]) -> None:
     for s in snaps:
-        con.execute("INSERT INTO odds_snapshots VALUES (?, ?, ?, ?, ?, ?, ?) "
+        con.execute("INSERT INTO odds_snapshots (game_id, fetched_at, book, spread_a, ml_a, ml_b, total, "
+                    "spread_price_a, spread_price_b) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT DO NOTHING",
-                    [s.game_id, s.fetched_at, s.book, s.spread_a, s.ml_a, s.ml_b, s.total])
+                    [s.game_id, s.fetched_at, s.book, s.spread_a, s.ml_a, s.ml_b, s.total,
+                     s.spread_price_a, s.spread_price_b])
 
 
 def market_line(con: duckdb.DuckDBPyConnection, game_id: str, latest_at: datetime | None = None,
                 earliest: bool = False) -> dict:
-    """Spread / ML / total for a game from odds_snapshots.
+    """Consensus market for a game from odds_snapshots.
 
-    Uses the latest snapshot at or before ``latest_at`` (default: any), or the
-    earliest when ``earliest``; each field comes from the first book in BOOKS
-    order that has it.
+    Uses the latest pull at or before ``latest_at`` (default: any), or the
+    earliest when ``earliest``, that has the field: the median spread and total
+    across books in that pull (not rounded: with an even number of books the
+    median can be a quarter point, and rounding would arbitrarily pick a side),
+    and moneylines from the first book in BOOKS order. ``lines`` holds that pull's per-book
+    spreads as {book: (spread_a, price_a, price_b)} for ``best_line``.
     """
     order = "ASC" if earliest else "DESC"
     rows = con.execute(
-        f"""SELECT book, spread_a, ml_a, ml_b, total FROM odds_snapshots
+        f"""SELECT fetched_at, book, spread_a, ml_a, ml_b, total, spread_price_a, spread_price_b
+            FROM odds_snapshots
             WHERE game_id = ? AND (? IS NULL OR fetched_at <= ?)
             ORDER BY fetched_at {order}""",
         [game_id, latest_at, latest_at]).fetchall()
-    out = {"spread_a": None, "ml_a": None, "ml_b": None, "total": None}
-    for book in BOOKS:
-        book_rows = [r for r in rows if r[0] == book]
-        for r in book_rows:  # already in preference order (latest/earliest first)
-            if out["spread_a"] is None and r[1] is not None:
-                out["spread_a"] = r[1]
-            if out["ml_a"] is None and r[2] is not None and r[3] is not None:
-                out["ml_a"], out["ml_b"] = r[2], r[3]
-            if out["total"] is None and r[4] is not None:
-                out["total"] = r[4]
+    pulls: dict[datetime, list] = {}
+    for r in rows:                      # insertion order = preference order of pulls
+        pulls.setdefault(r[0], []).append(r)
+    rank = {b: i for i, b in enumerate(BOOKS)}
+    out = {"spread_a": None, "ml_a": None, "ml_b": None, "total": None, "lines": {}}
+    for pull in pulls.values():
+        pull = sorted(pull, key=lambda r: rank.get(r[1], len(BOOKS)))
+        spreads = [r for r in pull if r[2] is not None]
+        if out["spread_a"] is None and spreads:
+            out["spread_a"] = float(median(r[2] for r in spreads))
+            out["lines"] = {r[1]: (r[2], r[6], r[7]) for r in spreads}
+        if out["ml_a"] is None:
+            ml = next((r for r in pull if r[3] is not None and r[4] is not None), None)
+            if ml:
+                out["ml_a"], out["ml_b"] = ml[3], ml[4]
+        totals = [r[5] for r in pull if r[5] is not None]
+        if out["total"] is None and totals:
+            out["total"] = float(median(totals))
     return out
+
+
+def best_line(lines: dict, side: str | None, fallback: float | None = None
+              ) -> tuple[float | None, str | None, float | None]:
+    """Most favorable spread for ``side`` ("A" or "B") across books, as
+    (spread_a, book, price). Side A wants the highest spread_a (more points),
+    side B the lowest; ties go to the better price, then BOOKS order. Spreads
+    priced worse than WORST_SPREAD_PRICE are skipped. With no usable book,
+    returns (fallback, None, None)."""
+    if side not in ("A", "B") or not lines:
+        return fallback, None, None
+    rank = {b: i for i, b in enumerate(BOOKS)}
+    cands = []
+    for book, (spread_a, price_a, price_b) in lines.items():
+        price = price_a if side == "A" else price_b
+        if price is not None and price < WORST_SPREAD_PRICE:
+            continue
+        points = spread_a if side == "A" else -spread_a
+        cands.append((-points, -(price if price is not None else -110.0), rank.get(book, len(BOOKS)),
+                      spread_a, book, price))
+    if not cands:
+        return fallback, None, None
+    _, _, _, spread_a, book, price = min(cands)
+    return spread_a, book, price
 
 
 def refresh_closing_odds(con: duckdb.DuckDBPyConnection, game_ids: list[str]) -> int:
@@ -340,8 +402,10 @@ def update(
     cache_dir: Path = DEFAULT_CACHE_DIR,
     scores_days: int = 3,
     now: datetime | None = None,
+    scores: bool = True,
 ) -> UpdateStats:
-    """Pull odds + scores once and store everything (5 credits)."""
+    """Pull odds (+ scores unless ``scores=False``) once and store everything
+    (5 credits; 3 for an odds-only pre-tip pull)."""
     session = session or requests.Session()
     key = key or get_api_key()
     now = now or utc_now()
@@ -349,11 +413,13 @@ def update(
     mapper = TeamNameMapper(current_teams(con, eastern_date(now)))
 
     events = fetch_odds(session, key, stats.quota)
-    scores = fetch_scores(session, key, stats.quota, scores_days)
+    fetch_scores_too = scores
+    scores = fetch_scores(session, key, stats.quota, scores_days) if fetch_scores_too else []
     cache_dir.mkdir(parents=True, exist_ok=True)
     stamp = now.strftime("%Y-%m-%dT%H%M%SZ")
     (cache_dir / f"odds_{stamp}.json").write_text(json.dumps(events))
-    (cache_dir / f"scores_{stamp}.json").write_text(json.dumps(scores))
+    if fetch_scores_too:
+        (cache_dir / f"scores_{stamp}.json").write_text(json.dumps(scores))
 
     games, snaps, unmatched = parse_odds(events, mapper, now)
     finals, unmatched_scores = parse_scores(scores, mapper)

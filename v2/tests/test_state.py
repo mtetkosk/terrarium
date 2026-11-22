@@ -14,7 +14,7 @@ def _fill(con):
     con.execute("INSERT INTO kenpom_snapshots VALUES ('2026-11-21', 'Duke', 26.123456789012, 120.1, 94.0, 70.0, NULL)")
     con.execute("INSERT INTO kenpom_snapshots VALUES ('2026-11-20', 'Iowa St.', 22.5, 118.0, 95.5, 67.25, 0.41)")
     con.execute("INSERT INTO historical_games VALUES ('g1', '2026-11-21', 'Duke', 'Iowa St.', NULL, NULL, NULL, 1.9)")
-    con.execute("INSERT INTO odds_snapshots VALUES ('g1', ?, 'draftkings', -3.5, -170, 145, 148.5)",
+    con.execute("INSERT INTO odds_snapshots (game_id, fetched_at, book, spread_a, ml_a, ml_b, total) VALUES ('g1', ?, 'draftkings', -3.5, -170, 145, 148.5)",
                 [datetime(2026, 11, 21, 12, 4, 16)])
     con.execute("INSERT INTO sanity_issues VALUES (?, 'picks', 'error', 'market_gap', 'g1', 'A, \"B\" @ C: x', ?)",
                 [date(2026, 11, 21), datetime(2026, 11, 21, 12, 5)])
