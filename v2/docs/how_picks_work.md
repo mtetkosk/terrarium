@@ -163,21 +163,24 @@ The Model Performance tab tracks all of these live, game by game.
 
 **Why the probabilities are not blended with the market.** Averaging the model's spread with the market's gives the best margin forecast at about 20% model, 80% market. But the resulting win probabilities are no better than the market's own (Brier 0.1928 vs 0.1927). A blended cover probability is also wrong in both directions: picks with an edge under 3 points covered about 49%, and those with 3+ covered 59–64%, which no smooth average can capture. The sheet therefore shows the model's own probabilities next to the market's, and uses the Spread Lean tiers for the cover signal.
 
-## 10. Season protocol (2026-27)
+## 10. Test windows (2026-27)
 
-The live season is a test of the model, so the model is fixed before the test starts.
+Each model version is tested on live games it has never seen, with no changes during its test window. Windows are a few weeks long, so the model can still improve during the season, and each version keeps its own record.
 
-- **Frozen model.** Every pick from November 23, 2026 to the end of the season is made by **lean-v1.3**, with the parameters above: home court 1.9, stretch cap 1.25, σ<sub>Eff</sub> 14.1, ρ 0.30, and totals shrink 0.85 / 0.67. Data fixes are allowed (team names, venues, odds feeds) because they correct inputs rather than the model. Any change to a fitted parameter is a new version, logged in the ledger. Picks are never re-made. The 140 picks of November 20–22 were made by lean-v1.1 and are not part of the test.
-- **Primary test.** Do **Strong** picks (edge of 3+ points against the Pick Line at lock time) cover more than 52.4% of the time, the break-even rate at −110? The 2025-26 backtest says 59.4%. The running record is the STRONG ATS figure on the Historical Picks tab.
-- **How it will be judged** at season's end, using the 95% interval of the Strong cover rate (about ±5.7 points with 300 graded picks, ±4.0 with 600):
+**Current window: lean-v1.3, November 23, 2026 – January 10, 2027. Review on January 11.**
+
+- **Frozen model.** Every pick in the window is made by **lean-v1.3**, with the parameters above: home court 1.9, stretch cap 1.25, σ<sub>Eff</sub> 14.1, ρ 0.30, and totals shrink 0.85 / 0.67. Data fixes are allowed (team names, venues, odds feeds) because they correct inputs rather than the model. A change to a fitted parameter is a new version. Picks are never re-made; each keeps the version that made it. The 140 picks of November 20–22 were made by lean-v1.1 and are not part of this test.
+- **Primary question.** Do **Strong** picks (edge of 3+ points against the Pick Line at lock time) cover more than 52.4% of the time, the break-even rate at −110? The 2025-26 backtest says 59.4%. The running record is the STRONG ATS figure on the Historical Picks tab, which counts only the current version's picks.
+- **How it will be judged** on January 11, using the 95% interval of the Strong cover rate. The window should produce roughly 200–300 graded Strong picks, giving an interval of about ±6–7 points:
   - **Confirmed** if the whole interval is above 52.4%.
   - **Unproven** if the rate is above 52.4% but the interval includes it.
   - **Not supported** if the rate is 52.4% or below.
-- **Secondary checks.**
-  - Average closing-line value on Strong picks should be positive. That is evidence that the market moves toward the model after the morning line, which would explain the backtest result.
-  - All picks together should cover about 50%, as in the backtest.
-  - The over/under lean is expected to show no edge.
+- **Also reviewed at the checkpoint.**
+  - Average closing-line value on Strong picks. Positive CLV is evidence that the market moves toward the model after the morning line, which would explain the backtest result, and it needs far fewer picks than the cover rate to read.
+  - Picks on favorites against picks on underdogs. In the backtest the edge came from underdogs, and the first 140 live picks split 37–56 on favorites and 27–19 on underdogs.
+  - All picks together, expected near 50%, and the over/under lean, expected to show no edge.
+- **After the checkpoint.** If the review supports a change, it is released as lean-v1.4 with its own test window. A change fitted on the window's live results cannot then be judged on those same results: its evidence comes from the games after it is released.
 
-No result will be called before the season ends. With several Strong picks a day, a few weeks of results can look very good or very bad by chance alone.
+No result will be called before the review. With several Strong picks a day, a few weeks of results can look very good or very bad by chance alone.
 
 *This page describes a statistical model for entertainment and research. It is not betting advice.*

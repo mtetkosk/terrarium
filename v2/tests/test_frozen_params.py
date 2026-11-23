@@ -1,6 +1,7 @@
-"""lean-v1.3 is frozen for the 2026-27 season (docs/how_picks_work.md, "Season
-protocol"). The live record is only an out-of-sample test if the model that
-makes the picks stays fixed, so every fitted parameter is pinned here.
+"""lean-v1.3 is frozen for its test window, Nov 23, 2026 - Jan 10, 2027, with a
+review on Jan 11 (docs/how_picks_work.md, "Test windows"). The live record is
+only an out-of-sample test if the model that makes the picks stays fixed
+during the window, so every fitted parameter is pinned here.
 
 Changing any of these is a NEW model version: bump DEFAULT_MODEL_VERSION,
 regenerate the backtest, and update this file and the papers in the same

@@ -931,8 +931,8 @@ LEDGER_GROUPS = [
                           "used DraftKings, else FanDuel."),
         ("Book", 84, "Sportsbook offering the Pick Line."),
         ("Spread Lean", 96, "Edge at lock time between the model's spread and the Pick Line: Strong = 3+ "
-                            "points, Lean = 1.5-3, No Lean = under 1.5. Strong picks are the season's "
-                            "pre-registered test (see How the Daily Picks Work): filter to Strong to see them."),
+                            "points, Lean = 1.5-3, No Lean = under 1.5. Strong picks are the current test window's "
+                            "question (see How the Daily Picks Work): filter to Strong to see them."),
     ]),
     ("MARKET", "#0F766E", [
         ("Close Line", 66, "Consensus HOME spread at the last odds pull before tip-off (median across "
@@ -955,7 +955,7 @@ def _record(games: list) -> dict:
     covers, losses, pushes = ats.count("Cover"), ats.count("Loss"), ats.count("Push")
     su_w = sum(g.su == "W" for g in games)
     clvs = [g.clv for g in games if g.clv is not None]
-    # Pre-registered test: Strong picks made by the frozen season model only.
+    # Test window question: Strong picks made by the current (frozen) model version only.
     strong = [g.ats for g in games if g.ats in ("Cover", "Loss") and spread_lean(g.edge, g.pick) == "Strong"
               and g.model_version == vm.DEFAULT_MODEL_VERSION]
     units, running = 0.0, []
@@ -1033,8 +1033,9 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
              "UNITS @ −110": "Profit betting 1 unit on every pick at -110 (+1 per cover, -1.1 per loss).",
              "STRONG PICKS": f"Graded Strong picks (edge 3+ points at lock) made by the frozen season model "
                              f"({vm.DEFAULT_MODEL_VERSION}), excluding pushes.",
-             "STRONG ATS": "Cover rate of those Strong picks: the season's pre-registered test. 52.4% breaks "
-                           "even at -110; the 2025-26 backtest had 59.4%. Shaded once 30+ are graded.",
+             "STRONG ATS": "Cover rate of those Strong picks: the current test window's question (lean-v1.3: "
+                           "Nov 23 - Jan 10, reviewed Jan 11). 52.4% breaks even at -110; the 2025-26 backtest "
+                           "had 59.4%. Shaded once 30+ are graded.",
              "AVG CLV": "Average points our Pick Line beat the closing line by.",
              "BEAT CLOSE": "Share of picks whose Pick Line beat the closing line."}
     for label, c, value, pattern, ptype, g in kpis:
