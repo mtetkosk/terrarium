@@ -1022,6 +1022,31 @@ def _record(games: list) -> dict:
             "beat_close": sum(c > 0 for c in clvs) / len(clvs) if clvs else None}
 
 
+def _records(games: list) -> dict[str, dict]:
+    """Records partitioned by tier: all picks vs Strong picks (edge 3+ at lock),
+    each over every version and over the current model version only."""
+    strong = [g for g in games if spread_lean(g.edge, g.pick) == "Strong"]
+    current = lambda gs: [g for g in gs if g.model_version == vm.DEFAULT_MODEL_VERSION]  # noqa: E731
+    return {"all": _record(games), "strong": _record(strong),
+            "all_current": _record(current(games)), "strong_current": _record(current(strong))}
+
+
+def _wl(rec: dict) -> str:
+    return f"{rec['covers']}-{rec['losses']}" + (f"-{rec['pushes']}" if rec["pushes"] else "")
+
+
+def _units_spark(running: list[float]) -> dict | None:
+    if len(running) < 2:
+        return None
+    color = TREND_UP if running[-1] >= 0 else TREND_DOWN
+    nums = ",".join(f"{u:.1f}" for u in running)
+    return {"formulaValue": f'=SPARKLINE({{{nums}}},{{"charttype","line";"linewidth",2;"color","{color}"}})'}
+
+
+STRONG_ROW_NOTE = ("Strong = edge of 3+ points against the Pick Line when the pick was locked (solid green Pick). "
+                   "The model makes a pick on every game; Strong picks are the ones the backtest supports.")
+
+
 def _chip_cell(label: str | None, bg) -> dict:
     if not label:
         return _text("—", _fmt(bg=bg, fg=MUTED, align="CENTER"))
@@ -1053,51 +1078,70 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
         "home team's · Hover any header for details", sub)
     rows.append(sub_row)
 
-    # Record strip: label row + value row. (label, column, value, number pattern, type, grade)
+    # Record strip: a label row, then one value row each for ALL PICKS and STRONG PICKS.
     def grade(x, bench, ok):
         return None if x is None else ("good" if x >= bench else "ok" if x >= bench - ok else "poor")
 
-    kpis = [
-        ("GRADED", 0, rec["n"], "#,##0", "NUMBER", None),
-        ("STRAIGHT UP", 1, rec["su_pct"], "0.0%", "PERCENT", None),
-        ("ATS", 2, rec["ats_pct"], "0.0%", "PERCENT", grade(rec["ats_pct"], sc.ATS_BREAK_EVEN, 0.024)),
-        ("COVERS", 3, rec["covers"], "0", "NUMBER", None),
-        ("LOSSES", 4, rec["losses"], "0", "NUMBER", None),
-        ("PUSHES", 5, rec["pushes"], "0", "NUMBER", None),
-        ("UNITS @ −110", 6, rec["units"], "+0.0;-0.0;0.0", "NUMBER", grade(rec["units"], 0.0, 3.0)),
-        ("STRONG PICKS", 11, rec["strong_n"], "0", "NUMBER", None),
-        ("STRONG ATS", 12, rec["strong_pct"], "0.0%", "PERCENT",
-         grade(rec["strong_pct"], sc.ATS_BREAK_EVEN, 0.024) if rec["strong_n"] >= 30 else None),
-        ("AVG CLV", 13, rec["clv"], "+0.00;-0.00;0.00", "NUMBER", grade(rec["clv"], 0.0, 0.25)),
-        ("BEAT CLOSE", 14, rec["beat_close"], "0%", "PERCENT", grade(rec["beat_close"], 0.5, 0.05)),
-    ]
+    recs = _records(games)
+    version = vm.DEFAULT_MODEL_VERSION
+    short = version.removeprefix("lean-")
     kpi_bg = _hex("#F8FAFC")
-    labels = [{"userEnteredFormat": _fmt(bg=kpi_bg)} for _ in range(n_cols)]
-    values = [{"userEnteredFormat": _fmt(bg=kpi_bg)} for _ in range(n_cols)]
+    # (label, column, key, number pattern, type, grader)
+    kpis = [
+        ("GRADED", 1, "n", "#,##0", "NUMBER", None),
+        ("STRAIGHT UP", 2, "su_pct", "0.0%", "PERCENT", None),
+        ("ATS", 3, "ats_pct", "0.0%", "PERCENT", lambda r: grade(r["ats_pct"], sc.ATS_BREAK_EVEN, 0.024)),
+        ("COVERS", 4, "covers", "0", "NUMBER", None),
+        ("LOSSES", 5, "losses", "0", "NUMBER", None),
+        ("PUSHES", 6, "pushes", "0", "NUMBER", None),
+        ("UNITS @ −110", 7, "units", "+0.0;-0.0;0.0", "NUMBER", lambda r: grade(r["units"], 0.0, 3.0)),
+        ("AVG CLV", 12, "clv", "+0.00;-0.00;0.00", "NUMBER", lambda r: grade(r["clv"], 0.0, 0.25)),
+        ("BEAT CLOSE", 13, "beat_close", "0%", "PERCENT", lambda r: grade(r["beat_close"], 0.5, 0.05)),
+    ]
     notes = {"ATS": "Covers / (covers + losses). 52.4% breaks even at -110.",
-             "UNITS @ −110": "Profit betting 1 unit on every pick at -110 (+1 per cover, -1.1 per loss).",
-             "STRONG PICKS": f"Graded Strong picks (edge 3+ points at lock) made by the frozen season model "
-                             f"({vm.DEFAULT_MODEL_VERSION}), excluding pushes.",
-             "STRONG ATS": "Cover rate of those Strong picks: the current test window's question (lean-v1.3: "
-                           "Nov 23 - Jan 10, reviewed Jan 11). 52.4% breaks even at -110; the 2025-26 backtest "
-                           "had 59.4%. Shaded once 30+ are graded.",
+             "UNITS @ −110": "Profit betting 1 unit on each pick in the row at -110 (+1 per cover, -1.1 per loss).",
+             "UNITS TREND": "Running units, oldest pick first.",
              "AVG CLV": "Average points our Pick Line beat the closing line by.",
-             "BEAT CLOSE": "Share of picks whose Pick Line beat the closing line."}
-    for label, c, value, pattern, ptype, g in kpis:
-        labels[c] = {**_text(label, _fmt(bg=kpi_bg, fg=MUTED, bold=True, size=8, align="CENTER")),
-                     **({"note": notes[label]} if label in notes else {})}
-        fmt = _fmt(bg=GRADE_TINT.get(g, kpi_bg), bold=True, size=14, align="CENTER", pattern=pattern,
-                   pattern_type=ptype)
-        values[c] = _numcell(value, fmt)
-    labels[7] = _text("UNITS TREND", _fmt(bg=kpi_bg, fg=MUTED, bold=True, size=8, align="CENTER"))
-    if len(rec["running"]) >= 2:
-        color = TREND_UP if rec["running"][-1] >= 0 else TREND_DOWN
-        nums = ",".join(f"{u:.1f}" for u in rec["running"])
-        values[7] = {"userEnteredValue": {"formulaValue":
-                     f'=SPARKLINE({{{nums}}},{{"charttype","line";"linewidth",2;"color","{color}"}})'},
-                     "userEnteredFormat": _fmt(bg=kpi_bg)}
-    rows += [labels, values, []]
-    merges = [(2, 3, 7, 11), (3, 4, 7, 11)]
+             "BEAT CLOSE": "Share of picks whose Pick Line beat the closing line.",
+             f"{short.upper()} W-L": f"Record of the current model ({version}) only; earlier versions' picks "
+                                     "stay in the totals to the left.",
+             f"{short.upper()} ATS": f"Cover rate of the current model ({version}). On the STRONG row this is the "
+                                     "test window's question (Nov 24, 2026 - Jan 10, 2027, reviewed Jan 11): do "
+                                     "Strong picks beat 52.4%? Shaded once 30+ are graded."}
+    labels = [{"userEnteredFormat": _fmt(bg=kpi_bg)} for _ in range(n_cols)]
+    head = _fmt(bg=kpi_bg, fg=MUTED, bold=True, size=8, align="CENTER")
+    for label, c, *_ in kpis:
+        labels[c] = {**_text(label, head), **({"note": notes[label]} if label in notes else {})}
+    labels[8] = {**_text("UNITS TREND", head), "note": notes["UNITS TREND"]}
+    for label, c in ((f"{short.upper()} W-L", 14), (f"{short.upper()} ATS", 15)):
+        labels[c] = {**_text(label, head), "note": notes[label]}
+
+    def value_row(name: str, rec: dict, cur: dict, strong: bool) -> list[dict]:
+        row = [{"userEnteredFormat": _fmt(bg=kpi_bg)} for _ in range(n_cols)]
+        row[0] = {**_text(name, _fmt(bg=kpi_bg, fg=_hex(PICK_STRONG) if strong else INK, bold=True, size=9,
+                                     wrap="WRAP")), **({"note": STRONG_ROW_NOTE} if strong else {})}
+        for label, c, key, pattern, ptype, grader in kpis:
+            g = grader(rec) if grader and rec["n"] else None
+            if label == "ATS" and strong and rec["covers"] + rec["losses"] < 30:
+                g = None
+            row[c] = _numcell(rec[key] if rec["n"] else None,
+                              _fmt(bg=GRADE_TINT.get(g, kpi_bg), bold=True, size=14, align="CENTER",
+                                   pattern=pattern, pattern_type=ptype))
+        spark = _units_spark(rec["running"])
+        if spark:
+            row[8] = {"userEnteredValue": spark, "userEnteredFormat": _fmt(bg=kpi_bg)}
+        row[14] = _text(_wl(cur) if cur["n"] else "—", _fmt(bg=kpi_bg, bold=True, size=12, align="CENTER"))
+        cur_graded = cur["covers"] + cur["losses"]
+        g = grade(cur["ats_pct"], sc.ATS_BREAK_EVEN, 0.024) if cur_graded >= 30 else None
+        row[15] = _numcell(cur["ats_pct"], _fmt(bg=GRADE_TINT.get(g, kpi_bg), bold=True, size=14, align="CENTER",
+                                                pattern="0.0%", pattern_type="PERCENT"))
+        return row
+
+    rows += [labels,
+             value_row("ALL PICKS", recs["all"], recs["all_current"], False),
+             value_row("STRONG PICKS (EDGE 3+)", recs["strong"], recs["strong_current"], True),
+             []]
+    merges = [(r, r + 1, 8, 12) for r in (2, 3, 4)]
 
     band_row, header_row = [], []
     for c, (group, color, (label, _, note)) in enumerate(columns):
@@ -1151,7 +1195,7 @@ def build_ledger_grid(con, today: date, title: str = TAB_TITLES[1],
     widths = [w for _, _, (_, w, _) in columns]
     layout = SheetLayout(rows, n_cols, frozen_rows=header_at + 1, col_widths=widths,
                          frozen_cols=frozen_cols, merges=merges,
-                         row_heights={0: 36, 1: 22, 2: 20, 3: 34, 4: 10, band_at: 22, header_at: 34},
+                         row_heights={0: 36, 1: 22, 2: 20, 3: 34, 4: 34, 5: 10, band_at: 22, header_at: 34},
                          default_row_px=24, filter_row=header_at if games else None)
     fit_columns(layout)
     return GridTab(title, layout)
@@ -1345,32 +1389,52 @@ def build_mobile_ledger_grid(con, today: date, title: str = MOBILE_TITLES[1],
     def grade(x, bench, ok):
         return None if x is None else ("good" if x >= bench else "ok" if x >= bench - ok else "poor")
 
-    stats = [("Against the spread", rec["ats_pct"], "0.0%", "PERCENT", grade(rec["ats_pct"], sc.ATS_BREAK_EVEN, 0.024)),
-             ("Covers", rec["covers"], "0", "NUMBER", None),
-             ("Losses", rec["losses"], "0", "NUMBER", None),
-             ("Pushes", rec["pushes"], "0", "NUMBER", None),
-             ("Units @ −110", rec["units"], "+0.0;-0.0;0.0", "NUMBER", grade(rec["units"], 0.0, 3.0)),
-             ("Strong picks ATS (edge 3+)", rec["strong_pct"], "0.0%", "PERCENT",
-              grade(rec["strong_pct"], sc.ATS_BREAK_EVEN, 0.024) if rec["strong_n"] >= 30 else None),
-             ("Strong picks graded", rec["strong_n"], "0", "NUMBER", None),
-             ("Straight up", rec["su_pct"], "0.0%", "PERCENT", None),
-             ("Avg closing-line value", rec["clv"], "+0.00;-0.00;0.00", "NUMBER", grade(rec["clv"], 0.0, 0.25)),
-             ("Beat the closing line", rec["beat_close"], "0%", "PERCENT", grade(rec["beat_close"], 0.5, 0.05))]
-    for i, (label, value, pattern, ptype, g) in enumerate(stats):
+    # Stat | All picks | Strong (edge 3+): label in cols 0-1, All in col 2, Strong in cols 3-4.
+    recs = _records(games)
+    short = vm.DEFAULT_MODEL_VERSION.removeprefix("lean-")
+    hdr = _fmt(bg=_hex("#2F5D8A"), fg=WHITE, bold=True, size=9, align="CENTER")
+    r = sh.add([_text("", hdr), {"userEnteredFormat": hdr}, _text("All picks", hdr),
+                {**_text("Strong (3+)", hdr), "note": STRONG_ROW_NOTE}, {"userEnteredFormat": hdr}], 24)
+    sh.merges += [(r, r + 1, 0, 2), (r, r + 1, 3, 5)]
+    pct_grade = lambda rec, need: (grade(rec["ats_pct"], sc.ATS_BREAK_EVEN, 0.024)   # noqa: E731
+                                   if rec["covers"] + rec["losses"] >= need else None)
+    stats = [
+        ("Record (W-L)", lambda rec: _wl(rec) if rec["n"] else "—", None, None, lambda rec, strong: None),
+        ("Against the spread", lambda rec: rec["ats_pct"], "0.0%", "PERCENT",
+         lambda rec, strong: pct_grade(rec, 30 if strong else 1)),
+        ("Units @ −110", lambda rec: rec["units"], "+0.0;-0.0;0.0", "NUMBER",
+         lambda rec, strong: grade(rec["units"], 0.0, 3.0)),
+        ("Avg closing-line value", lambda rec: rec["clv"], "+0.00;-0.00;0.00", "NUMBER",
+         lambda rec, strong: grade(rec["clv"], 0.0, 0.25)),
+        ("Beat the closing line", lambda rec: rec["beat_close"], "0%", "PERCENT",
+         lambda rec, strong: grade(rec["beat_close"], 0.5, 0.05)),
+        ("Straight up", lambda rec: rec["su_pct"], "0.0%", "PERCENT", lambda rec, strong: None),
+        (f"{short} record", lambda rec: _wl(rec) if rec["n"] else "—", None, None, lambda rec, strong: None),
+        (f"{short} ATS", lambda rec: rec["ats_pct"], "0.0%", "PERCENT",
+         lambda rec, strong: pct_grade(rec, 30)),
+    ]
+    for i, (label, get, pattern, ptype, grader) in enumerate(stats):
         bg = ZEBRA if i % 2 else WHITE
+        current = label.startswith(short)
+        pair = (recs["all_current"], recs["strong_current"]) if current else (recs["all"], recs["strong"])
         lab = _fmt(bg=bg, fg=MUTED, bold=True, size=9)
-        val = _fmt(bg=GRADE_TINT.get(g, bg), bold=True, size=11, align="CENTER", pattern=pattern, pattern_type=ptype)
-        r = sh.add([_text(label, lab), {"userEnteredFormat": lab}, {"userEnteredFormat": lab},
-                    _numcell(value, val), {"userEnteredFormat": val}], 26)
-        sh.merges += [(r, r + 1, 0, 3), (r, r + 1, 3, 5)]
-    if len(rec["running"]) >= 2:
-        color = TREND_UP if rec["running"][-1] >= 0 else TREND_DOWN
-        nums = ",".join(f"{u:.1f}" for u in rec["running"])
-        lab = _fmt(fg=MUTED, bold=True, size=9)
-        r = sh.add([_text("Units over time", lab), {"userEnteredFormat": lab}, {"userEnteredFormat": lab},
-                    {"userEnteredValue": {"formulaValue":
-                     f'=SPARKLINE({{{nums}}},{{"charttype","line";"linewidth",2;"color","{color}"}})'}}, {}], 30)
-        sh.merges += [(r, r + 1, 0, 3), (r, r + 1, 3, 5)]
+        cells = [_text(label, lab), {"userEnteredFormat": lab}]
+        for k, rec in enumerate(pair):
+            g = grader(rec, k == 1)
+            v = get(rec)
+            fmt = _fmt(bg=GRADE_TINT.get(g, bg), bold=True, size=11, align="CENTER", pattern=pattern,
+                       pattern_type=ptype or "NUMBER")
+            cells.append(_text(v, fmt) if isinstance(v, str) else _numcell(v, fmt))
+        cells.append({"userEnteredFormat": cells[-1].get("userEnteredFormat", {})})
+        r = sh.add(cells, 26)
+        sh.merges += [(r, r + 1, 0, 2), (r, r + 1, 3, 5)]
+    lab = _fmt(fg=MUTED, bold=True, size=9)
+    sparks = [_units_spark(recs["all"]["running"]), _units_spark(recs["strong"]["running"])]
+    if any(sparks):
+        r = sh.add([_text("Units over time", lab), {"userEnteredFormat": lab},
+                    {"userEnteredValue": sparks[0]} if sparks[0] else {},
+                    {"userEnteredValue": sparks[1]} if sparks[1] else {}, {}], 30)
+        sh.merges += [(r, r + 1, 0, 2), (r, r + 1, 3, 5)]
     sh.add([], 12)
     header = _mobile_header(sh, ["Date", "Pick", "Opponent", "Line", "ATS"], "#2F5D8A")
     for i, g in enumerate(shown):

@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 import cli
 from src import db
 from src import ingest_kenpom as ik
+from src import validate_model as vm
 from tests.test_ingest import RATINGS_HTML, TEAMSTATS_HTML
 from tests.test_validation import seed_slate
 
@@ -97,10 +98,10 @@ def test_ingest_uncached_past_date_is_refused(tmp_path, monkeypatch):
 def test_audit_renders_tables(tmp_path):
     path = tmp_path / "audit.duckdb"
     with db.get_db_connection(db_path=path) as con:
-        seed_slate(con, model_version="lean-v1.3")
+        seed_slate(con, model_version=vm.DEFAULT_MODEL_VERSION)
     res = invoke("audit", "--season", 2026, "--db-path", path)
     assert res.exit_code == 0, res.output
-    for text in ("Backtest lean-v1.3", "Brier Skill Score", "Heavy favorites", "HCA check"):
+    for text in (f"Backtest {vm.DEFAULT_MODEL_VERSION}", "Brier Skill Score", "Heavy favorites", "HCA check"):
         assert text in res.output
 
 

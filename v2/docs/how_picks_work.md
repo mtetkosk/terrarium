@@ -1,6 +1,6 @@
 # How the Daily Picks Work
 
-*Model lean-v1.3 · last updated November 22, 2026*
+*Model lean-v1.4 · last updated November 24, 2026*
 
 ## Summary
 
@@ -34,13 +34,13 @@ Each team's expected points per 100 possessions combines its offense with the op
 
 where Ē is the league-average efficiency (107.2 on November 21, 2026). An average offense facing an average defense scores exactly Ē.
 
-**Early-season adjustment.** In November, ratings are still partly based on preseason expectations and are pulled toward the average. The 2025-26 season showed that real margins early in the season were wider than the ratings implied. The model therefore stretches the gap between the two teams' efficiencies around its midpoint by
+**Early-season adjustment (switched off in lean-v1.4).** Early in the season, ratings are still partly based on preseason expectations and are pulled toward the average. In 2025-26, real margins in December were wider than the ratings implied, so lean-v1.1 to lean-v1.3 stretched the gap between the two teams' efficiencies around its midpoint by
 
 <p style="text-align:center"><i>b(t) = min(1.25, 1 + 0.48 × max(0, 1 − d / 70))</i></p>
 
-where <i>d</i> is the number of days since November 1. The factor is 1.25 through early December, about 1.18 in mid-December, and 1.00 (no adjustment) from mid-January. It changes who is favored by how much, not the expected total.
+where <i>d</i> is the number of days since November 1: 1.25 through early December, fading to 1.00 by mid-January. It changes who is favored by how much, not the expected total.
 
-The 1.25 cap is new in lean-v1.2. The 2025-26 market lines start on December 5, where the formula gives 1.247, so larger values (up to 1.48 in early November) were never tested against the market. Uncapped, the stretch made November's model spreads much wider than the market's. It produced many large "edges" on favorites, a kind of pick that won only 53% in the backtest.
+The 2025-26 market lines start on December 5, so the stretch was never tested in November. The first live games of 2026-27 said it was wrong this season. Across 171 graded games from November 20–23, actual margins came in at only 0.82 times the stretched model's projected margins, but 1.02 times the unstretched ones. The stretched model kept finding "edges" on favorites, and those picks went 45–63. **lean-v1.4 sets b(t) = 1 on every date.** The trade-off: on the 2025-26 backtest, where the stretch did help in December, turning it off costs a little (see section 9). The formula stays in the code, so it can return if this season's ratings turn out to be compressed in December.
 
 **Home-court advantage.** At a true home game, the home team's efficiency is raised and the visitor's lowered by HCA = 1.9 points per 100 possessions:
 
@@ -94,11 +94,11 @@ The 10,000 simulated final scores give:
 
 - **Possessions:** 67.1 × 69.1 / 69.53 = **66.7**.
 - **Neutral efficiencies:** Cleveland St. 105.2 × 109.5 / 107.21 = 107.5. Kent St. 104.3 × 115.4 / 107.21 = 112.3. On a neutral floor that is Kent St. by about 3.2 points.
-- **Early-season stretch** (×1.25, the cap) widens the gap to about 4.0 points.
-- **Home court** (+1.9 / −1.9) brings it back to **Kent St. by about 1.5**.
+- **Early-season stretch:** none in lean-v1.4. (lean-v1.3's ×1.25 widened the gap to about 4.0 points.)
+- **Home court** (+1.9 / −1.9) brings it to **Kent St. by about 0.7**.
 - **Totals recalibration:** both teams are a little above average in pace and scoring, so the projection is pulled slightly toward average. Possessions go from 66.7 to 67.1 (league average 69.5), and the projected total from 147.5 to 147.3. The margin is unchanged.
-- **Simulation:** Kent St. 74.4, Cleveland St. 72.9; model spread Cleveland St. +1.5; total 147.3; Cleveland St. wins 44.6% of trials; 3.6% go to overtime.
-- **Market:** Cleveland St. +3.5. The model thinks Cleveland St. is getting 2.0 more points than it needs, so the **Pick is Cleveland St. with an Edge of 2.0** (light green on the sheet). This is how lean-v1.3 prices the game. The pick actually locked that morning came from lean-v1.1, with an edge of 1.6.
+- **Simulation:** Kent St. 74.0, Cleveland St. 73.3; model spread Cleveland St. +0.7; total 147.3; Cleveland St. wins 47.7% of trials; 3.5% go to overtime.
+- **Market:** Cleveland St. +3.5. The model thinks Cleveland St. is getting 2.8 more points than it needs, so the **Pick is Cleveland St. with an Edge of 2.8** (light green on the sheet). This is how lean-v1.4 prices the game. The pick actually locked that morning came from lean-v1.1, with an edge of 1.6.
 
 ## 7. Comparing with the market
 
@@ -135,26 +135,28 @@ where p<sub>A</sub> and p<sub>B</sub> are the raw implied probabilities. It then
 
 ## 9. Track record and limitations
 
-**2025-26 backtest** (lean-v1.3, 3,383 regular-season games, each projected using only the ratings available that morning):
+**2025-26 backtest** (lean-v1.4, 3,383 regular-season games, each projected using only the ratings available that morning):
 
 | Measure | Model | Benchmark |
 |---|---|---|
-| Picked the winner | 71.3% of all games; 68.5% on games with a moneyline | Vegas favorite: 68.9% on the same games |
-| Against the spread, all picks | 50.5% (2,578 games) | 52.4% needed to break even at −110 |
-| Against the spread, edge 3+ points | 59.4% (286 games) | 52.4% |
-| Margin error (root-mean-square) | 11.31 points | Market line: 11.27 points |
+| Picked the winner | 71.1% of all games; 68.3% on games with a moneyline | Vegas favorite: 68.9% on the same games |
+| Against the spread, all picks | 51.1% (2,578 games) | 52.4% needed to break even at −110 |
+| Against the spread, edge 3+ points | 59.0% (344 games) | 52.4% |
+| Margin error (root-mean-square) | 11.38 points | Market line: 11.27 points |
 | Win-probability error (Brier score) | 0.195 | De-vigged moneyline: 0.193 |
 | Total error (root-mean-square) | 17.17 points | Market total: 17.07 points |
-| Home-court bias | −0.02 points | 0 |
+| Home-court bias | +0.25 points (home teams did slightly better than projected) | 0 |
+
+Turning off the stretch trades a little backtest accuracy for this season's live evidence. Counted the same way, lean-v1.3 had a margin error of 11.31 and covered 61.7% on 303 edge-3+ picks, because the stretch did help in December 2025.
 
 The backtest's market lines were captured mostly between 6 AM and noon. They are morning lines rather than true closing lines, the same kind of line the live picks are locked against.
 
-In plain terms, the model is about as accurate as the betting market overall. It has **not** shown a profitable edge across all picks. Picks with an edge of 3+ points did much better: 59.4%, against roughly 50% for other picks on the same side of the same kinds of games. That is the result to watch this season. But it rests on one season, with home-court advantage fitted on that same season. Treat it as a hypothesis until the live record confirms it.
+In plain terms, the model is about as accurate as the betting market overall. It has **not** shown a profitable edge across all picks. Picks with an edge of 3+ points did much better: 59.0%, against roughly 50% for other picks on the same side of the same kinds of games. That is the result to watch this season. But it rests on one season, with home-court advantage fitted on that same season. Treat it as a hypothesis until the live record confirms it.
 
 **Known limitations:**
 
 - **Overconfidence.** lean-v1.2's variance refit fixed most of it: favorites the model puts at 60–70% won 62.8% of the time, against a prediction of 65.0% (lean-v1.1: 60.5% against 64.8%). Cover probabilities are still too confident. A predicted 55–60% chance to cover has won about 51%, because the market knows things the ratings do not.
-- **Calibration data.** The early-season stretch, home-court value, totals recalibration and uncertainty were fitted on a single season. They will be re-checked against this season's results.
+- **Calibration data.** Home-court value, totals recalibration and uncertainty were fitted on a single season. They will be re-checked against this season's results. The early-season stretch, also fitted on that season, has already failed that check and is switched off.
 - **Three-point volatility** is not modeled yet. The term will return if this season's data supports it.
 - **No injury or lineup information.** The market sees injury news before tip-off; the model does not.
 - **Early-season ratings** are still partly preseason opinion.
@@ -167,19 +169,21 @@ The Model Performance tab tracks all of these live, game by game.
 
 Each model version is tested on live games it has never seen, with no changes during its test window. Windows are a few weeks long, so the model can still improve during the season, and each version keeps its own record.
 
-**Current window: lean-v1.3, November 23, 2026 – January 10, 2027. Review on January 11.**
+**Current window: lean-v1.4, November 24, 2026 – January 10, 2027. Review on January 11.**
 
-- **Frozen model.** Every pick in the window is made by **lean-v1.3**, with the parameters above: home court 1.9, stretch cap 1.25, σ<sub>Eff</sub> 14.1, ρ 0.30, and totals shrink 0.85 / 0.67. Data fixes are allowed (team names, venues, odds feeds) because they correct inputs rather than the model. A change to a fitted parameter is a new version. Picks are never re-made; each keeps the version that made it. The 140 picks of November 20–22 were made by lean-v1.1 and are not part of this test.
-- **Primary question.** Do **Strong** picks (edge of 3+ points against the Pick Line at lock time) cover more than 52.4% of the time, the break-even rate at −110? The 2025-26 backtest says 59.4%. The running record is the STRONG ATS figure on the Historical Picks tab, which counts only the current version's picks.
+lean-v1.3's window, which opened November 23, was closed after one day (32 picks: 17–15, Strong 7–0). The 171 graded live games by then gave strong evidence that the early-season stretch was wrong this season (section 3). The November 24 picks had been locked by lean-v1.3 that morning and were re-locked by lean-v1.4 before any game tipped, against the same morning lines.
+
+- **Frozen model.** Every pick in the window is made by **lean-v1.4**, with the parameters above: home court 1.9, no early-season stretch, σ<sub>Eff</sub> 14.1, ρ 0.30, and totals shrink 0.85 / 0.67. Data fixes are allowed (team names, venues, odds feeds) because they correct inputs rather than the model. A change to a fitted parameter is a new version. Picks are never re-made after tip-off; each keeps the version that made it. The picks of November 20–23 (lean-v1.1 and lean-v1.3) are not part of this test.
+- **Primary question.** Do **Strong** picks (edge of 3+ points against the Pick Line at lock time) cover more than 52.4% of the time, the break-even rate at −110? The 2025-26 backtest says 59.0%. The running record is the V1.4 ATS figure on the STRONG PICKS row of the Historical Picks tab, which counts only the current version's picks. The ALL PICKS and STRONG PICKS rows to its left include every version.
 - **How it will be judged** on January 11, using the 95% interval of the Strong cover rate. The window should produce roughly 200–300 graded Strong picks, giving an interval of about ±6–7 points:
   - **Confirmed** if the whole interval is above 52.4%.
   - **Unproven** if the rate is above 52.4% but the interval includes it.
   - **Not supported** if the rate is 52.4% or below.
 - **Also reviewed at the checkpoint.**
   - Average closing-line value on Strong picks. Positive CLV is evidence that the market moves toward the model after the morning line, which would explain the backtest result, and it needs far fewer picks than the cover rate to read.
-  - Picks on favorites against picks on underdogs. In the backtest the edge came from underdogs, and the first 140 live picks split 37–56 on favorites and 27–19 on underdogs.
+  - Picks on favorites against picks on underdogs. In the backtest the edge came from underdogs. The first 171 live picks went 45–63 on favorites and 36–27 on underdogs, the pattern that led to lean-v1.4.
   - All picks together, expected near 50%, and the over/under lean, expected to show no edge.
-- **After the checkpoint.** If the review supports a change, it is released as lean-v1.4 with its own test window. A change fitted on the window's live results cannot then be judged on those same results: its evidence comes from the games after it is released.
+- **After the checkpoint.** If the review supports a change, it is released as lean-v1.5 with its own test window. A change fitted on the window's live results cannot then be judged on those same results: its evidence comes from the games after it is released.
 
 No result will be called before the review. With several Strong picks a day, a few weeks of results can look very good or very bad by chance alone.
 

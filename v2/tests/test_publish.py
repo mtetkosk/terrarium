@@ -315,34 +315,52 @@ def test_ledger_games_are_raw_values(db_path):
 def test_ledger_grid_record_strip(ledger_grid, db_path):
     lay = ledger_grid.layout
     labels = [pg.cell_text(c) for c in lay.rows[2]]
-    values = [pg.cell_text(c) for c in lay.rows[3]]
-    strip = dict(zip(labels, values))
-    assert strip["GRADED"] == "1" and strip["ATS"] == "100.0%" and strip["COVERS"] == "1"
-    assert strip["UNITS @ −110"] == "+1.0" and strip["AVG CLV"] == "+1.50" and strip["BEAT CLOSE"] == "100%"
+    all_row = dict(zip(labels, [pg.cell_text(c) for c in lay.rows[3]]))
+    strong_row = dict(zip(labels, [pg.cell_text(c) for c in lay.rows[4]]))
+    assert pg.cell_text(lay.rows[3][0]) == "ALL PICKS" and pg.cell_text(lay.rows[4][0]).startswith("STRONG PICKS")
+    assert all_row["GRADED"] == "1" and all_row["ATS"] == "100.0%" and all_row["COVERS"] == "1"
+    assert all_row["UNITS @ −110"] == "+1.0" and all_row["AVG CLV"] == "+1.50" and all_row["BEAT CLOSE"] == "100%"
     with db.get_db_connection(db_path=db_path) as con:
         g, = lp.ledger_games(con)
     strong = pg.spread_lean(g.edge, g.pick) == "Strong"
-    counted = strong and g.model_version == pg.vm.DEFAULT_MODEL_VERSION
-    assert strip["STRONG PICKS"] == ("1" if counted else "0")
-    assert strip["STRONG ATS"] == ("100.0%" if counted else "")
-    # ATS above break-even is tinted green
-    ats_cell = lay.rows[3][labels.index("ATS")]
-    assert ats_cell["userEnteredFormat"]["backgroundColor"] == pg.GRADE_TINT["good"]
+    assert strong_row["GRADED"] == ("1" if strong else "—")
+    assert strong_row["UNITS @ −110"] == ("+1.0" if strong else "—")
+    short = pg.vm.DEFAULT_MODEL_VERSION.removeprefix("lean-").upper()
+    current = g.model_version == pg.vm.DEFAULT_MODEL_VERSION
+    assert all_row[f"{short} W-L"] == ("1-0" if current else "—")
+    assert strong_row[f"{short} W-L"] == ("1-0" if current and strong else "—")
+    # ATS above break-even is tinted green on the all-picks row; Strong waits for 30 graded.
+    assert lay.rows[3][labels.index("ATS")]["userEnteredFormat"]["backgroundColor"] == pg.GRADE_TINT["good"]
+    assert lay.rows[4][labels.index("ATS")]["userEnteredFormat"]["backgroundColor"] == pg._hex("#F8FAFC")
+    assert (2, 3, 8, 12) in lay.merges and (4, 5, 8, 12) in lay.merges
+
+
+def test_records_partition_all_and_strong():
+    from types import SimpleNamespace as G
+    v = pg.vm.DEFAULT_MODEL_VERSION
+    games = [G(ats="Cover", su="W", clv=1.0, edge=4.0, pick="A", model_version=v),
+             G(ats="Loss", su="L", clv=-1.0, edge=1.0, pick="A", model_version=v),
+             G(ats="Loss", su="W", clv=0.0, edge=5.0, pick="B", model_version="lean-v1.1")]
+    r = pg._records(games)
+    assert (r["all"]["covers"], r["all"]["losses"]) == (1, 2)
+    assert (r["strong"]["covers"], r["strong"]["losses"]) == (1, 1)
+    assert (r["all_current"]["n"], r["strong_current"]["n"]) == (2, 1)
+    assert pg._wl(r["strong"]) == "1-1"
 
 
 def test_ledger_grid_rows_one_value_per_cell(ledger_grid):
     lay = ledger_grid.layout
-    header = [pg.cell_text(c) for c in lay.rows[6]]
+    header = [pg.cell_text(c) for c in lay.rows[7]]
     assert header == ["Date", "Away", "Home", "Site", "Venue", "City", "Model", "Game Type", "Model Margin", "Pick",
                       "Pick Line", "Book", "Spread Lean", "Close Line", "CLV", "Away Pts", "Home Pts", "Final Margin",
                       "SU", "ATS"]
-    row = [pg.cell_text(c) for c in lay.rows[7]]
+    row = [pg.cell_text(c) for c in lay.rows[8]]
     assert row == ["2026-11-19", "Michigan St.", "Duke", "—", "—", "—", lp.LIVE_MODEL_VERSION.removeprefix("live-"),
                    pg.game_type(float(row[8])), row[8], "Duke", "-3.0", "DraftKings",
                    pg.spread_lean(abs(-3.0 + float(row[8])), "Duke"), "-4.5", "+1.5", "72", "80", "+8", "W", "Cover"]
-    assert lay.rows[7][19]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
-    assert (lay.frozen_rows, lay.frozen_cols, lay.filter_row) == (7, 3, 6)
-    assert all(c.get("note") for c in lay.rows[6])
+    assert lay.rows[8][19]["userEnteredFormat"]["backgroundColor"] == pg._hex(pg.RESULT_STYLE["Cover"][0])
+    assert (lay.frozen_rows, lay.frozen_cols, lay.filter_row) == (8, 3, 7)
+    assert all(c.get("note") for c in lay.rows[7])
 
 
 def test_ledger_grid_empty(db_path):
@@ -803,9 +821,10 @@ def test_mobile_ledger(mobile_ledger):
     lay = mobile_ledger.layout
     assert sum(lay.col_widths) <= 345
     text = [[pg.cell_text(c) for c in r] for r in lay.rows]
-    stats = {r[0]: r[3] for r in text if r[0] and r[3]}
+    assert text[next(i for i, r in enumerate(text) if r[2] == "All picks")][3] == "Strong (3+)"
+    stats = {r[0]: r[2] for r in text if r[0] and r[2]}
     assert stats["Against the spread"] == "100.0%" and stats["Units @ −110"] == "+1.0"
-    assert stats["Avg closing-line value"] == "+1.50"
+    assert stats["Avg closing-line value"] == "+1.50" and stats["Record (W-L)"] == "1-0"
     header = next(i for i, r in enumerate(text) if r[0] == "Date")
     assert text[header + 1] == ["11/19", "Duke", "Michigan St.", "-3.0", "Cover"]   # Duke's own line
     assert lay.filter_row == header
@@ -934,7 +953,7 @@ def test_ledger_shows_site(db_path):
     with db.get_db_connection(db_path=db_path) as con:
         venues.store(con, YESTERDAY, [venues.Venue("Duke", "Michigan St.", False, "Cameron Indoor Stadium", "Durham, NC")])
         grid = pg.build_ledger_grid(con, TODAY)
-    assert [pg.cell_text(c) for c in grid.layout.rows[7][3:6]] == ["Home", "Cameron Indoor Stadium", "Durham, NC"]
+    assert [pg.cell_text(c) for c in grid.layout.rows[8][3:6]] == ["Home", "Cameron Indoor Stadium", "Durham, NC"]
 
 
 

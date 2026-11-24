@@ -1,4 +1,4 @@
-"""lean-v1.3 is frozen for its test window, Nov 23, 2026 - Jan 10, 2027, with a
+"""lean-v1.4 is frozen for its test window, Nov 24, 2026 - Jan 10, 2027, with a
 review on Jan 11 (docs/how_picks_work.md, "Test windows"). The live record is
 only an out-of-sample test if the model that makes the picks stays fixed
 during the window, so every fitted parameter is pinned here.
@@ -21,7 +21,7 @@ FROZEN = {
     "DEFAULT_HCA_EFF": 1.9,
     "EARLY_STRETCH_K": 0.48,
     "EARLY_STRETCH_DAYS": 70,
-    "EARLY_STRETCH_MAX": 1.25,
+    "EARLY_STRETCH_MAX": 1.0,
     "SIGMA_TEMPO": 3.5,
     "SIGMA_EFF_BASE": 14.1,
     "SIGMA_EFF_3PA_SLOPE": 0.0,
@@ -33,8 +33,8 @@ FROZEN = {
 
 
 def test_model_version_is_the_frozen_one():
-    assert vm.DEFAULT_MODEL_VERSION == "lean-v1.3"
-    assert LIVE_MODEL_VERSION == "live-lean-v1.3"
+    assert vm.DEFAULT_MODEL_VERSION == "lean-v1.4"
+    assert LIVE_MODEL_VERSION == "live-lean-v1.4"
 
 
 @pytest.mark.parametrize("name, value", sorted(FROZEN.items()))
@@ -48,5 +48,6 @@ def test_line_rules_are_frozen():
 
 
 def test_stretch_schedule_is_frozen():
-    assert sg.early_season_stretch(date(2026, 11, 23)) == 1.25
-    assert sg.early_season_stretch(date(2027, 1, 15)) == 1.0
+    # lean-v1.4: no early-season stretch on any date.
+    for d in (date(2026, 11, 1), date(2026, 11, 24), date(2026, 12, 15), date(2027, 1, 15)):
+        assert sg.early_season_stretch(d) == 1.0

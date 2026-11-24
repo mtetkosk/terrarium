@@ -1,6 +1,6 @@
 # How the Power Rankings Work
 
-*Model lean-v1.3 · last updated November 22, 2026*
+*Model lean-v1.4 · last updated November 24, 2026*
 
 ## The short version
 
@@ -10,52 +10,52 @@ That expected record, divided by the number of games, is the team's **Neutral Do
 
 ## What NDI means, and what it doesn't
 
-On November 22, 2026, Houston's NDI is **96.7%**. That does **not** mean Houston is 96.7% to beat any given opponent. It means:
+On November 24, 2026, Houston's NDI is **95.0%**. That does **not** mean Houston is 95.0% to beat any given opponent. It means:
 
-> If Houston played all 364 other D-I teams once on a neutral floor, it would be expected to win about **352** of them and lose about **12**.
+> If Houston played all 364 other D-I teams once on a neutral floor, it would be expected to win about **346** of them and lose about **18**.
 
 Most of the field is far weaker than Houston, so most of those 364 games are near-certain wins. The handful of close games against other top teams costs it the rest. Here is Houston against opponents at different points in the rankings:
 
 | Houston vs | Houston's win chance |
 |---|---|
-| #2 Illinois | 59% |
-| #5 Vanderbilt | 69% |
-| #10 Virginia | 74% |
-| #25 Missouri | 84% |
-| #50 Creighton | 92% |
-| #100 George Mason | 98% |
-| #183 (middle of D-I) and below | 99.8% or more |
+| #2 Illinois | 57% |
+| #5 Vanderbilt | 66% |
+| #10 Texas | 70% |
+| #25 Missouri | 78% |
+| #50 Creighton | 86% |
+| #100 Seattle | 95% |
+| #183 (middle of D-I) and below | 98.8% or more |
 
-So against #2 it is close to a toss-up, with a lean, exactly as you would expect. Across the whole field the average comes out to 96.7%.
+So against #2 it is close to a toss-up, with a lean, exactly as you would expect. Across the whole field the average comes out to 95.0%.
 
 The same reading works for every team:
 
 | Rank | Team | NDI | Expected record vs. all of D-I |
 |---|---|---|---|
-| 1 | Houston | 96.7% | 352–12 |
-| 10 | Virginia | 92.3% | 336–28 |
-| 25 | Missouri | 88.6% | 322–42 |
-| 50 | Creighton | 81.7% | 297–67 |
-| 100 | George Mason | 65.9% | 240–124 |
-| 183 | Fresno St. | 46.3% | 169–195 |
-| 250 | Green Bay | 35.8% | 130–234 |
-| 365 | Arkansas Pine Bluff | 9.0% | 33–331 |
+| 1 | Houston | 95.0% | 346–18 |
+| 10 | Texas | 89.6% | 326–38 |
+| 25 | Missouri | 86.2% | 314–50 |
+| 50 | Creighton | 79.0% | 288–76 |
+| 100 | Seattle | 64.1% | 233–131 |
+| 183 | Fresno St. | 45.6% | 166–198 |
+| 250 | Northern Arizona | 37.2% | 135–229 |
+| 365 | Arkansas Pine Bluff | 12.7% | 46–318 |
 
 **Head-to-head among the top five** (row team's chance to beat column team on a neutral floor):
 
 | | Houston | Illinois | Florida | Kansas | Vanderbilt |
 |---|---|---|---|---|---|
-| **Houston** | — | 59% | 63% | 63% | 69% |
-| **Illinois** | 41% | — | 54% | 55% | 61% |
-| **Florida** | 37% | 46% | — | 51% | 57% |
-| **Kansas** | 37% | 45% | 49% | — | 56% |
-| **Vanderbilt** | 31% | 39% | 43% | 44% | — |
+| **Houston** | — | 57% | 60% | 63% | 66% |
+| **Illinois** | 43% | — | 54% | 57% | 60% |
+| **Florida** | 40% | 46% | — | 54% | 56% |
+| **Kansas** | 37% | 43% | 46% | — | 53% |
+| **Vanderbilt** | 34% | 40% | 44% | 47% | — |
 
-Gaps between neighbors near the top are small: #3 Florida and #4 Kansas are essentially even. Treat adjacent ranks as close calls, not certainties.
+Gaps between neighbors near the top are small: #3 Florida is only 54% against #4 Kansas, and Kansas 53% against #5 Vanderbilt. Treat adjacent ranks as close calls, not certainties.
 
 ## How it is calculated
 
-**Step 1: Every head-to-head matchup.** For each pair of teams *i* and *j*, the model projects a neutral-floor game with the same formulas used for the Daily Picks (see *How the Daily Picks Work*). That means expected possessions T<sub>ij</sub>, each team's expected efficiency against the other, the early-season stretch b(t), and the scoring uncertainty σ = 14.1 with within-game correlation ρ = 0.30. Expected possessions include the totals recalibration (pulled 15% toward the league average), with the efficiency gap rescaled so the expected margin is unchanged. With no home court, the expected margin is
+**Step 1: Every head-to-head matchup.** For each pair of teams *i* and *j*, the model projects a neutral-floor game with the same formulas used for the Daily Picks (see *How the Daily Picks Work*). That means expected possessions T<sub>ij</sub>, each team's expected efficiency against the other, the early-season stretch b(t) (switched off in lean-v1.4, so b(t) = 1), and the scoring uncertainty σ = 14.1 with within-game correlation ρ = 0.30. Expected possessions include the totals recalibration (pulled 15% toward the league average), with the efficiency gap rescaled so the expected margin is unchanged. With no home court, the expected margin is
 
 <p style="text-align:center"><i>μ<sub>ij</sub> = T<sub>ij</sub> × b(t) × (Eff<sub>i vs j</sub> − Eff<sub>j vs i</sub>) / 100</i></p>
 

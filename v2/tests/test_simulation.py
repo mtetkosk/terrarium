@@ -308,6 +308,16 @@ def test_simulate_game_mixed_snapshot_dates_use_later_one(tmp_path, monkeypatch)
 # --- early-season margin stretch ----------------------------------------------------
 
 
+@pytest.fixture
+def stretch_cap_125(monkeypatch):
+    """The v1.2-v1.3 schedule (cap 1.25); lean-v1.4 turns the stretch off."""
+    monkeypatch.setattr(sg, "EARLY_STRETCH_MAX", 1.25)
+
+
+def test_stretch_is_off_in_current_version():
+    assert all(sg.early_season_stretch(d) == 1.0 for d in (date(2026, 11, 20), date(2026, 12, 5)))
+
+
 @pytest.mark.parametrize("as_of, expected", [
     (date(2025, 11, 1), 1.25), (date(2025, 10, 20), 1.25),          # capped (uncapped would be 1.48)
     (date(2025, 11, 24), 1.25),                                     # uncapped 1.32: still capped
@@ -316,7 +326,7 @@ def test_simulate_game_mixed_snapshot_dates_use_later_one(tmp_path, monkeypatch)
     (date(2026, 1, 9), 1.0), (date(2026, 2, 15), 1.0),               # day 69 -> ~1.007; after day 70 -> 1
     (date(2026, 11, 20), 1.25),                                     # new season resets (to the cap)
 ])
-def test_early_season_stretch_schedule(as_of, expected):
+def test_early_season_stretch_schedule(as_of, expected, stretch_cap_125):
     assert sg.early_season_stretch(as_of) == pytest.approx(expected, abs=0.01)
 
 
@@ -331,7 +341,7 @@ def test_stretch_scales_neutral_gap_and_keeps_total():
     assert (a2 - b2) - (a1 - b1) == pytest.approx(4.0)
 
 
-def test_simulate_game_applies_stretch_by_date(db_path):
+def test_simulate_game_applies_stretch_by_date(db_path, stretch_cap_125):
     on = sg.simulate_game("Duke", "Michigan St.", as_of=D_LATE, n_sims=20_000, seed=1, db_path=db_path)
     off = sg.simulate_game("Duke", "Michigan St.", as_of=D_LATE, n_sims=20_000, seed=1, db_path=db_path,
                            early_stretch=False)

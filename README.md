@@ -16,7 +16,7 @@ Each game is projected in two parts rather than predicting a final score directl
 On top of that:
 
 - **Home court** is worth about 2.6 points of margin. It is set to zero at neutral sites, which are identified from each day's venue data.
-- An **early-season adjustment** widens rating gaps in November and December while ratings are still partly preseason.
+- An **early-season adjustment** that widened rating gaps in November and December is switched off (lean-v1.4): this season's first games showed it made margins too wide.
 - **Totals recalibration.** Projected pace and scoring level are pulled toward the league average (the raw formulas make totals too extreme), without changing the projected margin.
 - **Correlated scoring noise.** Both teams' efficiencies are drawn with a shared component (ρ = 0.30), fitted so that margins and totals have the spreads seen in real games (about 11.4 and 17.3 points).
 
@@ -70,7 +70,7 @@ On macOS, `make install-daily` installs a launchd job that runs the pipeline eac
 
   A game that fails is held back. Publishing is blocked if the ratings are stale, the rankings are inconsistent, or any cell would show a non-number.
 - **Honest benchmarking.** Every metric is reported next to the same metric for the betting market.
-- **Frozen in test windows.** Each model version runs unchanged for a test window of a few weeks, with its fitted parameters pinned by a test (`tests/test_frozen_params.py`). The current window (lean-v1.3, Nov 23, 2026 – Jan 10, 2027) asks one question: do picks with a 3+ point edge beat the 52.4% break-even? See the test windows section of [How the Daily Picks Work](v2/docs/how_picks_work.md).
+- **Frozen in test windows.** Each model version runs unchanged for a test window of a few weeks, with its fitted parameters pinned by a test (`tests/test_frozen_params.py`). The current window (lean-v1.4, Nov 24, 2026 – Jan 10, 2027) asks one question: do picks with a 3+ point edge beat the 52.4% break-even? See the test windows section of [How the Daily Picks Work](v2/docs/how_picks_work.md).
 
 ## Outputs
 
@@ -85,14 +85,14 @@ The Google Sheet has desktop tabs and phone-friendly 📱 tabs:
 
 ## Track record
 
-The 2025-26 backtest (model lean-v1.3) covered 3,383 regular-season games, each projected using only that morning's ratings:
+The 2025-26 backtest (model lean-v1.4) covered 3,383 regular-season games, each projected using only that morning's ratings:
 
 | Measure | Model | Market |
 |---|---|---|
-| Picked the winner (games with a moneyline) | 68.5% | 68.9% |
-| Against the spread, all picks | 50.5% | 52.4% needed to break even |
-| Against the spread, edge 3+ points | 59.4% (286 games) | 52.4% needed to break even |
-| Margin error (RMSE) | 11.31 pts | 11.27 pts |
+| Picked the winner (games with a moneyline) | 68.3% | 68.9% |
+| Against the spread, all picks | 51.1% | 52.4% needed to break even |
+| Against the spread, edge 3+ points | 59.0% (344 games) | 52.4% needed to break even |
+| Margin error (RMSE) | 11.38 pts | 11.27 pts |
 | Brier score | 0.195 | 0.193 |
 | Total error (RMSE) | 17.17 pts | 17.07 pts |
 

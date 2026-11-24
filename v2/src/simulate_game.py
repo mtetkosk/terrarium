@@ -9,15 +9,18 @@ T_bar / E_bar are the D-I means of AdjT / AdjO on the same snapshot date as
 the ratings (leak-safe, and they drift ~67-71 / ~105-109 within and across
 seasons). The spec's fixed 67.8 / 105.4 are only a fallback.
 
-Early-season stretch (calibrated in Milestone 4): KenPom ratings are pulled
-toward the mean early in the season, so neutral-court margins are too
-compressed. The neutral efficiency gap is multiplied by
-    b(t) = min(1.25, 1 + 0.48 * max(0, 1 - days_since_Nov1 / 70))
-(1.25 through early Dec, ~1.18 mid-Dec, 1.0 from mid-Jan) before HCA is
-applied; the expected total is unchanged. Fitted on the 2025-26 season only.
-The cap (lean-v1.2) is the largest stretch that season's market lines could
-test: they start on Dec 5, where the uncapped formula gives 1.247. November's
-uncapped values (up to 1.48) were never validated.
+Early-season stretch (calibrated in Milestone 4; DISABLED in lean-v1.4): the
+idea is that KenPom ratings are pulled toward the mean early in the season, so
+neutral-court margins are too compressed, and the neutral efficiency gap is
+multiplied by
+    b(t) = min(cap, 1 + 0.48 * max(0, 1 - days_since_Nov1 / 70))
+before HCA (expected total unchanged). Fitted on 2025-26, where market lines
+start on Dec 5 and the stretch helped in December (actual margin ~1.21 x
+unstretched model). November was never tested. The first 171 live games of
+2026-27 (Nov 20-23) said the opposite: actual margin ~0.82 x the model at the
+1.25 cap and ~1.02 x unstretched, with picks on favorites 45-63. lean-v1.4
+sets the cap to 1.0 (no stretch); the machinery stays so it can be re-enabled
+if this season's ratings turn out compressed in December.
 
 Totals recalibration (lean-v1.3): the multiplicative formulas make projected
 totals too extreme (2025-26: actual total ~ 0.78 x model total). After the
@@ -88,7 +91,7 @@ SPEC_HCA_EFF = 3.3
 DEFAULT_HCA_EFF = 1.9
 EARLY_STRETCH_K = 0.48
 EARLY_STRETCH_DAYS = 70
-EARLY_STRETCH_MAX = 1.25       # largest stretch the 2025-26 lines tested (Dec 5)
+EARLY_STRETCH_MAX = 1.0        # lean-v1.4: stretch off (was 1.25 in v1.2-v1.3)
 OT_TEMPO_FRACTION = 5 / 40     # 5-minute overtime = 12.5% of game tempo
 MAX_OVERTIMES = 4
 DEFAULT_N_SIMS = 10_000

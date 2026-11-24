@@ -38,7 +38,9 @@ log = logging.getLogger(__name__)
 # variance (sigma_Eff 14.2, rho 0.32, no 3PA term) + stretch capped at 1.25.
 # lean-v1.3 = totals recalibration (tempo x0.85, scoring level x0.67 toward the
 # league average, margins unchanged) + variance refit (sigma 14.1, rho 0.30).
-DEFAULT_MODEL_VERSION = "lean-v1.3"
+# lean-v1.4 = v1.3 with the early-season stretch turned off (cap 1.0): live
+# Nov 20-23, 2026 margins came in at ~0.82 x the stretched model.
+DEFAULT_MODEL_VERSION = "lean-v1.4"
 # Skip games whose ratings snapshot is older than this (stale, e.g. a March
 # game priced off a February snapshot when the archive has a gap).
 DEFAULT_MAX_STALENESS_DAYS = 3
