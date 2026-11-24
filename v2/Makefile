@@ -79,13 +79,15 @@ closing: setup
 	$(PY) cli.py odds --no-scores
 
 # Daily pipeline (launchd). Publishing is skipped until Google settings exist.
-# `style` (team style types) is research-only; its leading - means a failure never stops the run.
+# `style` (team style types) and `shadow` (shadow models) are evaluation-only; their leading - means a
+# failure never stops the run.
 daily: setup
 	$(PY) cli.py ingest
 	-$(PY) cli.py style
 	$(PY) cli.py odds
 	$(PY) cli.py venues
 	$(PY) cli.py picks
+	-$(PY) cli.py shadow
 	$(PY) cli.py power-rankings --top 10
 	$(PY) cli.py publish --skip-if-unconfigured $(if $(filter 1,$(PUBLIC)),--make-public,)
 

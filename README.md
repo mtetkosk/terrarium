@@ -143,6 +143,7 @@ terrarium/
     │   ├── db.py               DuckDB schema and connection
     │   ├── simulate_game.py    Monte Carlo game simulator
     │   ├── live_picks.py       Daily projections, pick locking, ledger
+    │   ├── shadow.py           Shadow models: candidate pick rules graded live, never published
     │   ├── odds_api.py         Odds, consensus and best lines, closing lines, finals
     │   ├── venues.py           Venues and neutral sites
     │   ├── team_names.py       Team-name matching across feeds

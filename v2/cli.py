@@ -10,6 +10,7 @@
     python cli.py picks [--date D]          # lock today's pre-game picks
     python cli.py power-rankings [--date D] [--top N]
     python cli.py publish [--dry-run] [--make-public]
+    python cli.py shadow [--backfill D | --report]  # shadow models (evaluation only)
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from src import power_rankings as pr
 from src import publish_docs
 from src import publish_gsheet as pg
 from src import sanity
+from src import shadow as shadow_mod
 from src import state as state_mod
 from src import style_clusters as sc
 from src import team_style
@@ -401,6 +403,43 @@ def style(
                                   f"AdjO {s.adj_o:.1f}, AdjD {s.adj_d:.1f}): {', '.join(s.examples)}")
     except (ik.KenPomError, requests.RequestException) as exc:
         _fail(f"Style ingest failed: {exc}")
+
+
+@app.command()
+def shadow(
+    date_: str = typer.Option(None, "--date", help="Slate date (default today)"),
+    backfill_from: str = typer.Option(None, "--backfill", help="Lock shadow picks for every day from this date "
+                                                                 "through --date (flagged as backfill)"),
+    report: bool = typer.Option(False, "--report", help="Print graded records per shadow model"),
+    since: str = typer.Option(None, help="Report only games on or after this date"),
+    include_backfill: bool = typer.Option(False, "--include-backfill", help="Count backfilled picks in the report"),
+    db_path: Path = DbPath,
+):
+    """Shadow models: lock their picks next to the live picks, or report their records. Never affects live picks."""
+    day = _date(date_) or date.today()
+    with get_db_connection(db_path=db_path) as con:
+        if report:
+            reps = shadow_mod.report(con, _date(since), include_backfill)
+            table = Table(title="Shadow models" + (" (incl. backfill)" if include_backfill else " (locked on the day)"))
+            for col in ("Model", "Picks", "All", "Strong 3+", "S fav", "S dog", "Lean", "S units", "S CLV"):
+                table.add_column(col, no_wrap=True)
+            for r in reps:
+                clv = r.strong.clv
+                table.add_row(r.model, str(r.picks), r.all.text(short=True), r.strong.text(short=True),
+                              r.strong_fav.text(short=True), r.strong_dog.text(short=True), r.lean.text(short=True),
+                              f"{r.strong.units:+.1f}",
+                              f"{sum(clv) / len(clv):+.2f}" if clv else "—")
+            console.print(table)
+            names = {m.name: m.description for m in shadow_mod.REGISTRY}
+            for r in reps:
+                console.print(f"  {r.model}: {names.get(r.model, '(retired)')}")
+            return
+        if backfill_from:
+            totals = shadow_mod.backfill(con, _date(backfill_from), day)
+            console.print("Backfilled " + ", ".join(f"{k} {v}" for k, v in totals.items()))
+            return
+        run = shadow_mod.lock(con, day)
+    console.print("Shadow picks " + ", ".join(f"{k} {v} new ({run.already[k]} already)" for k, v in run.locked.items()))
 
 
 @app.command("power-rankings")

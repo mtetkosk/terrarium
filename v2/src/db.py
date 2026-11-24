@@ -188,6 +188,22 @@ SCHEMA: dict[str, str] = {
             PRIMARY KEY (snapshot_date, team)
         )
     """,
+    # Shadow models (src/shadow.py): one locked side per (game, model) against
+    # the live pick's consensus line. Never read by the live pipeline.
+    "shadow_picks": """
+        CREATE TABLE IF NOT EXISTS shadow_picks (
+            game_id VARCHAR,
+            model VARCHAR,
+            game_date DATE,
+            locked_at TIMESTAMP,
+            pred_margin_a DOUBLE,
+            market_line_a DOUBLE,
+            side VARCHAR,
+            edge DOUBLE,
+            backfill BOOLEAN,
+            PRIMARY KEY (game_id, model)
+        )
+    """,
     # Pre-lock / pre-publish sanity checks (src/sanity.py); rewritten per date + stage.
     "sanity_issues": """
         CREATE TABLE IF NOT EXISTS sanity_issues (

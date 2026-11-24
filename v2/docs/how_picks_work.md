@@ -185,6 +185,14 @@ lean-v1.3's window, which opened November 23, was closed after one day (32 picks
   - All picks together, expected near 50%, and the over/under lean, expected to show no edge.
 - **After the checkpoint.** If the review supports a change, it is released as lean-v1.5 with its own test window. A change fitted on the window's live results cannot then be judged on those same results: its evidence comes from the games after it is released.
 
+**Shadow models.** Candidate changes are tested live as *shadow models* before any of them can become a version. Each one locks a side on every game right after the live picks, against the same consensus line, and is graded the same way, but it never changes a pick or anything on the sheet. Running from November 24:
+
+- **baseline-v1.4:** the live model, priced the same way as the shadows, as the yardstick.
+- **scale-match-7d:** maps the model's margins onto the market's overall scale before measuring edges. Each morning it fits how wide the market's spreads run relative to the model's over the past week (about 1.15× in late November 2026), so only game-specific disagreements create edges. Without it, one parameter can flip a whole slate between favorites and underdogs, as the stretch change did. 2025-26 backtest: Strong picks 62.7% (263) against 59.0% (344) for lean-v1.4, with most of the gain in November and December.
+- **stretch-1.25:** lean-v1.3's early-season stretch, to see whether it starts helping in December as it did in 2025-26.
+
+A shadow that beats the live model over enough games can be proposed as the next version at a checkpoint.
+
 No result will be called before the review. With several Strong picks a day, a few weeks of results can look very good or very bad by chance alone.
 
 ## 11. Style types (research)

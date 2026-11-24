@@ -149,6 +149,17 @@ EXPECTED_COLUMNS = {
         ("off_second", "INTEGER"),
         ("def_second", "INTEGER"),
     ],
+    "shadow_picks": [
+        ("game_id", "VARCHAR"),
+        ("model", "VARCHAR"),
+        ("game_date", "DATE"),
+        ("locked_at", "TIMESTAMP"),
+        ("pred_margin_a", "DOUBLE"),
+        ("market_line_a", "DOUBLE"),
+        ("side", "VARCHAR"),
+        ("edge", "DOUBLE"),
+        ("backfill", "BOOLEAN"),
+    ],
     "sanity_issues": [
         ("check_date", "DATE"),
         ("stage", "VARCHAR"),
@@ -171,6 +182,7 @@ EXPECTED_PRIMARY_KEYS = {
     "game_venues": ["game_id"],
     "team_style": ["snapshot_date", "team"],
     "team_style_clusters": ["snapshot_date", "team"],
+    "shadow_picks": ["game_id", "model"],
 }
 
 
