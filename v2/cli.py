@@ -1,6 +1,7 @@
 """Unified command-line interface for the CBB prediction engine.
 
     python cli.py ingest [--date D | --start D [--end D]]
+    python cli.py style [--season Y | --fit | --show | --charts]  # team style types (research)
     python cli.py simulate --team1 "Duke" --team2 "Michigan St." [--neutral | --venue V]
     python cli.py import-v1
     python cli.py predict --season 2026 [--start D --end D] [--hca X]
@@ -32,6 +33,8 @@ from src import publish_docs
 from src import publish_gsheet as pg
 from src import sanity
 from src import state as state_mod
+from src import style_clusters as sc
+from src import team_style
 from src import venues as venues_mod
 from src import validate_model as vm
 from src.db import DEFAULT_DB_PATH, PROJECT_ROOT, get_db_connection
@@ -361,6 +364,43 @@ def venues(
         return
     console.print(f"{run.matched} of {run.matched + run.unmatched_games} games matched to ESPN venues; "
                   f"{run.neutral} neutral site(s); home-court removed from {run.hca_zeroed} unlocked game(s)")
+
+
+@app.command()
+def style(
+    date_: str = typer.Option(None, "--date", help="Live snapshot date (default today; past dates must be cached)"),
+    season: int = typer.Option(None, help="Ingest a finished season's final profiles (e.g. 2026 = 2025-26)"),
+    fit: bool = typer.Option(False, "--fit", help="Refit the clusters on FIT_SEASONS finals (overwrites names)"),
+    show: bool = typer.Option(False, "--show", help="Print each type with example teams"),
+    charts: bool = typer.Option(False, "--charts", help="Regenerate the paper's style charts (docs/images)"),
+    db_path: Path = DbPath,
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Team style profiles (KenPom four factors + team stats) and offense/defense types. Research only."""
+    _setup_logging(verbose)
+    _load_env()
+    try:
+        with get_db_connection(db_path=db_path) as con:
+            if charts:
+                from src import style_charts
+                for path in style_charts.render_all(con):
+                    console.print(f"Wrote {path.relative_to(PROJECT_ROOT)}")
+                return
+            if fit:
+                model = sc.fit(con)
+                sc.save_model(model)
+                console.print(f"[yellow]Refit {model.version}; cluster names reset, edit {sc.MODEL_PATH}[/]")
+                return
+            snap, n = team_style.ingest_style(con, _date(date_), season)
+            assigned = sc.assign(con, snap)
+            sc.ensure_matchup_view(con)
+            console.print(f"Style snapshot {snap}: {n} teams; {assigned} assigned to types")
+            if show:
+                for s in sc.summarize(con, snap):
+                    console.print(f"[bold]{s.side.upper()} · {s.name}[/] ({s.n} teams, "
+                                  f"AdjO {s.adj_o:.1f}, AdjD {s.adj_d:.1f}): {', '.join(s.examples)}")
+    except (ik.KenPomError, requests.RequestException) as exc:
+        _fail(f"Style ingest failed: {exc}")
 
 
 @app.command("power-rankings")

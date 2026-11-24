@@ -16,7 +16,10 @@ are set.
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,8 +65,26 @@ def doc_url(key: str) -> str | None:
     return f"https://docs.google.com/document/d/{did}/edit?usp=sharing" if did else None
 
 
-def to_html(md_text: str, title: str) -> str:
-    body = markdown.markdown(md_text, extensions=["tables"])
+DOC_IMAGE_WIDTH_PX = 624        # full text width of a Letter page with 1-inch margins
+
+
+def inline_images(html: str, base_dir: Path = DOCS_DIR) -> str:
+    """Embed local <img> files (e.g. images/x.png, relative to docs/) as data
+    URIs so the single uploaded HTML file carries them into the Google Doc.
+    Remote and missing images are left as they are."""
+    def repl(m: re.Match) -> str:
+        src = m.group(1)
+        path = base_dir / src
+        if re.match(r"^[a-z]+:", src) or not path.is_file():
+            return m.group(0)
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        return f'src="data:{mime};base64,{data}" width="{DOC_IMAGE_WIDTH_PX}"'
+    return re.sub(r'src="([^"]+)"', repl, html)
+
+
+def to_html(md_text: str, title: str, base_dir: Path = DOCS_DIR) -> str:
+    body = inline_images(markdown.markdown(md_text, extensions=["tables"]), base_dir)
     return (f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{title}</title>"
             f"<style>{_CSS}</style></head><body>{body}</body></html>")
 

@@ -183,4 +183,104 @@ Each model version is tested on live games it has never seen, with no changes du
 
 No result will be called before the review. With several Strong picks a day, a few weeks of results can look very good or very bad by chance alone.
 
+## 11. Style types (research)
+
+The last four Daily Picks columns describe *how* each team plays, laid out as the two matchups in the game: away offense against home defense, then home offense against away defense. The phone tab shows the same types as two rows per game. They are for context and research only. **They do not affect the projections or the picks.**
+
+The question behind them is different from the ratings. The ratings say how *good* a team is. The style types say what it *does*: does it shoot threes or attack the rim, push the pace or grind, gamble for steals or sit back?
+
+### 11.1 What goes in
+
+Each type is built from KenPom's season-to-date team stats: the four-factors page and the offensive and defensive team-stats pages, pulled every morning. Only stats that reflect a *choice* by the coaching staff are used:
+
+| Offense feature | What it measures |
+|---|---|
+| Pace | Possessions per 40 minutes |
+| 3-pt attempts | Share of shots taken from three |
+| 2-pt shot distance | Average distance of two-point shots: rim attacks vs. mid-range and post-ups |
+| Assists | Share of made baskets that were assisted: ball movement vs. one-on-one play |
+| Free throws | Free-throw attempts per shot: how often the offense attacks into contact |
+| Offensive rebounds | Share of its own misses it rebounds: crashing the glass vs. getting back |
+
+| Defense feature | What it measures |
+|---|---|
+| Opp 3-pt attempts | How many threes the defense allows opponents to take |
+| Opp 2-pt distance | Whether it pushes opponents' twos away from the rim |
+| Opp assists | How often opponents' baskets come from ball movement |
+| Steals | Pressure and gambling for turnovers |
+| Fouls (opp FTs) | How often it sends opponents to the line |
+| Blocks | Rim protection |
+| Opp off. rebounds | How often opponents get their own misses back |
+
+Some stats are left out on purpose. Turnover rate and shooting percentages mostly measure execution, which the ratings already cover. Turnovers forced is left out because it moves almost in lockstep with steal rate (correlation 0.88), so including both would count the same trait twice.
+
+### 11.2 How the types are found
+
+1. **Compare with the league.** Each stat is turned into a z-score within its own season: how many standard deviations a team sits above or below that season's average. A type is therefore relative to its era. For example, the league takes more threes every year, so "high 3-point rate" means high *for that season*.
+2. **Remove team quality.** Style and quality are tangled. Good offenses get more rim attempts and offensive rebounds, and good defenses block more shots. Left alone, the good teams fall into the same few groups. So each stat is regressed on the team's offensive and defensive ratings, and only the leftover part, the *residual*, is kept. What remains is how a team plays *for a team of its quality*.
+3. **Group similar teams.** K-means clustering sorts teams into five offensive and five defensive groups. Each group is defined by its *centroid*, the average profile of its teams. Offense and defense are clustered separately. The groups were fit on 1,454 team-seasons (2022-23 to 2025-26).
+4. **Name the groups.** Each group is named from its centroid (Figure 1). The names describe the dominant traits, so not every team in a group has every trait.
+5. **Assign teams every morning.** Each day, every team's season-to-date profile goes through steps 1 and 2 and is matched to the nearest centroid. The gap to the second-nearest centroid is stored too. When that gap is small (the closest quarter of teams), the type is shown with a **≈**, and hovering over the cell names the runner-up.
+
+![Heatmap of each style type's average profile](images/style_fingerprints.png)
+
+*Figure 1. What defines each type. Red means a type does more of something than teams of its quality, blue means less, and a number appears where the gap is half a standard deviation or more.*
+
+| Offense | Plays like | Defense | Plays like |
+|---|---|---|---|
+| Transition Attack | Fast pace; rim twos, free throws, some threes | Havoc Pressure | Gambles for steals and blocks; concedes open threes and offensive boards |
+| Post & Mid-Range | Half-court offense inside the arc; few threes or assists | Run Off the Line | Chases shooters off the arc, funnels drives to a shot blocker |
+| Paint Bullies | Few threes; drives into contact, lives at the line, crashes the glass | Physical | Fouls a lot, gets steals, keeps opponents off the arc |
+| Five-Out Motion | Many threes and assists; gets back instead of crashing | Disciplined Containment | No gambling; forces contested mid-range twos, finishes with the rebound |
+| Deliberate Glass-Crashers | Slow possessions that end with bodies on the offensive glass | Pack the Paint | Walls off the lane and lives with threes; rarely fouls |
+
+### 11.3 The style maps
+
+Each side uses six or seven features, which is too many to plot. The maps below flatten them onto the two directions along which teams differ most (principal components). Together those two directions capture about half of the variation. Each panel highlights one type against every other team from 2025-26.
+
+![Offensive style map, one panel per type](images/style_map_offense.png)
+
+*Figure 2. Offense. Left to right runs from inside play and offensive rebounding to threes and ball movement. Bottom to top runs from half-court, mid-range offense to fast pace, rim attacks and free throws.*
+
+![Defensive style map, one panel per type](images/style_map_defense.png)
+
+*Figure 3. Defense. Left to right runs from conservative to aggressive (steals, blocks, gambling). Bottom to top runs from protecting the 3-point line to protecting the paint.*
+
+The types overlap at their edges because playing styles are a continuum, not separate boxes. The silhouette score, a standard measure of how cleanly groups separate, is about 0.13, where 1 would mean fully separate groups. A type is best read as the region a team is closest to.
+
+### 11.4 Checks
+
+- **Quality really is removed.** The table shows how the top 40 teams by rating (per season) spread across the five types. Without the quality step, two types held most of the elite teams and two held almost none. With it, every type gets a fair share. Team quality now explains 0.2% of the differences between offensive types and 1.4% between defensive types.
+
+| Share of top-40 teams per type | Without quality step | With quality step |
+|---|---|---|
+| Offense: smallest / largest type | 4% / 33% | 17% / 26% |
+| Defense: smallest / largest type | 2% / 36% | 16% / 25% |
+
+- **The types are stable.** Refitting on only the two most recent seasons draws the boundaries a little differently, but the four-season types fit those seasons within 1% as well. Several ways of cutting a continuum fit about equally well, so the boundaries are useful conventions rather than natural laws.
+- **They recognize real coaching changes.** Penn St. went from Five-Out Motion with Pack the Paint under Micah Shrewsberry (2022-23) to Transition Attack with **Havoc Pressure** in both of Mike Rhoades' first two seasons. Rhoades came from VCU, the original "Havoc" program. The model knows nothing about coaches.
+
+### 11.5 What the pairings show
+
+Offense and defense types are not independent: a team's offense and defense usually follow the same coaching philosophy (p < 10⁻¹⁶ across 1,454 team-seasons).
+
+![Heatmap of how often each offense type pairs with each defense type](images/style_pairings.png)
+
+*Figure 4. How often each offense–defense pairing occurs compared with chance. 1.6× means the pairing is 60% more common than if the two were unrelated.*
+
+- **Aggressors.** Paint Bullies and Transition Attack offenses pair with Physical and Havoc Pressure defenses (about 1.4× chance). These teams attack into contact on offense and accept fouls and gambles on defense.
+- **Spacers.** Five-Out Motion pairs with Pack the Paint (1.6×, the most common pairing) and Disciplined Containment (1.4×), and rarely with Physical (0.4×). These teams space the floor on offense and play conservative, low-foul defense.
+- **Grinders.** Deliberate Glass-Crashers lean toward Run Off the Line (1.2×).
+- **Flexible.** Post & Mid-Range offenses pair with every defense at about chance.
+
+Identities also persist. A team's offensive type carries over to the next season 42% of the time and its defensive type 46% (chance is 20%). The exact pairing carries over 20% of the time, five times chance. The most persistent types are the most system-driven ones: Five-Out Motion (54%) and Havoc Pressure (52%). Deliberate Glass-Crashers is the least persistent (33%), likely because crashing the glass depends on the roster's size and rosters turn over.
+
+No pairing is a recipe for winning. Average rating differs very little across the 25 combinations, consistent with the quality step.
+
+### 11.6 Limitations
+
+- **Early-season noise.** In November a team's stats rest on a handful of games, so its type can change from day to day. Types settle as the season goes on.
+- **Raw stats.** KenPom's style stats are not adjusted for opponents, so a soft schedule can tilt a team's profile.
+- **Not yet tested on results.** Whether certain style matchups beat or miss the projections is still unknown. Each game's types are saved as of that morning, so the matchup record builds up through the season. Nothing from it will reach the model before the January 11 review, and only through a new version with its own test window.
+
 *This page describes a statistical model for entertainment and research. It is not betting advice.*

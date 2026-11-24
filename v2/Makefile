@@ -79,8 +79,10 @@ closing: setup
 	$(PY) cli.py odds --no-scores
 
 # Daily pipeline (launchd). Publishing is skipped until Google settings exist.
+# `style` (team style types) is research-only; its leading - means a failure never stops the run.
 daily: setup
 	$(PY) cli.py ingest
+	-$(PY) cli.py style
 	$(PY) cli.py odds
 	$(PY) cli.py venues
 	$(PY) cli.py picks

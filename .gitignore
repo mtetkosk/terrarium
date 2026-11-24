@@ -63,6 +63,7 @@ data/
 .env
 *.json
 !requirements.json
+!v2/models/style_clusters.json
 
 # Local agent notes (kept on disk, never committed)
 CLAUDE.md

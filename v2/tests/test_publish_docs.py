@@ -43,3 +43,21 @@ def test_publish_only_configured_docs(monkeypatch):
     assert drive.updates == [("DOC1", "text/html", "How the Daily Picks Work")]
     assert urls == {"picks": "https://docs.google.com/document/d/DOC1/edit?usp=sharing"}
     assert pd.doc_url("rankings") is None
+
+
+def test_local_images_are_embedded(tmp_path):
+    from src import publish_docs as pd
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "chart.png").write_bytes(b"\x89PNG fake")
+    html = pd.to_html("![A chart](images/chart.png)\n\n![Remote](https://example.com/x.png)\n\n"
+                      "![Missing](images/nope.png)", "T", base_dir=tmp_path)
+    assert 'src="data:image/png;base64,iVBORyBmYWtl" width="624"' in html
+    assert 'src="https://example.com/x.png"' in html and 'src="images/nope.png"' in html
+
+
+def test_picks_paper_images_exist():
+    import re
+    from src import publish_docs as pd
+    text = (pd.DOCS_DIR / "how_picks_work.md").read_text()
+    images = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text)
+    assert len(images) == 4 and all((pd.DOCS_DIR / p).is_file() for p in images)

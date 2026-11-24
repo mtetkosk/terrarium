@@ -137,6 +137,7 @@ terrarium/
     ├── Makefile            setup, test, daily and per-step targets
     ├── ARCHITECTURE.md     Design specification
     ├── docs/               "How this works" papers
+    ├── models/             Style-type centroids and names (style_clusters.json)
     ├── ops/                launchd jobs (daily pipeline, pre-tip odds pulls)
     ├── src/
     │   ├── db.py               DuckDB schema and connection
@@ -147,6 +148,9 @@ terrarium/
     │   ├── team_names.py       Team-name matching across feeds
     │   ├── sanity.py           Pre-lock and pre-publish checks
     │   ├── power_rankings.py   NDI rankings
+    │   ├── team_style.py       Team style profiles (four factors, shot mix)
+    │   ├── style_clusters.py   Offense/defense style types and matchup log (research)
+    │   ├── style_charts.py     Charts for the style-types section of the paper
     │   ├── scorecard.py        Performance metrics vs the market
     │   ├── validate_model.py   Backtesting
     │   ├── publish_gsheet.py   Google Sheet layout and publishing

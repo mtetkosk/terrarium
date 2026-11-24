@@ -38,6 +38,7 @@ from src import power_rankings as pr
 from src import publish_docs
 from src import sanity
 from src import scorecard as sc
+from src import style_clusters as styles
 from src import validate_model as vm
 from src.odds_api import BOOK_NAMES, EASTERN
 
@@ -311,6 +312,33 @@ def _spread_lean_cell(edge, pick, bg, left_border=False) -> dict:
     return _text(label, _fmt(bg=bg, fg=MUTED, size=9, align="CENTER"))
 
 
+# Style types (src/style_clusters.py): research only, never used by the picks.
+# One tint per type; ≈ marks a borderline team (hover for the runner-up type).
+STYLE_COLORS = ("#2563EB", "#B45309", "#7C3AED", "#0F766E", "#BE185D")
+
+
+def _style_note(side: str) -> str:
+    try:
+        model = styles.load_model()
+    except (OSError, ValueError, KeyError):
+        return "Style types are unavailable."
+    kind = "offense" if side == "off" else "defense"
+    lines = [f"{n}: {b}" for n, b in zip(model.names[side], model.blurbs[side])]
+    return (f"How the team plays {kind}, relative to teams of its quality (research only; it does not "
+            f"affect the picks). Built from season-to-date KenPom style stats, so early-season types can "
+            f"move. ≈ = borderline between two types (hover the cell).\n\n" + "\n".join(lines))
+
+
+def _style_cell(t: "styles.TeamType | None", bg, left_border=False, wrap=None) -> dict:
+    if t is None:
+        return _text("—", _fmt(bg=bg, fg=MUTED, align="CENTER", left_border=left_border))
+    label = ("≈ " if t.borderline else "") + t.name
+    fmt = _fmt(bg=_tint(STYLE_COLORS[t.cluster % len(STYLE_COLORS)], 0.16), size=9, align="CENTER",
+               italic=t.borderline, left_border=left_border, wrap=wrap)
+    note = t.blurb + (f" Borderline: nearly as close to {t.runner_up}." if t.borderline and t.runner_up else "")
+    return {**_text(label, fmt), "note": note}
+
+
 # (group label, color, [(column header, width px, hover note)])
 DAILY_GROUPS = [
     ("GAME", "#475569", [
@@ -364,6 +392,13 @@ DAILY_GROUPS = [
         ("Home 1–4", 62, "Chance the home team wins by 1 to 4."),
         ("Home 5–9", 62, "Chance the home team wins by 5 to 9."),
         ("Home 10+", 62, "Chance the home team wins by 10 or more. The six margin columns add up to 100%."),
+    ]),
+    # Ordered as the two matchups: away offense vs home defense, then home offense vs away defense.
+    ("STYLE MATCHUP (RESEARCH)", "#3F3F46", [
+        ("Away Offense", 150, "off"),
+        ("Home Defense", 150, "def"),
+        ("Home Offense", 150, "off"),
+        ("Away Defense", 150, "def"),
     ]),
 ]
 
@@ -433,6 +468,7 @@ def _site_cells(neutral: bool, known: bool, venue: str | None, city: str | None,
 def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
                      generated_at: datetime | None = None) -> GridTab:
     games = lp.slate_games(con, today)
+    types = styles.team_types(con, today)
     stamp = (generated_at or datetime.now(EASTERN)).astimezone(EASTERN)
     columns = [(group, color, col) for group, color, cols in DAILY_GROUPS for col in cols]
     n_cols = len(columns)
@@ -466,6 +502,8 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
                         left_border=c in first_of_group)
         head_fmt["borders"] = {**head_fmt.get("borders", {}),
                                "bottom": {"style": "SOLID_MEDIUM", "color": _hex(color)}}
+        if note in ("off", "def"):
+            note = _style_note(note)
         header_row.append({**_text(label, head_fmt), "note": note})
     for group, start in group_start.items():
         width = sum(1 for g, _, _ in columns if g == group)
@@ -530,6 +568,13 @@ def build_daily_grid(con, today: date, title: str = TAB_TITLES[0],
             cells.append(_numcell(p, _fmt(bg=_tint(color, t), fg=WHITE if t > 0.55 else INK,
                                       bold=t > 0.55, align="CENTER", pattern="0%", pattern_type="PERCENT",
                                       left_border=c in first_of_group)))
+        away_t, home_t = types.get(g.away, {}), types.get(g.home, {})
+        cells += [
+            _style_cell(away_t.get("off"), bg, left_border=True),
+            _style_cell(home_t.get("def"), bg),
+            _style_cell(home_t.get("off"), bg, left_border=True),
+            _style_cell(away_t.get("def"), bg),
+        ]
         rows.append(cells)
     if not games:
         rows.append([_text("No locked picks for today yet.", _fmt(fg=MUTED, italic=True))]
@@ -1125,6 +1170,7 @@ MOBILE_WIDTHS = [104, 108, 108]          # ~320 px: fits a phone screen in the S
 def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
                       generated_at: datetime | None = None) -> GridTab:
     games = lp.slate_games(con, today)
+    types = styles.team_types(con, today)
     stamp = (generated_at or datetime.now(EASTERN)).astimezone(EASTERN)
     sh = _Sheet(3)
     bar = _fmt(bg=_hex(NAVY), fg=WHITE, bold=True, size=13)
@@ -1197,6 +1243,10 @@ def build_mobile_grid(con, today: date, title: str = MOBILE_TITLE,
         merged("Market total", _numcell(g.market_total, _fmt(bg=ZEBRA, fg=MUTED, align="CENTER", pattern="0.0#")),
                bg=ZEBRA)
         merged("O/U lean", _total_lean_cell(g.total, g.market_total, WHITE))
+        away_t, home_t = types.get(g.away, {}), types.get(g.home, {})
+        for label, side, bg in (("Offense style", "off", ZEBRA), ("Defense style", "def", WHITE)):
+            sh.add([_text(label, label_fmt(bg)), _style_cell(away_t.get(side), bg, wrap="WRAP"),
+                    _style_cell(home_t.get(side), bg, wrap="WRAP")], 34)
     if not games:
         sh.add([_text("No locked picks for today yet.", _fmt(fg=MUTED, italic=True, wrap="WRAP"))])
     return GridTab(title, SheetLayout(sh.rows, 3, frozen_rows=1, col_widths=list(MOBILE_WIDTHS),

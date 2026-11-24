@@ -153,6 +153,41 @@ SCHEMA: dict[str, str] = {
             ml_b DOUBLE
         )
     """,
+    # Team style profiles (src/team_style.py): KenPom four factors + offense /
+    # defense team stats. Live rows are stamped with the fetch date; season
+    # finals with April 30 of the season (after every game of that season).
+    "team_style": """
+        CREATE TABLE IF NOT EXISTS team_style (
+            snapshot_date DATE,
+            season INTEGER,
+            team VARCHAR,
+            tempo DOUBLE, adj_o DOUBLE, adj_d DOUBLE,
+            off_efg DOUBLE, off_to DOUBLE, off_or DOUBLE, off_ftr DOUBLE,
+            def_efg DOUBLE, def_to DOUBLE, def_or DOUBLE, def_ftr DOUBLE,
+            off_3p DOUBLE, off_2p DOUBLE, off_ft DOUBLE, off_blk DOUBLE, off_stl DOUBLE,
+            off_nst DOUBLE, off_2pdist DOUBLE, off_ast DOUBLE, off_3pa DOUBLE,
+            def_3p DOUBLE, def_2p DOUBLE, def_ft DOUBLE, def_blk DOUBLE, def_stl DOUBLE,
+            def_nst DOUBLE, def_2pdist DOUBLE, def_ast DOUBLE, def_3pa DOUBLE,
+            PRIMARY KEY (snapshot_date, team)
+        )
+    """,
+    # Style-cluster assignment per team per snapshot (src/style_clusters.py).
+    # *_second = runner-up type; *_margin = distance to the runner-up centroid
+    # minus distance to the assigned one (z units); small = borderline.
+    "team_style_clusters": """
+        CREATE TABLE IF NOT EXISTS team_style_clusters (
+            snapshot_date DATE,
+            team VARCHAR,
+            model_version VARCHAR,
+            off_cluster INTEGER,
+            off_margin DOUBLE,
+            def_cluster INTEGER,
+            def_margin DOUBLE,
+            off_second INTEGER,
+            def_second INTEGER,
+            PRIMARY KEY (snapshot_date, team)
+        )
+    """,
     # Pre-lock / pre-publish sanity checks (src/sanity.py); rewritten per date + stage.
     "sanity_issues": """
         CREATE TABLE IF NOT EXISTS sanity_issues (
@@ -176,6 +211,8 @@ MIGRATIONS = [
     "ALTER TABLE model_predictions ADD COLUMN IF NOT EXISTS prob_b_by_10 DOUBLE",
     "ALTER TABLE odds_snapshots ADD COLUMN IF NOT EXISTS spread_price_a DOUBLE",
     "ALTER TABLE odds_snapshots ADD COLUMN IF NOT EXISTS spread_price_b DOUBLE",
+    "ALTER TABLE team_style_clusters ADD COLUMN IF NOT EXISTS off_second INTEGER",
+    "ALTER TABLE team_style_clusters ADD COLUMN IF NOT EXISTS def_second INTEGER",
 ]
 
 

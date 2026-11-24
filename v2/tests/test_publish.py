@@ -453,7 +453,8 @@ def test_daily_grid_one_value_per_cell(grid):
     header = [pg.cell_text(c) for c in lay.rows[3]]
     assert header[:8] == ["#", "Tip (ET)", "Away", "Home", "Site", "Venue", "City", "Game Type"]
     assert header[12] == "O/U Lean" and header[16:20] == ["Pick", "Pick Line", "Book", "Spread Lean"]
-    assert header[-1] == "Home 10+" and len(header) == lay.n_cols == 30
+    assert header[29] == "Home 10+" and len(header) == lay.n_cols == 34
+    assert header[30:] == ["Away Offense", "Home Defense", "Home Offense", "Away Defense"]
     assert all(c.get("note") for c in lay.rows[3])                    # every header has a hover note
     row = lay.rows[4]
     texts = [pg.cell_text(c) for c in row]
@@ -482,6 +483,8 @@ def test_daily_grid_one_value_per_cell(grid):
             assert v["stringValue"] in ("Strong", "Lean", "No Lean")
         elif c == 21:
             assert v["formulaValue"].startswith("=SPARKLINE(")
+        elif c >= 30:
+            assert v["stringValue"] == "—"                      # no style snapshot in this fixture
         else:
             assert "numberValue" in v, (c, v)
     assert sum(row[c]["userEnteredValue"]["numberValue"] for c in range(24, 30)) == pytest.approx(1.0)
@@ -490,7 +493,8 @@ def test_daily_grid_one_value_per_cell(grid):
 def test_daily_grid_structure(grid):
     lay = grid.layout
     assert (lay.frozen_rows, lay.frozen_cols) == (4, 4)
-    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 13), (2, 3, 13, 20), (2, 3, 20, 24), (2, 3, 24, 30)]
+    assert lay.merges == [(2, 3, 0, 4), (2, 3, 4, 7), (2, 3, 7, 13), (2, 3, 13, 20), (2, 3, 20, 24), (2, 3, 24, 30),
+                          (2, 3, 30, 34)]
     assert all(len(r) == lay.n_cols for r in lay.rows)
     assert pg.cell_text(lay.rows[1][0]) == "1 games · updated 2:05 PM ET"
 
@@ -513,7 +517,7 @@ def test_daily_grid_publishes_and_republishes(grid, tabs):
     publisher.publish([grid, *tabs[1:]])
     publisher.publish([grid, *tabs[1:]])                              # re-merge after unmerge works
     tab = sheets.by_title("Daily Picks")
-    assert (tab["frozen"], tab["frozen_cols"]) == (4, 4) and len(tab["merges"]) == 6
+    assert (tab["frozen"], tab["frozen_cols"]) == (4, 4) and len(tab["merges"]) == 7
     assert tab["heights"][0] == 36 and tab["heights"][4] == 24
     assert sheets.display("Daily Picks")[4][2] == "Houston"
     publisher.publish([plain_tab("Daily Picks"), *tabs[1:]])          # merges cleared
@@ -719,7 +723,7 @@ def test_lookup_tabs_get_header_filters(grid, rank_grid, tabs):
     publisher.publish([grid, tabs[1], tabs[2], rank_grid])
     picks = sheets.by_title("Daily Picks")["filter"]
     ranks = sheets.by_title("Daily Power Rankings")["filter"]
-    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 30)
+    assert (picks["startRowIndex"], picks["endRowIndex"], picks["endColumnIndex"]) == (3, 5, 34)
     assert (ranks["startRowIndex"], ranks["endRowIndex"]) == (3, 4 + len(TEAMS))
     assert sheets.by_title("Model Performance & Stats")["filter"] is None
     assert pg.SEARCH_HINT in pg.cell_text(grid.layout.rows[1][4])
@@ -1039,3 +1043,37 @@ def test_record_counts_strong_picks_excluding_pushes():
     version = "lean-v1.1"                                   # older models are not part of the test
     assert pg._record([g(4.0, "Cover")])["strong_n"] == 0
     assert pg._record([g(1.0, "Cover")])["strong_pct"] is None
+
+
+# --- style matchup columns ------------------------------------------------------------------------
+
+
+def test_style_columns_show_matchups_and_borderline(db_path):
+    from src import style_clusters as styles
+    model = styles.load_model()
+    with db.get_db_connection(db_path=db_path) as con:
+        con.executemany(
+            "INSERT INTO team_style_clusters (snapshot_date, team, model_version, off_cluster, off_margin, "
+            "off_second, def_cluster, def_margin, def_second) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [[TODAY, "Houston", model.version, 1, 0.9, 2, 0, 0.05, 4],     # defense borderline
+             [TODAY, "Kansas", model.version, 3, 0.6, 0, 2, 0.7, 1]])
+        grid = pg.build_daily_grid(con, TODAY)
+        mobile = pg.build_mobile_grid(con, TODAY)
+    row = grid.layout.rows[4]
+    away_o, home_d, home_o, away_d = (pg.cell_text(c) for c in row[30:34])     # Houston @ Kansas
+    assert (away_o, home_d, home_o) == (model.names["off"][1], model.names["def"][2], model.names["off"][3])
+    assert away_d == "≈ " + model.names["def"][0]
+    assert model.names["def"][4] in row[33]["note"]
+    texts = [[pg.cell_text(c) for c in r] for r in mobile.layout.rows]
+    assert ["Offense style", model.names["off"][1], model.names["off"][3]] in texts
+
+
+def test_style_types_ignore_stale_snapshots(db_path):
+    from datetime import timedelta
+    from src import style_clusters as styles
+    with db.get_db_connection(db_path=db_path) as con:
+        con.execute("INSERT INTO team_style_clusters (snapshot_date, team, model_version, off_cluster, off_margin, "
+                    "off_second, def_cluster, def_margin, def_second) VALUES (?, 'Houston', 'style-v2', 0, 1, 1, 0, 1, 1)",
+                    [TODAY - timedelta(days=8)])
+        assert styles.team_types(con, TODAY) == {}
+        assert "Houston" in styles.team_types(con, TODAY - timedelta(days=1))
