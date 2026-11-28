@@ -512,7 +512,8 @@ def publish(
         _fail(str(exc))
     sheets, drive = pg.build_services(key)
     with console.status("Publishing to Google Sheets..."):
-        url = pg.SheetsPublisher(sheets, drive, sheet_id).publish(tabs, make_public=make_public)
+        url = pg.publish_with_retry(pg.SheetsPublisher(sheets, drive, sheet_id), tabs, make_public,
+                                    log=lambda m: console.print(f"[yellow]{m}[/]"))
     console.print(f"[green]Published[/] {url}" + (" (link sharing turned on)" if make_public else ""))
 
 

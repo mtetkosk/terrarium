@@ -1488,6 +1488,39 @@ def build_services(key_path: Path):
             build("drive", "v3", credentials=creds, cache_discovery=False))
 
 
+PUBLISH_RETRY_WAITS = (20.0, 60.0)       # seconds before the 2nd and 3rd attempts
+
+
+def is_transient(exc: BaseException) -> bool:
+    """Network hiccups and Google-side throttling / outages worth retrying."""
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        return int(status) == 429 or 500 <= int(status) < 600
+    except (TypeError, ValueError):
+        return False
+
+
+def publish_with_retry(publisher: "SheetsPublisher", tabs: list[GridTab], make_public: bool = False,
+                       waits: tuple[float, ...] = PUBLISH_RETRY_WAITS, sleep=None, log=None) -> str:
+    """Publish, retrying the whole publish on transient errors. Each publish
+    rewrites every tab, so re-running after a partial failure is safe."""
+    import time
+    sleep = sleep or time.sleep
+    for attempt in range(len(waits) + 1):
+        try:
+            return publisher.publish(tabs, make_public=make_public)
+        except Exception as exc:                       # noqa: BLE001 - filtered below
+            if attempt == len(waits) or not is_transient(exc):
+                raise
+            if log:
+                log(f"Publish attempt {attempt + 1} failed ({type(exc).__name__}: {exc}); "
+                    f"retrying in {waits[attempt]:.0f}s")
+            sleep(waits[attempt])
+    raise AssertionError("unreachable")
+
+
 class SheetsPublisher:
     def __init__(self, sheets, drive, spreadsheet_id: str):
         self.sheets, self.drive, self.spreadsheet_id = sheets, drive, spreadsheet_id

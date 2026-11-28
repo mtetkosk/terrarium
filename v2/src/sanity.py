@@ -42,7 +42,7 @@ from pathlib import Path
 import duckdb
 
 from src.ingest_kenpom import DEFAULT_CACHE_DIR
-from src.odds_api import current_teams, eastern_date, parse_utc, utc_now
+from src.odds_api import current_teams, eastern_date, parse_utc, slate_date, utc_now
 from src.team_names import TeamNameMapper
 
 MAX_LINE_GAP = 12.0            # |model spread - market spread|, points
@@ -218,7 +218,7 @@ def unmatched_names(con: duckdb.DuckDBPyConnection, day: date,
     mapper = TeamNameMapper(current_teams(con, day))
     names = set()
     for e in events:
-        if eastern_date(parse_utc(e["commence_time"])) != day:
+        if slate_date(parse_utc(e["commence_time"])) != day:
             continue
         for raw in (e.get("home_team"), e.get("away_team")):
             if raw and mapper.to_kenpom(raw) is None:

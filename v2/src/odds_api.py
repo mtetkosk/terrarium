@@ -34,7 +34,7 @@ import logging
 import os
 from dataclasses import dataclass, field, replace
 from statistics import median
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -79,8 +79,22 @@ def parse_utc(value: str) -> datetime:
 
 
 def eastern_date(commence_utc: datetime) -> date:
-    """Game date as US/Eastern calendar day (a 7 pm PT tip is 'tonight')."""
+    """US/Eastern calendar day of a UTC timestamp."""
     return commence_utc.replace(tzinfo=timezone.utc).astimezone(EASTERN).date()
+
+
+# Games tipping before this hour (ET) belong to the previous night's slate: a
+# 9:30 pm PT tip is 12:30 am ET, after midnight but before any morning run, so
+# dating it by the ET calendar day would leave it in no slate (it starts before
+# that day's picks lock). ESPN's scoreboard dates these games the same way.
+SLATE_CUTOFF_HOUR = 6
+
+
+def slate_date(commence_utc: datetime) -> date:
+    """The slate (game day) a tip belongs to: the ET date, with tips before
+    SLATE_CUTOFF_HOUR ET counted as the previous night's games."""
+    et = commence_utc.replace(tzinfo=timezone.utc).astimezone(EASTERN)
+    return (et - timedelta(hours=SLATE_CUTOFF_HOUR)).date()
 
 
 def get_api_key() -> str:
@@ -158,7 +172,7 @@ def _map_event(event: dict, mapper: TeamNameMapper, unmatched: set) -> Scheduled
     if home is None or away is None:
         return None
     commence = parse_utc(event["commence_time"])
-    gd = eastern_date(commence)
+    gd = slate_date(commence)
     return ScheduledGame(game_id_for(gd, home, away), event["id"], commence, gd, home, away)
 
 

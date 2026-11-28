@@ -1096,3 +1096,43 @@ def test_style_types_ignore_stale_snapshots(db_path):
                     [TODAY - timedelta(days=8)])
         assert styles.team_types(con, TODAY) == {}
         assert "Houston" in styles.team_types(con, TODAY - timedelta(days=1))
+
+
+# --- publish retry -------------------------------------------------------------------------------
+
+
+class FlakyPublisher:
+    def __init__(self, errors):
+        self.errors, self.calls = list(errors), 0
+
+    def publish(self, tabs, make_public=False):
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+        return "URL"
+
+
+def test_publish_retries_transient_errors():
+    pub, waits = FlakyPublisher([TimeoutError("The read operation timed out")]), []
+    assert pg.publish_with_retry(pub, [], waits=(5.0, 9.0), sleep=waits.append) == "URL"
+    assert pub.calls == 2 and waits == [5.0]
+
+
+def test_publish_retry_gives_up_and_skips_permanent_errors():
+    pub = FlakyPublisher([TimeoutError(), TimeoutError(), TimeoutError()])
+    with pytest.raises(TimeoutError):
+        pg.publish_with_retry(pub, [], waits=(1.0, 1.0), sleep=lambda s: None)
+    assert pub.calls == 3
+    bad = FlakyPublisher([ValueError("bad sheet id")])
+    with pytest.raises(ValueError):
+        pg.publish_with_retry(bad, [], waits=(1.0,), sleep=lambda s: None)
+    assert bad.calls == 1
+
+
+def test_transient_classification():
+    from types import SimpleNamespace
+    http = lambda status: type("HttpError", (Exception,), {})()   # noqa: E731
+    e429, e500, e403 = http(429), http(503), http(403)
+    e429.resp, e500.resp, e403.resp = SimpleNamespace(status=429), SimpleNamespace(status=503), SimpleNamespace(status=403)
+    assert pg.is_transient(e429) and pg.is_transient(e500) and not pg.is_transient(e403)
+    assert pg.is_transient(ConnectionResetError()) and not pg.is_transient(KeyError("x"))

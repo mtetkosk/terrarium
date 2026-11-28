@@ -38,6 +38,22 @@ EVENTS = [
 ]
 
 
+def test_slate_date_keeps_post_midnight_tips_with_the_previous_night():
+    # Kansas St. at Gonzaga, 9:49 pm PT = 12:49 am ET: last night's game, not tomorrow's.
+    assert oa.slate_date(oa.parse_utc("2026-11-25T05:49:00Z")) == date(2026, 11, 24)
+    assert oa.slate_date(oa.parse_utc("2026-11-26T01:00:00Z")) == date(2026, 11, 25)   # 8 pm ET
+    assert oa.slate_date(oa.parse_utc("2026-11-25T11:00:00Z")) == date(2026, 11, 25)   # 6 am ET: new day
+    assert oa.slate_date(oa.parse_utc("2026-11-25T10:59:00Z")) == date(2026, 11, 24)   # 5:59 am ET
+
+
+def test_late_tip_is_stored_on_the_previous_slate():
+    mapper = oa.TeamNameMapper(["Gonzaga", "Kansas St."])
+    event = {"id": "e1", "home_team": "Gonzaga Bulldogs", "away_team": "Kansas St Wildcats",
+             "commence_time": "2026-11-25T05:49:00Z", "bookmakers": []}
+    g = oa._map_event(event, mapper, set())
+    assert g.game_date == date(2026, 11, 24) and g.game_id.startswith("2026-11-24_")
+
+
 def test_eastern_date_handles_late_west_coast_tips():
     assert oa.eastern_date(oa.parse_utc("2026-11-21T04:00:00Z")) == date(2026, 11, 20)   # 11 pm ET
     assert oa.eastern_date(oa.parse_utc("2026-11-21T05:30:00Z")) == date(2026, 11, 21)
